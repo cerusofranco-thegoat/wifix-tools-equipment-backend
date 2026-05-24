@@ -44,7 +44,12 @@ fase. Las casillas marcadas indican entregables verificados.
       verificando que una ruta de prueba responde con el esquema `Error`.
 - **Verificación:** `npm test` → 18/18 ✓. `npm run lint` → sin errores.
 
-### Fase A3 — Catálogos · ⏳ Pendiente
+### Fase A3 — Catálogos · ✅ Completada (2026-05-24)
+- [x] 4 endpoints GET bajo `/herramientas/v1/catalogs/*`.
+- [x] Capas `repository → service → routes` + mappers Prisma→DTO.
+- [x] Traducción `HOST_SN → HOST-SN` (y demás guiones) en serialFieldType.
+- [x] `location` en speedtest-servers solo cuando hay coordenadas.
+- [x] 4 pruebas de integración contra Postgres real.
 
 ### Fase A4 — Media · ⏳ Pendiente
 

@@ -75,7 +75,15 @@ fase. Las casillas marcadas indican entregables verificados.
       el tipo de salida de schemas con `.default()`.
 - [x] 7 pruebas integradas: éxito, validaciones, filtros y casos de error.
 
-### Fase A6 — Equipos retirados · ⏳ Pendiente
+### Fase A6 — Equipos retirados · ✅ Completada (2026-05-24)
+- [x] POST/GET lista filtrada/GET por id de `/retired-equipment`.
+- [x] Filtros adicionales: `removalReasonCode`, `serialValue` (contains
+      insensitive).
+- [x] Valida `equipmentModelId` y `removalReasonCode` contra catálogo
+      (`CATALOG_ITEM_NOT_FOUND`); valida `barcodePhotoId` (`MEDIA_NOT_FOUND`).
+- [x] Copia `serialFieldType` como snapshot del modelo al crear el registro.
+- [x] `barcodePhotoUrl` resuelto desde la relación con `media_files`.
+- [x] 5 pruebas integradas cubriendo flujos y todos los códigos de error.
 
 ### Fase A7 — Historial de la cuenta · ⏳ Pendiente
 

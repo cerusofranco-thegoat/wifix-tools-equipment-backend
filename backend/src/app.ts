@@ -9,6 +9,7 @@ import { registerSpeedtestRoutes } from './modules/tools/speedtest/speedtest.rou
 import { registerHeatmapRoutes } from './modules/tools/heatmap/heatmap.routes.js';
 import { registerPingRoutes } from './modules/tools/ping/ping.routes.js';
 import { registerTracerouteRoutes } from './modules/tools/traceroute/traceroute.routes.js';
+import { registerRetiredEquipmentRoutes } from './modules/retired-equipment/retired-equipment.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -72,6 +73,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerHeatmapRoutes(api);
       await registerPingRoutes(api);
       await registerTracerouteRoutes(api);
+      await registerRetiredEquipmentRoutes(api);
     },
     { prefix: API_PREFIX },
   );

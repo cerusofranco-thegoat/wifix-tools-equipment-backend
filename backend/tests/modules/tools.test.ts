@@ -1,6 +1,6 @@
 // Integración de las 5 herramientas — requiere Postgres y catálogos sembrados.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { buildTestApp } from '../helpers/test-app.js';
 import { prisma } from '../../src/db/prisma.js';
 
@@ -19,17 +19,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function post(url: string, payload: unknown) {
-  return app.inject({
+async function post(url: string, payload: unknown): Promise<LightMyRequestResponse> {
+  return await app.inject({
     method: 'POST',
     url: `${PREFIX}${url}`,
     headers: { 'content-type': 'application/json' },
-    payload,
+    payload: payload as object,
   });
 }
 
-async function get(url: string) {
-  return app.inject({ method: 'GET', url: `${PREFIX}${url}` });
+async function get(url: string): Promise<LightMyRequestResponse> {
+  return await app.inject({ method: 'GET', url: `${PREFIX}${url}` });
 }
 
 describe('Distancia', () => {

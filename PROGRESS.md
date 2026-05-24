@@ -17,7 +17,18 @@ fase. Las casillas marcadas indican entregables verificados.
 - **Verificación:** `npm install && docker compose up -d && npm run dev`,
   luego `curl http://localhost:8080/health` debe responder 200.
 
-### Fase A1 — Modelo de datos (Prisma) · ⏳ Pendiente
+### Fase A1 — Modelo de datos (Prisma) · ✅ Completada (2026-05-24)
+- [x] `prisma/schema.prisma` con 13 modelos (4 catálogos + 8 transaccionales + media),
+      4 enums con `@map` para preservar guiones del contrato, mapeos snake_case
+      ↔ camelCase e índices sobre `account_number`, `client_id`, `visit_id`,
+      `measured_at`/`retired_at` y `serial_value`.
+- [x] Migración inicial `20260524231509_init` generada y aplicada.
+- [x] `prisma/seed.ts` idempotente con los datos de SPEC §8: 10 equipment_models,
+      8 removal_reasons, 2 speedtest_servers ejemplo, 5 network_servers ejemplo.
+- [x] Cliente Prisma generado; `src/db/prisma.ts` expone instancia compartida.
+- **Verificación:** `docker compose up -d postgres && npm run prisma:migrate &&
+  npm run prisma:seed` corre sin error; segunda corrida del seed mantiene los
+  mismos conteos (idempotente).
 
 ### Fase A2 — Middleware base (Zod + paginación) · ⏳ Pendiente
 

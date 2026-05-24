@@ -1,0 +1,315 @@
+// Esquema Prisma — Módulo Herramientas y Equipos Retirados (Wifix Fase 1).
+// Tablas y columnas en snake_case; campos del cliente Prisma en camelCase
+// (mapeo con @map / @@map). Identificadores propios: uuid v4.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// ENUMS
+// ===========================================================================
+
+enum EquipmentCategory {
+  DECODIFICADOR
+  DECODIFICADOR_HD
+  MTA
+  ONU
+  ONT
+  ROUTER
+
+  @@map("equipment_category")
+}
+
+enum EquipmentSerialFieldType {
+  SN
+  HOST_SN @map("HOST-SN")
+  PON_SN  @map("PON-SN")
+  GPON_SN @map("GPON-SN")
+  D_SN    @map("D-SN")
+
+  @@map("equipment_serial_field_type")
+}
+
+enum RemovalReasonCode {
+  DANO_FISICO
+  NO_ENCIENDE
+  PUERTO_DANADO
+  EQUIPO_INHIBIDO
+  NO_DA_SERVICIO
+  NO_SE_APROVISIONA
+  EQUIPO_OK_CANCELACION
+  OTROS
+
+  @@map("removal_reason_code")
+}
+
+enum NetworkServerType {
+  DNS
+  GATEWAY
+  CDN
+  GENERIC
+
+  @@map("network_server_type")
+}
+
+// ===========================================================================
+// CATÁLOGOS
+// ===========================================================================
+
+model EquipmentModel {
+  id              String                   @id @default(uuid()) @db.Uuid
+  name            String
+  category        EquipmentCategory
+  serialFieldType EquipmentSerialFieldType @map("serial_field_type")
+  brand           String?
+  active          Boolean                  @default(true)
+
+  retiredEquipment RetiredEquipment[]
+
+  @@map("equipment_models")
+}
+
+model RemovalReason {
+  code      RemovalReasonCode @id
+  label     String
+  sortOrder Int               @default(0) @map("sort_order")
+  active    Boolean           @default(true)
+
+  retiredEquipment RetiredEquipment[]
+
+  @@map("removal_reasons")
+}
+
+model SpeedtestServer {
+  id        String  @id @default(uuid()) @db.Uuid
+  name      String
+  host      String
+  city      String?
+  latitude  Float?
+  longitude Float?
+  active    Boolean @default(true)
+
+  @@map("speedtest_servers")
+}
+
+model NetworkServer {
+  id     String            @id @default(uuid()) @db.Uuid
+  name   String
+  target String
+  type   NetworkServerType
+  active Boolean           @default(true)
+
+  @@map("network_servers")
+}
+
+// ===========================================================================
+// MEDIA
+// ===========================================================================
+
+model MediaFile {
+  id          String   @id @default(uuid()) @db.Uuid
+  storageKey  String   @map("storage_key")
+  url         String
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  retiredEquipment RetiredEquipment[]
+
+  @@map("media_files")
+}
+
+// ===========================================================================
+// TRANSACCIONALES — HERRAMIENTAS
+// ===========================================================================
+
+model DistanceMeasurement {
+  id             String   @id @default(uuid()) @db.Uuid
+  accountNumber  String   @map("account_number")
+  clientId       String?  @map("client_id")
+  contractId     String?  @map("contract_id")
+  visitId        String?  @map("visit_id")
+  technicianId   String?  @map("technician_id")
+  distanceMeters Float    @map("distance_meters")
+  startLat       Float?   @map("start_lat")
+  startLng       Float?   @map("start_lng")
+  endLat         Float?   @map("end_lat")
+  endLng         Float?   @map("end_lng")
+  measuredAt     DateTime @map("measured_at") @db.Timestamptz(6)
+  notes          String?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([measuredAt])
+  @@map("distance_measurements")
+}
+
+model Speedtest {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountNumber     String   @map("account_number")
+  clientId          String?  @map("client_id")
+  contractId        String?  @map("contract_id")
+  visitId           String?  @map("visit_id")
+  technicianId      String?  @map("technician_id")
+  downloadMbps      Float    @map("download_mbps")
+  uploadMbps        Float    @map("upload_mbps")
+  latencyMs         Float?   @map("latency_ms")
+  jitterMs          Float?   @map("jitter_ms")
+  packetLossPercent Float?   @map("packet_loss_percent")
+  serverId          String?  @map("server_id")
+  serverName        String?  @map("server_name")
+  ispName           String?  @map("isp_name")
+  measuredAt        DateTime @map("measured_at") @db.Timestamptz(6)
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([measuredAt])
+  @@map("speedtests")
+}
+
+model WifiHeatmap {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountNumber String   @map("account_number")
+  clientId      String?  @map("client_id")
+  contractId    String?  @map("contract_id")
+  visitId       String?  @map("visit_id")
+  technicianId  String?  @map("technician_id")
+  label         String?
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rooms     WifiHeatmapRoom[]
+  pingTests PingTest[]
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([createdAt])
+  @@map("wifi_heatmaps")
+}
+
+model WifiHeatmapRoom {
+  id         String   @id @default(uuid()) @db.Uuid
+  heatmapId  String   @map("heatmap_id") @db.Uuid
+  roomName   String   @map("room_name")
+  floor      Int      @default(1)
+  signalDbm  Float    @map("signal_dbm")
+  measuredAt DateTime @map("measured_at") @db.Timestamptz(6)
+  notes      String?
+
+  heatmap WifiHeatmap @relation(fields: [heatmapId], references: [id], onDelete: Cascade)
+
+  @@index([heatmapId])
+  @@map("wifi_heatmap_rooms")
+}
+
+model PingTest {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountNumber     String   @map("account_number")
+  clientId          String?  @map("client_id")
+  contractId        String?  @map("contract_id")
+  visitId           String?  @map("visit_id")
+  technicianId      String?  @map("technician_id")
+  target            String
+  serverId          String?  @map("server_id")
+  packetsSent       Int?     @map("packets_sent")
+  packetsReceived   Int?     @map("packets_received")
+  packetLossPercent Float?   @map("packet_loss_percent")
+  minLatencyMs      Float?   @map("min_latency_ms")
+  avgLatencyMs      Float?   @map("avg_latency_ms")
+  maxLatencyMs      Float?   @map("max_latency_ms")
+  continuous        Boolean  @default(false)
+  heatmapId         String?  @map("heatmap_id") @db.Uuid
+  roomName          String?  @map("room_name")
+  measuredAt        DateTime @map("measured_at") @db.Timestamptz(6)
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  heatmap WifiHeatmap? @relation(fields: [heatmapId], references: [id], onDelete: SetNull)
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([measuredAt])
+  @@index([heatmapId])
+  @@map("ping_tests")
+}
+
+model TracerouteTest {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountNumber String   @map("account_number")
+  clientId      String?  @map("client_id")
+  contractId    String?  @map("contract_id")
+  visitId       String?  @map("visit_id")
+  technicianId  String?  @map("technician_id")
+  target        String
+  serverId      String?  @map("server_id")
+  measuredAt    DateTime @map("measured_at") @db.Timestamptz(6)
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  hops TracerouteHop[]
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([measuredAt])
+  @@map("traceroute_tests")
+}
+
+model TracerouteHop {
+  id               String  @id @default(uuid()) @db.Uuid
+  tracerouteTestId String  @map("traceroute_test_id") @db.Uuid
+  hopNumber        Int     @map("hop_number")
+  host             String?
+  latencyMs        Float?  @map("latency_ms")
+
+  tracerouteTest TracerouteTest @relation(fields: [tracerouteTestId], references: [id], onDelete: Cascade)
+
+  @@index([tracerouteTestId])
+  @@map("traceroute_hops")
+}
+
+// ===========================================================================
+// TRANSACCIONALES — EQUIPOS RETIRADOS
+// ===========================================================================
+
+model RetiredEquipment {
+  id                String                   @id @default(uuid()) @db.Uuid
+  accountNumber     String                   @map("account_number")
+  clientId          String?                  @map("client_id")
+  contractId        String?                  @map("contract_id")
+  visitId           String?                  @map("visit_id")
+  technicianId      String?                  @map("technician_id")
+  equipmentModelId  String                   @map("equipment_model_id") @db.Uuid
+  serialValue       String                   @map("serial_value")
+  serialFieldType   EquipmentSerialFieldType @map("serial_field_type")
+  barcodePhotoId    String?                  @map("barcode_photo_id") @db.Uuid
+  removalReasonCode RemovalReasonCode        @map("removal_reason_code")
+  observations      String?
+  retiredAt         DateTime                 @map("retired_at") @db.Timestamptz(6)
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  equipmentModel EquipmentModel @relation(fields: [equipmentModelId], references: [id])
+  removalReason  RemovalReason  @relation(fields: [removalReasonCode], references: [code])
+  barcodePhoto   MediaFile?     @relation(fields: [barcodePhotoId], references: [id], onDelete: SetNull)
+
+  @@index([accountNumber])
+  @@index([clientId])
+  @@index([visitId])
+  @@index([serialValue])
+  @@index([retiredAt])
+  @@map("retired_equipment")
+}

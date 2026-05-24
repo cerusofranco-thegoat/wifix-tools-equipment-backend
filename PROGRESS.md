@@ -108,11 +108,30 @@ fase. Las casillas marcadas indican entregables verificados.
 
 ## PARTE B — Frontend (en `wifix-webapp`)
 
-### Fase B0 — Estudio del repo existente · ⏳ Pendiente
-### Fase B1 — Capa de API (mock) · ⏳ Pendiente
-### Fase B2 — Pantalla de Herramientas · ⏳ Pendiente
-### Fase B3 — Pantalla de Equipos Retirados · ⏳ Pendiente
-### Fase B4 — Estilos y cierre del frontend · ⏳ Pendiente
+### Fases B0–B4 · ✅ Completadas (2026-05-24)
+- [x] **B0 — Estudio del repo:** identificados patrones a reutilizar:
+      `.detailscreen` con `.open`/`aria-hidden`; `.sub-header + .back-btn`;
+      `.account-chip`; acordeón estilo `SERVICIO_ITEMS` (head/body/chev);
+      tokens de diseño (cyan `#00e0ff`, status `#00ff9d`/`#ff5a5a`);
+      `data-sub="herramientas"` ya existía pero sin handler.
+- [x] **B1 — `api.js` (nuevo):** capa de consumo con `API_BASE_URL`,
+      una función por endpoint del contrato y modo mock por defecto
+      (toggle `WifixAPI.useRealApi = true` para fetch real). Rellena
+      `clientId`/`visitId`/`technicianId` con valores de prueba.
+- [x] **B2 — Pantalla de Herramientas:** sub-card `herramientas` ahora
+      abre `#detailHerramientas` con acordeón de las 5 herramientas
+      (formularios manuales por la nota técnica SPEC §15, disclaimer
+      visible). Habitaciones del heatmap y saltos de traceroute son
+      filas dinámicas con +/× para agregar y eliminar.
+- [x] **B3 — Pantalla de Equipos Retirados:** nueva sub-card en
+      `.sub-grid` que abre `#detailRetirados`. Formulario carga modelos
+      y motivos desde `api.js`, sube foto del código de barras vía
+      `WifixAPI.uploadMedia` y guarda con `createRetiredEquipment`.
+- [x] **B4 — Estilos:** bloque nuevo al final de `styles.css` siguiendo
+      la nomenclatura existente; no toca estilos previos.
+- [x] Trabajo en rama `feature/tools-and-retired-equipment`.
+- [x] Sintaxis JS verificada con `node --check`; servidor estático en
+      `npx http-server . -p 5173` sirve los 3 archivos sin error.
 
 ---
 

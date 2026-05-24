@@ -1,5 +1,4 @@
-import type { ZodError} from 'zod';
-import { type ZodSchema } from 'zod';
+import type { ZodError, ZodTypeAny, z } from 'zod';
 import { ApiError, type ApiErrorDetail } from '../middleware/error-handler.js';
 
 export function zodErrorToDetails(error: ZodError): ApiErrorDetail[] {
@@ -16,11 +15,11 @@ export function zodErrorToApiError(error: ZodError, label = 'la solicitud'): Api
   );
 }
 
-export function parseOrThrow<T>(
-  schema: ZodSchema<T>,
+export function parseOrThrow<S extends ZodTypeAny>(
+  schema: S,
   value: unknown,
   label = 'la solicitud',
-): T {
+): z.output<S> {
   const result = schema.safeParse(value);
   if (!result.success) {
     throw zodErrorToApiError(result.error, label);
@@ -28,14 +27,14 @@ export function parseOrThrow<T>(
   return result.data;
 }
 
-export function parseBody<T>(schema: ZodSchema<T>, value: unknown): T {
+export function parseBody<S extends ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   return parseOrThrow(schema, value, 'el cuerpo de la solicitud');
 }
 
-export function parseQuery<T>(schema: ZodSchema<T>, value: unknown): T {
+export function parseQuery<S extends ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   return parseOrThrow(schema, value, 'los parámetros de consulta');
 }
 
-export function parseParams<T>(schema: ZodSchema<T>, value: unknown): T {
+export function parseParams<S extends ZodTypeAny>(schema: S, value: unknown): z.output<S> {
   return parseOrThrow(schema, value, 'los parámetros de la ruta');
 }

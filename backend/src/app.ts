@@ -4,6 +4,11 @@ import { env } from './config/env.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerCatalogsRoutes } from './modules/catalogs/catalogs.routes.js';
 import { registerMediaRoutes } from './modules/media/media.routes.js';
+import { registerDistanceRoutes } from './modules/tools/distance/distance.routes.js';
+import { registerSpeedtestRoutes } from './modules/tools/speedtest/speedtest.routes.js';
+import { registerHeatmapRoutes } from './modules/tools/heatmap/heatmap.routes.js';
+import { registerPingRoutes } from './modules/tools/ping/ping.routes.js';
+import { registerTracerouteRoutes } from './modules/tools/traceroute/traceroute.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -62,6 +67,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
       await registerCatalogsRoutes(api);
       await registerMediaRoutes(api);
+      await registerDistanceRoutes(api);
+      await registerSpeedtestRoutes(api);
+      await registerHeatmapRoutes(api);
+      await registerPingRoutes(api);
+      await registerTracerouteRoutes(api);
     },
     { prefix: API_PREFIX },
   );

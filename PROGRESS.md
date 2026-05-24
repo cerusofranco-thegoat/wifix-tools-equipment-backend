@@ -59,7 +59,21 @@ fase. Las casillas marcadas indican entregables verificados.
 - [x] `GET /media/{id}` con UUID validado.
 - [x] 4 pruebas de integración contra MinIO + Postgres.
 
-### Fase A5 — Herramientas · ⏳ Pendiente
+### Fase A5 — Herramientas · ✅ Completada (2026-05-24)
+- [x] Schemas/utilidades compartidas: `service-context` (ServiceContext con
+      `accountNumber` obligatorio), `filters` (listFiltersSchema +
+      buildContextWhere/buildDateRangeWhere), `geo` (geoPointSchema +
+      toGeoPoint), `not-future` (helper measuredAt no futuro).
+- [x] **Distancia** — POST/GET lista/GET por id; GeoPoint opcional.
+- [x] **Speedtest** — download/upload obligatorios y >= 0.
+- [x] **Mapa de calor WiFi** — al menos 1 habitación, signalDbm -120..0,
+      floor default 1.
+- [x] **Ping** — packetsReceived <= packetsSent; heatmapId valida existencia.
+- [x] **Traceroute** — hops nested con `host` y `latencyMs` nullable
+      (salto sin respuesta), devueltos ordenados por hopNumber.
+- [x] `parseOrThrow` refactor a `S extends ZodTypeAny` para preservar
+      el tipo de salida de schemas con `.default()`.
+- [x] 7 pruebas integradas: éxito, validaciones, filtros y casos de error.
 
 ### Fase A6 — Equipos retirados · ⏳ Pendiente
 

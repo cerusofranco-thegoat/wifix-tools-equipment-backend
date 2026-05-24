@@ -85,7 +85,13 @@ fase. Las casillas marcadas indican entregables verificados.
 - [x] `barcodePhotoUrl` resuelto desde la relación con `media_files`.
 - [x] 5 pruebas integradas cubriendo flujos y todos los códigos de error.
 
-### Fase A7 — Historial de la cuenta · ⏳ Pendiente
+### Fase A7 — Historial de la cuenta · ✅ Completada (2026-05-24)
+- [x] `GET /accounts/{accountNumber}/tool-history` agrega en paralelo los
+      6 tipos de registro asociados a la cuenta (distance, speedtest,
+      heatmap, ping, traceroute, retired-equipment).
+- [x] Filtro opcional por rango de fecha (`dateFrom`/`dateTo`) aplicado
+      según el campo natural de cada tipo (measuredAt/createdAt/retiredAt).
+- [x] 2 pruebas integradas: cuenta con los 6 tipos + filtro de fecha.
 
 ### Fase A8 — Pruebas y cierre del backend · ⏳ Pendiente
 

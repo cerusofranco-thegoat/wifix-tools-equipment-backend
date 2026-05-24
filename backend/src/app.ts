@@ -10,6 +10,7 @@ import { registerHeatmapRoutes } from './modules/tools/heatmap/heatmap.routes.js
 import { registerPingRoutes } from './modules/tools/ping/ping.routes.js';
 import { registerTracerouteRoutes } from './modules/tools/traceroute/traceroute.routes.js';
 import { registerRetiredEquipmentRoutes } from './modules/retired-equipment/retired-equipment.routes.js';
+import { registerAccountHistoryRoutes } from './modules/account-history/account-history.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -74,6 +75,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerPingRoutes(api);
       await registerTracerouteRoutes(api);
       await registerRetiredEquipmentRoutes(api);
+      await registerAccountHistoryRoutes(api);
     },
     { prefix: API_PREFIX },
   );

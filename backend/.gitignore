@@ -1,0 +1,25 @@
+node_modules/
+dist/
+coverage/
+
+# Variables de entorno locales
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / SO
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+
+# Prisma
+prisma/migrations/dev.db*
+
+# Volúmenes locales de docker-compose
+.docker-data/

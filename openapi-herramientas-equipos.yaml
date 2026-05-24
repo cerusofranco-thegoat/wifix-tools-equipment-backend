@@ -1,0 +1,1310 @@
+openapi: 3.0.3
+
+info:
+  title: API de Herramientas y Equipos Retirados
+  description: >
+    Módulo de backend de la app Wifix (Fase 1). Cubre dos dominios del
+    servicio de operaciones de campo:
+
+      1. HERRAMIENTAS — almacenamiento de resultados de mediciones:
+         medición de distancia, test de velocidad, mapa de calor WiFi,
+         ping y traceroute.
+      2. EQUIPOS RETIRADOS — registro de equipos retirados o reemplazados.
+
+    CLAVE DE IDENTIFICACIÓN (FASE 1)
+    ----------------------------------------------------------------------
+    En la Fase 1 la clave práctica de cada registro es `accountNumber`:
+    el número de cuenta del cliente que el técnico ingresa en la app.
+    Los demás identificadores (`clientId`, `visitId`, `technicianId`) son
+    opcionales: provendrán de un sistema upstream aún por definir y en la
+    Fase 1 se completan con valores de prueba. `contractId` también es
+    opcional y en una fase posterior será reemplazado por `taskId`.
+
+    AUTENTICACIÓN
+    ----------------------------------------------------------------------
+    La Fase 1 NO tiene autenticación: los endpoints son abiertos. El
+    esquema de seguridad (JWT u otro) se incorporará en una fase
+    posterior.
+  version: 1.0.0
+  contact:
+    name: Tulpa Solutions S.A.S.
+
+servers:
+  - url: https://api.ejemplo.com/herramientas/v1
+    description: Producción (URL definitiva por coordinar)
+  - url: http://localhost:8080/herramientas/v1
+    description: Desarrollo local
+
+tags:
+  - name: Catálogos
+    description: Datos de referencia de solo lectura.
+  - name: Medición de Distancia
+    description: Herramienta de odómetro GPS (campo 22).
+  - name: Test de Velocidad
+    description: Resultados de speedtest (campo 23).
+  - name: Mapa de Calor WiFi
+    description: Mediciones de potencia de señal WiFi por habitación (campo 24).
+  - name: Ping
+    description: Resultados de pruebas de ping (campo 25).
+  - name: Traceroute
+    description: Resultados de pruebas de traceroute (campo 26).
+  - name: Equipos Retirados
+    description: Registro de equipos retirados o reemplazados (campo 27).
+  - name: Media
+    description: Subida de archivos (fotos de código de barras, etc.).
+  - name: Historial de la Cuenta
+    description: Consulta agregada de los registros de este módulo por cuenta.
+
+paths:
+
+  # ====================================================================
+  # CATÁLOGOS
+  # ====================================================================
+
+  /catalogs/speedtest-servers:
+    get:
+      tags: [Catálogos]
+      summary: Lista de servidores de test de velocidad
+      operationId: listSpeedtestServers
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SpeedtestServer'
+
+  /catalogs/network-servers:
+    get:
+      tags: [Catálogos]
+      summary: Lista de servidores comunes para ping y traceroute
+      operationId: listNetworkServers
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NetworkServer'
+
+  /catalogs/equipment-models:
+    get:
+      tags: [Catálogos]
+      summary: Lista de modelos de equipo
+      description: >
+        Modelos de equipo con el tipo de campo de serie que debe leerse
+        del código de barras (SN, HOST-SN, PON-SN, GPON-SN, D-SN).
+      operationId: listEquipmentModels
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EquipmentModel'
+
+  /catalogs/removal-reasons:
+    get:
+      tags: [Catálogos]
+      summary: Lista de motivos de retiro
+      operationId: listRemovalReasons
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RemovalReason'
+
+  # ====================================================================
+  # HERRAMIENTAS — MEDICIÓN DE DISTANCIA (campo 22)
+  # ====================================================================
+
+  /distance-measurements:
+    get:
+      tags: [Medición de Distancia]
+      summary: Lista de mediciones de distancia
+      operationId: listDistanceMeasurements
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DistanceMeasurement'
+    post:
+      tags: [Medición de Distancia]
+      summary: Registrar una medición de distancia
+      operationId: createDistanceMeasurement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DistanceMeasurementInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistanceMeasurement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /distance-measurements/{id}:
+    get:
+      tags: [Medición de Distancia]
+      summary: Obtener una medición de distancia
+      operationId: getDistanceMeasurement
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistanceMeasurement'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # HERRAMIENTAS — TEST DE VELOCIDAD (campo 23)
+  # ====================================================================
+
+  /speedtests:
+    get:
+      tags: [Test de Velocidad]
+      summary: Lista de tests de velocidad
+      operationId: listSpeedtests
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/ContractIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Speedtest'
+    post:
+      tags: [Test de Velocidad]
+      summary: Registrar un test de velocidad
+      operationId: createSpeedtest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpeedtestInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Speedtest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /speedtests/{id}:
+    get:
+      tags: [Test de Velocidad]
+      summary: Obtener un test de velocidad
+      operationId: getSpeedtest
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Speedtest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # HERRAMIENTAS — MAPA DE CALOR WIFI (campo 24)
+  # ====================================================================
+
+  /wifi-heatmaps:
+    get:
+      tags: [Mapa de Calor WiFi]
+      summary: Lista de mapas de calor WiFi
+      operationId: listWifiHeatmaps
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/WifiHeatmap'
+    post:
+      tags: [Mapa de Calor WiFi]
+      summary: Registrar un mapa de calor WiFi
+      description: >
+        Crea un relevamiento de cobertura WiFi con una o más mediciones
+        por habitación. Si la vivienda tiene un solo piso se usa floor = 1.
+      operationId: createWifiHeatmap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WifiHeatmapInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiHeatmap'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /wifi-heatmaps/{id}:
+    get:
+      tags: [Mapa de Calor WiFi]
+      summary: Obtener un mapa de calor WiFi
+      operationId: getWifiHeatmap
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiHeatmap'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # HERRAMIENTAS — PING (campo 25)
+  # ====================================================================
+
+  /ping-tests:
+    get:
+      tags: [Ping]
+      summary: Lista de pruebas de ping
+      operationId: listPingTests
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PingTest'
+    post:
+      tags: [Ping]
+      summary: Registrar una prueba de ping
+      description: >
+        Almacena el resultado de un ping. Puede asociarse opcionalmente a
+        una habitación de un mapa de calor mediante heatmapId y roomName.
+      operationId: createPingTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PingTestInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PingTest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /ping-tests/{id}:
+    get:
+      tags: [Ping]
+      summary: Obtener una prueba de ping
+      operationId: getPingTest
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PingTest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # HERRAMIENTAS — TRACEROUTE (campo 26)
+  # ====================================================================
+
+  /traceroute-tests:
+    get:
+      tags: [Traceroute]
+      summary: Lista de pruebas de traceroute
+      operationId: listTracerouteTests
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TracerouteTest'
+    post:
+      tags: [Traceroute]
+      summary: Registrar una prueba de traceroute
+      operationId: createTracerouteTest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TracerouteTestInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracerouteTest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /traceroute-tests/{id}:
+    get:
+      tags: [Traceroute]
+      summary: Obtener una prueba de traceroute
+      operationId: getTracerouteTest
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TracerouteTest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # EQUIPOS RETIRADOS (campo 27)
+  # ====================================================================
+
+  /retired-equipment:
+    get:
+      tags: [Equipos Retirados]
+      summary: Lista de equipos retirados
+      operationId: listRetiredEquipment
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberFilter'
+        - $ref: '#/components/parameters/ClientIdFilter'
+        - $ref: '#/components/parameters/VisitIdFilter'
+        - $ref: '#/components/parameters/TechnicianIdFilter'
+        - name: removalReasonCode
+          in: query
+          description: Filtrar por código de motivo de retiro.
+          schema:
+            $ref: '#/components/schemas/RemovalReasonCode'
+        - name: serialValue
+          in: query
+          description: Buscar por número de serie del equipo.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PagedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RetiredEquipment'
+    post:
+      tags: [Equipos Retirados]
+      summary: Registrar un equipo retirado o reemplazado
+      description: >
+        La foto del código de barras se sube previamente con POST /media y
+        aquí se referencia por barcodePhotoId. El número de serie llega ya
+        decodificado por la app (campo a leer definido según el modelo).
+      operationId: createRetiredEquipment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetiredEquipmentInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetiredEquipment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /retired-equipment/{id}:
+    get:
+      tags: [Equipos Retirados]
+      summary: Obtener un equipo retirado
+      operationId: getRetiredEquipment
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetiredEquipment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # MEDIA
+  # ====================================================================
+
+  /media:
+    post:
+      tags: [Media]
+      summary: Subir un archivo
+      description: >
+        Sube una imagen (por ejemplo la foto del código de barras) y
+        devuelve un identificador y una URL para referenciarla luego.
+      operationId: uploadMedia
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Archivo a subir (JPEG o PNG).
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /media/{id}:
+    get:
+      tags: [Media]
+      summary: Obtener metadatos de un archivo
+      operationId: getMedia
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaFile'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # HISTORIAL DE LA CUENTA
+  # ====================================================================
+
+  /accounts/{accountNumber}/tool-history:
+    get:
+      tags: [Historial de la Cuenta]
+      summary: Historial agregado de una cuenta
+      description: >
+        Devuelve, en una sola respuesta, los registros de este módulo
+        asociados a un número de cuenta: mediciones de distancia, tests de
+        velocidad, mapas de calor, pings, traceroutes y equipos retirados.
+      operationId: getAccountToolHistory
+      parameters:
+        - name: accountNumber
+          in: path
+          required: true
+          description: Número de cuenta del cliente.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountToolHistory'
+
+# ======================================================================
+# COMPONENTES
+# ======================================================================
+
+components:
+
+  # --------------------------------------------------------------------
+  # PARÁMETROS REUTILIZABLES
+  # --------------------------------------------------------------------
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      description: Identificador del recurso.
+      schema:
+        type: string
+        format: uuid
+    AccountNumberFilter:
+      name: accountNumber
+      in: query
+      description: Filtrar por número de cuenta del cliente (clave de Fase 1).
+      schema:
+        type: string
+    ClientIdFilter:
+      name: clientId
+      in: query
+      description: Filtrar por cliente (referencia upstream, opcional).
+      schema:
+        type: string
+    ContractIdFilter:
+      name: contractId
+      in: query
+      description: Filtrar por contrato (referencia upstream, opcional).
+      schema:
+        type: string
+    VisitIdFilter:
+      name: visitId
+      in: query
+      description: Filtrar por visita u orden de trabajo (referencia upstream, opcional).
+      schema:
+        type: string
+    TechnicianIdFilter:
+      name: technicianId
+      in: query
+      description: Filtrar por técnico (referencia upstream, opcional).
+      schema:
+        type: string
+    DateFrom:
+      name: dateFrom
+      in: query
+      description: Fecha-hora inicial del rango (ISO 8601).
+      schema:
+        type: string
+        format: date-time
+    DateTo:
+      name: dateTo
+      in: query
+      description: Fecha-hora final del rango (ISO 8601).
+      schema:
+        type: string
+        format: date-time
+    Page:
+      name: page
+      in: query
+      description: Número de página (inicia en 1).
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Cantidad de elementos por página.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  # --------------------------------------------------------------------
+  # RESPUESTAS REUTILIZABLES
+  # --------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: Solicitud inválida.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Recurso no encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  # --------------------------------------------------------------------
+  # ESQUEMAS
+  # --------------------------------------------------------------------
+  schemas:
+
+    # ---- Comunes -----------------------------------------------------
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Código de error legible por máquina.
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          description: Descripción del error legible por humanos.
+          example: El campo accountNumber es obligatorio.
+        details:
+          type: array
+          description: Detalle por campo, cuando aplica.
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              issue:
+                type: string
+
+    PageInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        totalItems:
+          type: integer
+          example: 137
+        totalPages:
+          type: integer
+          example: 7
+
+    PagedResponse:
+      type: object
+      properties:
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        data:
+          type: array
+          items: {}
+
+    GeoPoint:
+      type: object
+      description: Coordenada geográfica.
+      required: [latitude, longitude]
+      properties:
+        latitude:
+          type: number
+          format: double
+          example: -0.180653
+        longitude:
+          type: number
+          format: double
+          example: -78.467834
+
+    ServiceContext:
+      type: object
+      description: >
+        Referencias del registro hacia el cliente y la orden de trabajo.
+        En la Fase 1 la clave práctica es `accountNumber`. Los demás
+        identificadores son opcionales: provendrán de un sistema upstream
+        por definir y en Fase 1 se completan con valores de prueba.
+      required: [accountNumber]
+      properties:
+        accountNumber:
+          type: string
+          description: >
+            Número de cuenta del cliente ingresado por el técnico. Clave
+            práctica de la Fase 1.
+          example: WX-548210
+        clientId:
+          type: string
+          description: >
+            Identificador del cliente. Opcional. Referencia upstream por
+            definir; en Fase 1 es un valor de prueba.
+        contractId:
+          type: string
+          description: >
+            Identificador del contrato. Opcional. En una fase posterior
+            será reemplazado por `taskId`.
+        visitId:
+          type: string
+          description: >
+            Identificador de la visita u orden de trabajo. Opcional.
+            Referencia upstream por definir; en Fase 1 es un valor de prueba.
+        technicianId:
+          type: string
+          description: >
+            Identificador del técnico. Opcional. No hay autenticación en
+            la Fase 1.
+
+    # ---- Catálogos ---------------------------------------------------
+
+    SpeedtestServer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Servidor Quito
+        host:
+          type: string
+          example: quito.speedtest.example.com
+        city:
+          type: string
+          example: Quito
+        location:
+          $ref: '#/components/schemas/GeoPoint'
+        active:
+          type: boolean
+          default: true
+
+    NetworkServer:
+      type: object
+      description: Servidor común sugerido para pruebas de ping y traceroute.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: Google DNS
+        target:
+          type: string
+          description: IP o URL del servidor.
+          example: 8.8.8.8
+        type:
+          type: string
+          enum: [DNS, GATEWAY, CDN, GENERIC]
+        active:
+          type: boolean
+          default: true
+
+    EquipmentSerialFieldType:
+      type: string
+      description: >
+        Campo del código de barras que debe leerse como número de serie
+        según el modelo de equipo.
+      enum: [SN, HOST-SN, PON-SN, GPON-SN, D-SN]
+
+    EquipmentCategory:
+      type: string
+      enum: [DECODIFICADOR, DECODIFICADOR_HD, MTA, ONU, ONT, ROUTER]
+
+    EquipmentModel:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: ONT Huawei OptiXstar
+        category:
+          $ref: '#/components/schemas/EquipmentCategory'
+        serialFieldType:
+          $ref: '#/components/schemas/EquipmentSerialFieldType'
+        brand:
+          type: string
+          example: Huawei
+        active:
+          type: boolean
+          default: true
+
+    RemovalReasonCode:
+      type: string
+      description: Código del motivo de retiro de un equipo.
+      enum:
+        - DANO_FISICO
+        - NO_ENCIENDE
+        - PUERTO_DANADO
+        - EQUIPO_INHIBIDO
+        - NO_DA_SERVICIO
+        - NO_SE_APROVISIONA
+        - EQUIPO_OK_CANCELACION
+        - OTROS
+
+    RemovalReason:
+      type: object
+      properties:
+        code:
+          $ref: '#/components/schemas/RemovalReasonCode'
+        label:
+          type: string
+          example: Puerto LAN o RF dañado (no da conectividad)
+        active:
+          type: boolean
+          default: true
+
+    MediaFile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        contentType:
+          type: string
+          example: image/jpeg
+        sizeBytes:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    # ---- Medición de distancia (campo 22) ----------------------------
+
+    DistanceMeasurementInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required: [distanceMeters, measuredAt]
+          properties:
+            distanceMeters:
+              type: number
+              format: double
+              description: Distancia recorrida del punto A al punto B, en metros.
+              example: 142.7
+            startPoint:
+              $ref: '#/components/schemas/GeoPoint'
+            endPoint:
+              $ref: '#/components/schemas/GeoPoint'
+            measuredAt:
+              type: string
+              format: date-time
+            notes:
+              type: string
+
+    DistanceMeasurement:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/DistanceMeasurementInput'
+
+    # ---- Test de velocidad (campo 23) --------------------------------
+
+    SpeedtestInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required: [downloadMbps, uploadMbps, measuredAt]
+          properties:
+            downloadMbps:
+              type: number
+              format: double
+              example: 185.4
+            uploadMbps:
+              type: number
+              format: double
+              example: 92.1
+            latencyMs:
+              type: number
+              format: double
+              example: 11.3
+            jitterMs:
+              type: number
+              format: double
+              example: 1.8
+            packetLossPercent:
+              type: number
+              format: double
+              example: 0
+            serverId:
+              type: string
+            serverName:
+              type: string
+            ispName:
+              type: string
+            measuredAt:
+              type: string
+              format: date-time
+            notes:
+              type: string
+
+    Speedtest:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/SpeedtestInput'
+
+    # ---- Mapa de calor WiFi (campo 24) -------------------------------
+
+    HeatmapRoomInput:
+      type: object
+      required: [roomName, signalDbm, measuredAt]
+      properties:
+        roomName:
+          type: string
+          example: Dormitorio principal
+        floor:
+          type: integer
+          description: Piso de la habitación. Usar 1 si la vivienda tiene un solo piso.
+          default: 1
+          example: 2
+        signalDbm:
+          type: number
+          format: double
+          description: Potencia de señal WiFi en dBm (valor típicamente negativo).
+          example: -58
+        measuredAt:
+          type: string
+          format: date-time
+        notes:
+          type: string
+
+    HeatmapRoom:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+        - $ref: '#/components/schemas/HeatmapRoomInput'
+
+    WifiHeatmapInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required: [rooms]
+          properties:
+            label:
+              type: string
+            rooms:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/components/schemas/HeatmapRoomInput'
+            notes:
+              type: string
+
+    WifiHeatmap:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          properties:
+            label:
+              type: string
+            rooms:
+              type: array
+              items:
+                $ref: '#/components/schemas/HeatmapRoom'
+            notes:
+              type: string
+
+    # ---- Ping (campo 25) ---------------------------------------------
+
+    PingTestInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required: [target, measuredAt]
+          properties:
+            target:
+              type: string
+              description: IP o URL a la que se ejecutó el ping.
+              example: 8.8.8.8
+            serverId:
+              type: string
+            packetsSent:
+              type: integer
+              example: 10
+            packetsReceived:
+              type: integer
+              example: 10
+            packetLossPercent:
+              type: number
+              format: double
+              example: 0
+            minLatencyMs:
+              type: number
+              format: double
+            avgLatencyMs:
+              type: number
+              format: double
+            maxLatencyMs:
+              type: number
+              format: double
+            continuous:
+              type: boolean
+              default: false
+            heatmapId:
+              type: string
+              format: uuid
+              description: Mapa de calor al que se asocia este ping, si aplica.
+            roomName:
+              type: string
+            measuredAt:
+              type: string
+              format: date-time
+            notes:
+              type: string
+
+    PingTest:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/PingTestInput'
+
+    # ---- Traceroute (campo 26) ---------------------------------------
+
+    TracerouteHop:
+      type: object
+      required: [hopNumber]
+      properties:
+        hopNumber:
+          type: integer
+          example: 3
+        host:
+          type: string
+          description: Host o IP del salto. Nulo si el salto no respondió.
+          example: 10.0.0.1
+        latencyMs:
+          type: number
+          format: double
+
+    TracerouteTestInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required: [target, hops, measuredAt]
+          properties:
+            target:
+              type: string
+              example: www.example.com
+            serverId:
+              type: string
+            hops:
+              type: array
+              items:
+                $ref: '#/components/schemas/TracerouteHop'
+            measuredAt:
+              type: string
+              format: date-time
+            notes:
+              type: string
+
+    TracerouteTest:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/TracerouteTestInput'
+
+    # ---- Equipos retirados (campo 27) --------------------------------
+
+    RetiredEquipmentInput:
+      allOf:
+        - $ref: '#/components/schemas/ServiceContext'
+        - type: object
+          required:
+            - equipmentModelId
+            - serialValue
+            - removalReasonCode
+            - retiredAt
+          properties:
+            equipmentModelId:
+              type: string
+              description: Modelo del equipo retirado (ver catálogo de modelos).
+            serialValue:
+              type: string
+              description: Número de serie ya decodificado por la app.
+              example: 48575443A1B2C3D4
+            barcodePhotoId:
+              type: string
+              format: uuid
+              description: Identificador de la foto del código de barras (ver POST /media).
+            removalReasonCode:
+              $ref: '#/components/schemas/RemovalReasonCode'
+            observations:
+              type: string
+            retiredAt:
+              type: string
+              format: date-time
+
+    RetiredEquipment:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/RetiredEquipmentInput'
+        - type: object
+          properties:
+            serialFieldType:
+              $ref: '#/components/schemas/EquipmentSerialFieldType'
+            barcodePhotoUrl:
+              type: string
+              format: uri
+              description: URL de la foto, resuelta desde barcodePhotoId.
+
+    # ---- Historial de la cuenta --------------------------------------
+
+    AccountToolHistory:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        distanceMeasurements:
+          type: array
+          items:
+            $ref: '#/components/schemas/DistanceMeasurement'
+        speedtests:
+          type: array
+          items:
+            $ref: '#/components/schemas/Speedtest'
+        wifiHeatmaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/WifiHeatmap'
+        pingTests:
+          type: array
+          items:
+            $ref: '#/components/schemas/PingTest'
+        tracerouteTests:
+          type: array
+          items:
+            $ref: '#/components/schemas/TracerouteTest'
+        retiredEquipment:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetiredEquipment'

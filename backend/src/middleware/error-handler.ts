@@ -1,0 +1,90 @@
+import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+
+export type ApiErrorCode =
+  | 'VALIDATION_ERROR'
+  | 'NOT_FOUND'
+  | 'CATALOG_ITEM_NOT_FOUND'
+  | 'MEDIA_NOT_FOUND'
+  | 'INTERNAL_ERROR';
+
+export interface ApiErrorDetail {
+  field: string;
+  issue: string;
+}
+
+export interface ApiErrorBody {
+  code: ApiErrorCode;
+  message: string;
+  details?: ApiErrorDetail[];
+}
+
+export class ApiError extends Error {
+  public readonly code: ApiErrorCode;
+  public readonly statusCode: number;
+  public readonly details?: ApiErrorDetail[];
+
+  constructor(
+    code: ApiErrorCode,
+    statusCode: number,
+    message: string,
+    details?: ApiErrorDetail[],
+  ) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = code;
+    this.statusCode = statusCode;
+    this.details = details;
+  }
+
+  static validation(message: string, details?: ApiErrorDetail[]): ApiError {
+    return new ApiError('VALIDATION_ERROR', 400, message, details);
+  }
+
+  static notFound(message = 'Recurso no encontrado.'): ApiError {
+    return new ApiError('NOT_FOUND', 404, message);
+  }
+
+  static catalogItemNotFound(message = 'Elemento de catálogo no encontrado.'): ApiError {
+    return new ApiError('CATALOG_ITEM_NOT_FOUND', 404, message);
+  }
+
+  static mediaNotFound(message = 'Archivo de media no encontrado.'): ApiError {
+    return new ApiError('MEDIA_NOT_FOUND', 404, message);
+  }
+}
+
+export function registerErrorHandler(app: FastifyInstance): void {
+  app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
+    if (error instanceof ApiError) {
+      const body: ApiErrorBody = {
+        code: error.code,
+        message: error.message,
+        ...(error.details ? { details: error.details } : {}),
+      };
+      return reply.code(error.statusCode).send(body);
+    }
+
+    if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+      const body: ApiErrorBody = {
+        code: 'VALIDATION_ERROR',
+        message: error.message || 'Solicitud inválida.',
+      };
+      return reply.code(error.statusCode).send(body);
+    }
+
+    request.log.error({ err: error }, 'Error interno no controlado');
+    const body: ApiErrorBody = {
+      code: 'INTERNAL_ERROR',
+      message: 'Ocurrió un error interno. Intente nuevamente más tarde.',
+    };
+    return reply.code(500).send(body);
+  });
+
+  app.setNotFoundHandler((_request, reply) => {
+    const body: ApiErrorBody = {
+      code: 'NOT_FOUND',
+      message: 'Ruta no encontrada.',
+    };
+    return reply.code(404).send(body);
+  });
+}

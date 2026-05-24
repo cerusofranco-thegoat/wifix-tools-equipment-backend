@@ -1,0 +1,13 @@
+# Variables locales
+.env
+.env.local
+.env.*.local
+
+# Editor / SO
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+
+# Logs
+*.log

@@ -51,7 +51,13 @@ fase. Las casillas marcadas indican entregables verificados.
 - [x] `location` en speedtest-servers solo cuando hay coordenadas.
 - [x] 4 pruebas de integración contra Postgres real.
 
-### Fase A4 — Media · ⏳ Pendiente
+### Fase A4 — Media · ✅ Completada (2026-05-24)
+- [x] `src/lib/storage.ts` — adaptador S3-compatible (`@aws-sdk/client-s3`,
+      `forcePathStyle` para MinIO). `uploadObject` y `objectExists`.
+- [x] Módulo media: routes/service/repository/mappers.
+- [x] `POST /media` (multipart) valida tipo (jpeg/png) y tamaño (10 MB).
+- [x] `GET /media/{id}` con UUID validado.
+- [x] 4 pruebas de integración contra MinIO + Postgres.
 
 ### Fase A5 — Herramientas · ⏳ Pendiente
 

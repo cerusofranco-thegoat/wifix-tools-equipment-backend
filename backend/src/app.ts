@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerCatalogsRoutes } from './modules/catalogs/catalogs.routes.js';
+import { registerMediaRoutes } from './modules/media/media.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -60,6 +61,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }));
 
       await registerCatalogsRoutes(api);
+      await registerMediaRoutes(api);
     },
     { prefix: API_PREFIX },
   );

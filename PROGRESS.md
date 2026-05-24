@@ -93,7 +93,16 @@ fase. Las casillas marcadas indican entregables verificados.
       según el campo natural de cada tipo (measuredAt/createdAt/retiredAt).
 - [x] 2 pruebas integradas: cuenta con los 6 tipos + filtro de fecha.
 
-### Fase A8 — Pruebas y cierre del backend · ⏳ Pendiente
+### Fase A8 — Pruebas y cierre del backend · ✅ Completada (2026-05-24)
+- [x] **40 pruebas en 8 archivos** (todas verdes):
+      pagination (9), validation (3), error-handler (6), catalogs (4),
+      media (4), tools (7), retired-equipment (5), account-history (2).
+- [x] `npm run build` produce `dist/` sin errores.
+- [x] `npm run lint` limpio.
+- [x] `README.md` completo: stack, puesta en marcha, endpoints, reglas
+      de negocio, códigos de error, scripts, estructura, almacenamiento,
+      variables de entorno y guía de pruebas.
+- [x] Criterios de aceptación de backend (SPEC §18) cumplidos.
 
 ---
 

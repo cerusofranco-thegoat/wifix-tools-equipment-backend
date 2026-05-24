@@ -1,4 +1,5 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { ZodError } from 'zod';
 
 export type ApiErrorCode =
   | 'VALIDATION_ERROR'
@@ -62,6 +63,19 @@ export function registerErrorHandler(app: FastifyInstance): void {
         ...(error.details ? { details: error.details } : {}),
       };
       return reply.code(error.statusCode).send(body);
+    }
+
+    if (error instanceof ZodError) {
+      const details: ApiErrorDetail[] = error.issues.map((issue) => ({
+        field: issue.path.length ? issue.path.map(String).join('.') : '(raíz)',
+        issue: issue.message,
+      }));
+      const body: ApiErrorBody = {
+        code: 'VALIDATION_ERROR',
+        message: 'Los datos de la solicitud contienen errores de validación.',
+        details,
+      };
+      return reply.code(400).send(body);
     }
 
     if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {

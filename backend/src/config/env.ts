@@ -23,7 +23,7 @@ if (!parsed.success) {
     .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
     .join('\n');
   // Reportar y abortar el arranque si la configuración es inválida.
-  // eslint-disable-next-line no-console
+   
   console.error(`Configuración de entorno inválida:\n${issues}`);
   process.exit(1);
 }

@@ -30,7 +30,19 @@ fase. Las casillas marcadas indican entregables verificados.
   npm run prisma:seed` corre sin error; segunda corrida del seed mantiene los
   mismos conteos (idempotente).
 
-### Fase A2 — Middleware base (Zod + paginación) · ⏳ Pendiente
+### Fase A2 — Middleware base (Zod + paginación) · ✅ Completada (2026-05-24)
+- [x] `src/lib/validation.ts`: `parseBody/parseQuery/parseParams` convierten
+      `ZodError` en `ApiError(VALIDATION_ERROR)` con `details[].field/issue`.
+- [x] `src/lib/pagination.ts`: `paginationSchema` (defaults SPEC §10: page≥1,
+      pageSize 1..100 default 20), `toSkipTake`, `toPageInfo`, `toPagedResponse`.
+- [x] `src/lib/datetime.ts`: helper para validar `measuredAt`/`retiredAt` no
+      futuras con tolerancia de 5 min (SPEC §10).
+- [x] Error handler refinado: captura `ZodError` no envuelto y produce el
+      mismo formato `Error` del OpenAPI.
+- [x] Vitest configurado; ESLint v9 (flat config) limpio.
+- [x] 18 pruebas: validación, paginación, e integración del handler
+      verificando que una ruta de prueba responde con el esquema `Error`.
+- **Verificación:** `npm test` → 18/18 ✓. `npm run lint` → sin errores.
 
 ### Fase A3 — Catálogos · ⏳ Pendiente
 

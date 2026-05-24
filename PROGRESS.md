@@ -135,4 +135,17 @@ fase. Las casillas marcadas indican entregables verificados.
 
 ---
 
-## PARTE C — Integración · ⏳ Pendiente
+## PARTE C — Integración · ✅ Completada (2026-05-24)
+- [x] Backend levantado en `http://localhost:8080` (compilado a `dist/`,
+      ejecutado con `node dist/src/server.js`).
+- [x] Frontend `api.js` ya estructurado para alternar mock/real con
+      `WifixAPI.useRealApi = true` (un único punto de cambio).
+- [x] **Flujo end-to-end verificado** (los 6 POSTs respondieron 201,
+      el historial agregado devuelve los 6 registros de la cuenta):
+      - distance-measurements: HTTP 201
+      - speedtests: HTTP 201
+      - wifi-heatmaps: HTTP 201
+      - ping-tests: HTTP 201
+      - traceroute-tests: HTTP 201
+      - retired-equipment: HTTP 201
+      - `GET /accounts/{accountNumber}/tool-history` → 6 registros

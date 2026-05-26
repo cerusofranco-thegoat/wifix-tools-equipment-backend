@@ -22,9 +22,15 @@ info:
 
     AUTENTICACIÓN
     ----------------------------------------------------------------------
-    La Fase 1 NO tiene autenticación: los endpoints son abiertos. El
-    esquema de seguridad (JWT u otro) se incorporará en una fase
-    posterior.
+    La app tiene login propio. POST /auth/login devuelve un JWT que el
+    resto de endpoints exige en el header Authorization: Bearer.
+
+    DATOS DE SISTEMAS EXTERNOS (MOCKUP)
+    ----------------------------------------------------------------------
+    Los campos que provienen de sistemas de la operadora (Comarch/TYTAN,
+    FSM, ISP Monitor, ACS, TEC, RMS) se sirven en esta etapa con datos
+    simulados, para demostrar y probar la app. El contrato no cambia
+    cuando se conecten las APIs reales.
   version: 1.0.0
   contact:
     name: Tulpa Solutions S.A.S.
@@ -54,8 +60,63 @@ tags:
     description: Subida de archivos (fotos de código de barras, etc.).
   - name: Historial de la Cuenta
     description: Consulta agregada de los registros de este módulo por cuenta.
+  - name: Autenticación
+    description: Login de la app y emisión de token.
+  - name: Datos del Cliente
+    description: Perfil, status y actualización de datos del cliente (campos 1-5, 7).
+  - name: Diagnóstico de Red
+    description: NAPs, métricas de red, eventos del nodo y red local (campos 6, 8-14, 19-21).
+  - name: Tareas y Visitas
+    description: Tareas insatisfactorias y visitas anteriores (campos 15-16).
+
+security:
+  - bearerAuth: []
 
 paths:
+
+  # ====================================================================
+  # AUTENTICACIÓN
+  # ====================================================================
+
+  /auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión
+      description: Valida correo y contraseña y devuelve un JWT.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/me:
+    get:
+      tags: [Autenticación]
+      summary: Datos del usuario autenticado
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ====================================================================
   # CATÁLOGOS
@@ -640,11 +701,328 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccountToolHistory'
 
+  # ====================================================================
+  # DATOS DEL CLIENTE (campos 1-5, 7)
+  # ====================================================================
+
+  /accounts/{accountNumber}/client-profile:
+    parameters:
+      - $ref: '#/components/parameters/AccountNumberPath'
+    get:
+      tags: [Datos del Cliente]
+      summary: Perfil del cliente
+      description: >
+        Nombres, dirección, teléfonos, plan y velocidad contratada
+        (campos 1, 2, 3, 5). Origen real: Comarch/TYTAN e ISP Monitor.
+      operationId: getClientProfile
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Datos del Cliente]
+      summary: Actualizar datos del cliente
+      description: >
+        Módulo de actualización de datos (campo 4). Origen real:
+        Comarch/TYTAN.
+      operationId: updateClientProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientProfileUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /accounts/{accountNumber}/contract-status:
+    get:
+      tags: [Datos del Cliente]
+      summary: Status del cliente por contrato/cuenta
+      description: >
+        Nombre del cliente y status de cada cuenta: activa, suspendida o
+        terminada (campo 7). Origen real: Comarch/TYTAN.
+      operationId: getContractStatus
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # DIAGNÓSTICO DE RED (campos 6, 8-14, 19-21)
+  # ====================================================================
+
+  /accounts/{accountNumber}/nearby-naps:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: NAPs cercanas
+      description: >
+        NAPs cercanas con distancia en metros y puertos ocupados
+        (campo 6). Origen real: TEC / registro GPON.
+      operationId: getNearbyNaps
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NearbyNap'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /naps/{napCode}/ports:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Puertos ocupados por NAP
+      description: >
+        Clientes por puerto de la NAP, con su status A (activo) o S
+        (suspendido) (campo 8). El napCode se obtiene de la foto del
+        código de la NAP, decodificada en la app. Origen real: TEC.
+      operationId: getNapPorts
+      parameters:
+        - name: napCode
+          in: path
+          required: true
+          description: Código de la NAP.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NapPorts'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /accounts/{accountNumber}/network-metrics:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Métricas de red del cliente
+      description: >
+        Niveles de señal RX/TX (GPON y HFC), señal a ruido (HFC), FEC
+        corregidos y sin corregir (HFC), caídas en 24 horas y tráfico de
+        internet (campos 9-13). Origen real: ISP Monitor.
+      operationId: getNetworkMetrics
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkMetrics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /accounts/{accountNumber}/node-events:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Daños (eventos) en el nodo
+      description: >
+        Eventos o daños del nodo que da servicio a la cuenta (campo 14).
+        Origen real: RMS.
+      operationId: getNodeEvents
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NodeEvent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{accountNumber}/lan-devices:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Equipos en la red local (tabla DHCP)
+      description: >
+        Lista de equipos conectados en la red local del cliente
+        (campo 19). Origen real: ISP / ACS.
+      operationId: getLanDevices
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LanDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{accountNumber}/wifi-devices:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Dispositivos conectados por WiFi
+      description: >
+        Dispositivos conectados por WiFi en cada banda (2.4 y 5 GHz) con
+        su nivel de señal (campo 20). Origen real: ISP / ACS.
+      operationId: getWifiDevices
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WifiDevice'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{accountNumber}/wifi-config:
+    parameters:
+      - $ref: '#/components/parameters/AccountNumberPath'
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Configuración WiFi actual
+      operationId: getWifiConfig
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Diagnóstico de Red]
+      summary: Cambiar SSID y contraseña
+      description: >
+        Cambia el SSID y la contraseña del WiFi del cliente (campo 21).
+        Operación sensible. Origen real: ACS.
+      operationId: updateWifiConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WifiConfigUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ====================================================================
+  # TAREAS Y VISITAS (campos 15-16)
+  # ====================================================================
+
+  /accounts/{accountNumber}/unsatisfactory-tasks:
+    get:
+      tags: [Tareas y Visitas]
+      summary: Observaciones de cierre de tareas insatisfactorias
+      description: >
+        Tareas insatisfactorias previas con fecha/hora, motivo y
+        observación de cierre (campo 15). Origen real: FSM.
+      operationId: getUnsatisfactoryTasks
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClosedTask'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{accountNumber}/previous-visits:
+    get:
+      tags: [Tareas y Visitas]
+      summary: Motivos y observaciones de visitas anteriores
+      description: >
+        Visitas anteriores con fecha/hora, motivo y observación de cierre
+        (campo 16). Origen real: FSM.
+      operationId: getPreviousVisits
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ClosedTask'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
 # ======================================================================
 # COMPONENTES
 # ======================================================================
 
 components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT emitido por POST /auth/login.
 
   # --------------------------------------------------------------------
   # PARÁMETROS REUTILIZABLES
@@ -658,6 +1036,13 @@ components:
       schema:
         type: string
         format: uuid
+    AccountNumberPath:
+      name: accountNumber
+      in: path
+      required: true
+      description: Número de cuenta del cliente.
+      schema:
+        type: string
     AccountNumberFilter:
       name: accountNumber
       in: query
@@ -726,6 +1111,12 @@ components:
   responses:
     BadRequest:
       description: Solicitud inválida.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Token ausente, inválido o expirado / credenciales incorrectas.
       content:
         application/json:
           schema:
@@ -1308,3 +1699,300 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RetiredEquipment'
+
+    # ---- Autenticación -----------------------------------------------
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: franco@tulpasolutions.com
+        password:
+          type: string
+          format: password
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT para el header Authorization Bearer.
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        active:
+          type: boolean
+
+    # ---- Datos del cliente (campos 1-5, 7) ---------------------------
+
+    ClientProfile:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        fullName:
+          type: string
+          description: Nombres y apellidos (campo 1).
+        address:
+          type: string
+          description: Dirección (campo 2).
+        phones:
+          type: array
+          description: Teléfonos (campo 3).
+          items:
+            type: string
+        planName:
+          type: string
+        contractedDownloadMbps:
+          type: number
+          format: double
+          description: Velocidad de descarga contratada (campo 5).
+        contractedUploadMbps:
+          type: number
+          format: double
+          description: Velocidad de subida contratada (campo 5).
+
+    ClientProfileUpdate:
+      type: object
+      description: Campos editables del módulo de actualización de datos (campo 4).
+      properties:
+        fullName:
+          type: string
+        address:
+          type: string
+        phones:
+          type: array
+          items:
+            type: string
+
+    AccountStatus:
+      type: string
+      enum: [ACTIVA, SUSPENDIDA, TERMINADA]
+
+    ContractStatus:
+      type: object
+      properties:
+        clientName:
+          type: string
+        accounts:
+          type: array
+          items:
+            type: object
+            properties:
+              accountNumber:
+                type: string
+              contractId:
+                type: string
+              status:
+                $ref: '#/components/schemas/AccountStatus'
+
+    # ---- Diagnóstico de red (campos 6, 8-14, 19-21) ------------------
+
+    NearbyNap:
+      type: object
+      properties:
+        napCode:
+          type: string
+        distanceMeters:
+          type: number
+          format: double
+        occupiedPorts:
+          type: integer
+        totalPorts:
+          type: integer
+
+    NapPort:
+      type: object
+      properties:
+        portNumber:
+          type: integer
+        occupied:
+          type: boolean
+        clientAccountNumber:
+          type: string
+          description: Cuenta del cliente en el puerto, si está ocupado.
+        clientStatus:
+          type: string
+          description: A (activo) o S (suspendido).
+          enum: [A, S]
+
+    NapPorts:
+      type: object
+      properties:
+        napCode:
+          type: string
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/NapPort'
+
+    SignalLevels:
+      type: object
+      description: Niveles de señal RX y TX.
+      properties:
+        rxDbm:
+          type: number
+          format: double
+        txDbm:
+          type: number
+          format: double
+
+    NetworkMetrics:
+      type: object
+      description: Métricas de red del cliente (campos 9-13).
+      properties:
+        accountNumber:
+          type: string
+        technology:
+          type: string
+          enum: [GPON, HFC]
+        signalLevels:
+          $ref: '#/components/schemas/SignalLevels'
+        signalToNoiseDb:
+          type: number
+          format: double
+          description: Señal a ruido, solo HFC (campo 10).
+        fecCorrectedPercent:
+          type: number
+          format: double
+          description: FEC corregidos, solo HFC (campo 11).
+        fecUncorrectedPercent:
+          type: number
+          format: double
+          description: FEC sin corregir, solo HFC (campo 11).
+        outagesLast24h:
+          type: integer
+          description: Caídas en las últimas 24 horas (campo 12).
+        trafficMbpsIn:
+          type: number
+          format: double
+          description: Tráfico de entrada (campo 13).
+        trafficMbpsOut:
+          type: number
+          format: double
+          description: Tráfico de salida (campo 13).
+        measuredAt:
+          type: string
+          format: date-time
+
+    NodeEvent:
+      type: object
+      properties:
+        type:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [RESUELTO, PENDIENTE, FALLA]
+        occurredAt:
+          type: string
+          format: date-time
+
+    LanDevice:
+      type: object
+      description: Equipo en la tabla DHCP (campo 19).
+      properties:
+        hostname:
+          type: string
+        ipAddress:
+          type: string
+        macAddress:
+          type: string
+        leaseExpiresAt:
+          type: string
+          format: date-time
+
+    WifiDevice:
+      type: object
+      description: Dispositivo conectado por WiFi (campo 20).
+      properties:
+        hostname:
+          type: string
+        macAddress:
+          type: string
+        band:
+          type: string
+          enum: ['2.4GHz', '5GHz']
+        signalDbm:
+          type: number
+          format: double
+
+    WifiBandConfig:
+      type: object
+      properties:
+        band:
+          type: string
+          enum: ['2.4GHz', '5GHz']
+        ssid:
+          type: string
+
+    WifiConfig:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        bands:
+          type: array
+          items:
+            $ref: '#/components/schemas/WifiBandConfig'
+
+    WifiConfigUpdate:
+      type: object
+      description: Cambio de SSID y contraseña (campo 21).
+      required: [bands]
+      properties:
+        bands:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [band, ssid]
+            properties:
+              band:
+                type: string
+                enum: ['2.4GHz', '5GHz']
+              ssid:
+                type: string
+              password:
+                type: string
+                format: password
+                description: Nueva contraseña. Omitir para no cambiarla.
+
+    # ---- Tareas y visitas (campos 15-16) -----------------------------
+
+    ClosedTask:
+      type: object
+      description: Tarea o visita cerrada, con su observación de cierre.
+      properties:
+        taskId:
+          type: string
+          example: TASK/294328/2026
+        occurredAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          description: Motivo.
+        closingNotes:
+          type: string
+          description: Observación de cierre.
+        technician:
+          type: string
+        result:
+          type: string
+          enum: [SATISFACTORIA, INSATISFACTORIA, PENDIENTE]

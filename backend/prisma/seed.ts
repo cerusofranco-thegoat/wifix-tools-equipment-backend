@@ -1,4 +1,4 @@
-// Seed de catálogos — Fase A1.
+// Seed de catálogos + usuario inicial — Fase A1 / A1δ (autenticación).
 // Idempotente: usa upsert para que correrlo varias veces no rompa.
 import {
   PrismaClient,
@@ -7,8 +7,13 @@ import {
   RemovalReasonCode,
   NetworkServerType,
 } from '@prisma/client';
+import bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
+
+const SEED_USER_EMAIL = process.env.SEED_USER_EMAIL ?? 'franco@tulpasolutions.com';
+const SEED_USER_PASSWORD = process.env.SEED_USER_PASSWORD ?? 'wifix-dev-2026';
+const SEED_USER_NAME = process.env.SEED_USER_NAME ?? 'Franco Ceruso';
 
 interface EquipmentModelSeed {
   name: string;
@@ -75,6 +80,19 @@ const networkServers: NetworkServerSeed[] = [
 ];
 
 async function main(): Promise<void> {
+  console.log('Sembrando usuario inicial...');
+  const passwordHash = await bcrypt.hash(SEED_USER_PASSWORD, 10);
+  await prisma.user.upsert({
+    where: { email: SEED_USER_EMAIL },
+    update: { name: SEED_USER_NAME, passwordHash, active: true },
+    create: {
+      email: SEED_USER_EMAIL,
+      name: SEED_USER_NAME,
+      passwordHash,
+      active: true,
+    },
+  });
+
   console.log('Sembrando catálogo de equipos...');
   for (const m of equipmentModels) {
     const existing = await prisma.equipmentModel.findFirst({ where: { name: m.name } });
@@ -152,12 +170,13 @@ async function main(): Promise<void> {
   }
 
   const counts = {
+    users: await prisma.user.count(),
     equipmentModels: await prisma.equipmentModel.count(),
     removalReasons: await prisma.removalReason.count(),
     speedtestServers: await prisma.speedtestServer.count(),
     networkServers: await prisma.networkServer.count(),
   };
-  console.log('Catálogos poblados:', counts);
+  console.log('Datos poblados:', counts);
 }
 
 main()

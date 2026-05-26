@@ -11,3 +11,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Wifix App raíz — sólo orquesta SPEC + OpenAPI + PROGRESS;
+# el código vive en backend/ y wifix-webapp/ (cada uno con su propio repo).
+/node_modules/
+/package.json
+/package-lock.json
+/wifix-webapp/

@@ -8,10 +8,12 @@ import { buildMultipart } from '../helpers/multipart.js';
 import { prisma } from '../../src/db/prisma.js';
 
 let app: FastifyInstance;
+let authHeaders: Record<string, string>;
 
 beforeAll(async () => {
-  app = await buildTestApp();
-  await app.ready();
+  const ctx = await buildTestApp();
+  app = ctx.app;
+  authHeaders = ctx.authHeaders;
 });
 
 afterAll(async () => {
@@ -36,7 +38,7 @@ describe('POST /media + GET /media/{id}', () => {
     const upload = await app.inject({
       method: 'POST',
       url: '/herramientas/v1/media',
-      headers: { 'content-type': multipart.contentType },
+      headers: { ...authHeaders, 'content-type': multipart.contentType },
       payload: multipart.body,
     });
 
@@ -57,6 +59,7 @@ describe('POST /media + GET /media/{id}', () => {
     const lookup = await app.inject({
       method: 'GET',
       url: `/herramientas/v1/media/${dto.id}`,
+      headers: authHeaders,
     });
     expect(lookup.statusCode).toBe(200);
     const fetched = lookup.json();
@@ -75,7 +78,7 @@ describe('POST /media + GET /media/{id}', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/herramientas/v1/media',
-      headers: { 'content-type': multipart.contentType },
+      headers: { ...authHeaders, 'content-type': multipart.contentType },
       payload: multipart.body,
     });
     expect(res.statusCode).toBe(400);
@@ -87,6 +90,7 @@ describe('POST /media + GET /media/{id}', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/herramientas/v1/media/00000000-0000-4000-8000-000000000000',
+      headers: authHeaders,
     });
     expect(res.statusCode).toBe(404);
     const body = res.json();
@@ -94,7 +98,11 @@ describe('POST /media + GET /media/{id}', () => {
   });
 
   it('responde VALIDATION_ERROR con 400 cuando el id no es UUID', async () => {
-    const res = await app.inject({ method: 'GET', url: '/herramientas/v1/media/no-es-uuid' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/herramientas/v1/media/no-es-uuid',
+      headers: authHeaders,
+    });
     expect(res.statusCode).toBe(400);
     expect(res.json().code).toBe('VALIDATION_ERROR');
   });

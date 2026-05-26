@@ -2,12 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { parseBody, parseParams, parseQuery } from '../../../lib/validation.js';
 import { uuidParamSchema } from '../../../schemas/common.js';
 import { listFiltersSchema } from '../../../schemas/filters.js';
+import { getAuthUser } from '../../../middleware/authenticate.js';
 import { distanceInputSchema } from './distance.schemas.js';
 import { distanceService } from './distance.service.js';
 
 export async function registerDistanceRoutes(app: FastifyInstance): Promise<void> {
   app.post('/distance-measurements', async (request, reply) => {
     const body = parseBody(distanceInputSchema, request.body);
+    body.technicianId = getAuthUser(request).id;
     const dto = await distanceService.create(body);
     return reply.code(201).send(dto);
   });

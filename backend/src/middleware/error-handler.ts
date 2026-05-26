@@ -3,9 +3,11 @@ import { ZodError } from 'zod';
 
 export type ApiErrorCode =
   | 'VALIDATION_ERROR'
+  | 'UNAUTHORIZED'
   | 'NOT_FOUND'
   | 'CATALOG_ITEM_NOT_FOUND'
   | 'MEDIA_NOT_FOUND'
+  | 'CONNECTOR_ERROR'
   | 'INTERNAL_ERROR';
 
 export interface ApiErrorDetail {
@@ -51,6 +53,14 @@ export class ApiError extends Error {
 
   static mediaNotFound(message = 'Archivo de media no encontrado.'): ApiError {
     return new ApiError('MEDIA_NOT_FOUND', 404, message);
+  }
+
+  static unauthorized(message = 'No autorizado.'): ApiError {
+    return new ApiError('UNAUTHORIZED', 401, message);
+  }
+
+  static connectorError(message = 'Error consultando un sistema externo.'): ApiError {
+    return new ApiError('CONNECTOR_ERROR', 502, message);
   }
 }
 

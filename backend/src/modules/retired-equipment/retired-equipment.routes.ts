@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { parseBody, parseParams, parseQuery } from '../../lib/validation.js';
 import { uuidParamSchema } from '../../schemas/common.js';
+import { getAuthUser } from '../../middleware/authenticate.js';
 import {
   retiredEquipmentInputSchema,
   retiredEquipmentFiltersSchema,
@@ -10,6 +11,7 @@ import { retiredEquipmentService } from './retired-equipment.service.js';
 export async function registerRetiredEquipmentRoutes(app: FastifyInstance): Promise<void> {
   app.post('/retired-equipment', async (request, reply) => {
     const body = parseBody(retiredEquipmentInputSchema, request.body);
+    body.technicianId = getAuthUser(request).id;
     const dto = await retiredEquipmentService.create(body);
     return reply.code(201).send(dto);
   });

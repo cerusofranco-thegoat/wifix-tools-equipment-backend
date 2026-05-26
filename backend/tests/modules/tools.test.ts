@@ -5,13 +5,15 @@ import { buildTestApp } from '../helpers/test-app.js';
 import { prisma } from '../../src/db/prisma.js';
 
 let app: FastifyInstance;
+let authHeaders: Record<string, string>;
 const PREFIX = '/herramientas/v1';
 const acct = () => `WX-TEST-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 const now = () => new Date().toISOString();
 
 beforeAll(async () => {
-  app = await buildTestApp();
-  await app.ready();
+  const ctx = await buildTestApp();
+  app = ctx.app;
+  authHeaders = ctx.authHeaders;
 });
 
 afterAll(async () => {
@@ -23,13 +25,13 @@ async function post(url: string, payload: unknown): Promise<LightMyRequestRespon
   return await app.inject({
     method: 'POST',
     url: `${PREFIX}${url}`,
-    headers: { 'content-type': 'application/json' },
+    headers: { ...authHeaders, 'content-type': 'application/json' },
     payload: payload as object,
   });
 }
 
 async function get(url: string): Promise<LightMyRequestResponse> {
-  return await app.inject({ method: 'GET', url: `${PREFIX}${url}` });
+  return await app.inject({ method: 'GET', url: `${PREFIX}${url}`, headers: authHeaders });
 }
 
 describe('Distancia', () => {

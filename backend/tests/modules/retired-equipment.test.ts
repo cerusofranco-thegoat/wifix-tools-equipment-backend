@@ -7,19 +7,23 @@ import { buildMultipart } from '../helpers/multipart.js';
 import { prisma } from '../../src/db/prisma.js';
 
 let app: FastifyInstance;
+let authHeaders: Record<string, string>;
 const PREFIX = '/herramientas/v1';
 const acct = () => `WX-RE-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 const now = () => new Date().toISOString();
 
 beforeAll(async () => {
-  app = await buildTestApp();
-  await app.ready();
+  const ctx = await buildTestApp();
+  app = ctx.app;
+  authHeaders = ctx.authHeaders;
 });
 
 afterAll(async () => {
   await app.close();
   await prisma.$disconnect();
 });
+
+const jsonHeaders = () => ({ ...authHeaders, 'content-type': 'application/json' });
 
 describe('Equipos retirados', () => {
   it('crea sin barcodePhotoId y copia serialFieldType del modelo', async () => {
@@ -29,7 +33,7 @@ describe('Equipos retirados', () => {
     const res = await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders(),
       payload: {
         accountNumber: acct(),
         equipmentModelId: ontZte!.id,
@@ -56,7 +60,7 @@ describe('Equipos retirados', () => {
     const upload = await app.inject({
       method: 'POST',
       url: `${PREFIX}/media`,
-      headers: { 'content-type': multipart.contentType },
+      headers: { ...authHeaders, 'content-type': multipart.contentType },
       payload: multipart.body,
     });
     const photo = upload.json();
@@ -64,7 +68,7 @@ describe('Equipos retirados', () => {
     const res = await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders(),
       payload: {
         accountNumber: acct(),
         equipmentModelId: router!.id,
@@ -85,7 +89,7 @@ describe('Equipos retirados', () => {
     const res = await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders(),
       payload: {
         accountNumber: acct(),
         equipmentModelId: '00000000-0000-4000-8000-000000000001',
@@ -103,7 +107,7 @@ describe('Equipos retirados', () => {
     const res = await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders(),
       payload: {
         accountNumber: acct(),
         equipmentModelId: model!.id,
@@ -123,7 +127,7 @@ describe('Equipos retirados', () => {
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders(),
       payload: {
         accountNumber: account,
         equipmentModelId: model!.id,
@@ -136,6 +140,7 @@ describe('Equipos retirados', () => {
     const list = await app.inject({
       method: 'GET',
       url: `${PREFIX}/retired-equipment?accountNumber=${account}&removalReasonCode=EQUIPO_INHIBIDO&serialValue=MTAFILTER`,
+      headers: authHeaders,
     });
     expect(list.statusCode).toBe(200);
     const data = list.json();

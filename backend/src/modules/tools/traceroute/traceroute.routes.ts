@@ -2,12 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { parseBody, parseParams, parseQuery } from '../../../lib/validation.js';
 import { uuidParamSchema } from '../../../schemas/common.js';
 import { listFiltersSchema } from '../../../schemas/filters.js';
+import { getAuthUser } from '../../../middleware/authenticate.js';
 import { tracerouteInputSchema } from './traceroute.schemas.js';
 import { tracerouteService } from './traceroute.service.js';
 
 export async function registerTracerouteRoutes(app: FastifyInstance): Promise<void> {
   app.post('/traceroute-tests', async (request, reply) => {
     const body = parseBody(tracerouteInputSchema, request.body);
+    body.technicianId = getAuthUser(request).id;
     const dto = await tracerouteService.create(body);
     return reply.code(201).send(dto);
   });

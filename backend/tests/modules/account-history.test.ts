@@ -4,11 +4,13 @@ import { buildTestApp } from '../helpers/test-app.js';
 import { prisma } from '../../src/db/prisma.js';
 
 let app: FastifyInstance;
+let authHeaders: Record<string, string>;
 const PREFIX = '/herramientas/v1';
 
 beforeAll(async () => {
-  app = await buildTestApp();
-  await app.ready();
+  const ctx = await buildTestApp();
+  app = ctx.app;
+  authHeaders = ctx.authHeaders;
 });
 
 afterAll(async () => {
@@ -20,24 +22,24 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
   it('agrega los 6 tipos de registro para una cuenta', async () => {
     const account = `WX-HIST-${Date.now()}`;
     const now = new Date().toISOString();
+    const jsonHeaders = { ...authHeaders, 'content-type': 'application/json' };
 
-    // 1 distance + 1 speedtest + 1 heatmap + 1 ping + 1 traceroute + 1 retired
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/distance-measurements`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: { accountNumber: account, distanceMeters: 25, measuredAt: now },
     });
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/speedtests`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: { accountNumber: account, downloadMbps: 100, uploadMbps: 50, measuredAt: now },
     });
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/wifi-heatmaps`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: {
         accountNumber: account,
         rooms: [{ roomName: 'A', signalDbm: -50, measuredAt: now }],
@@ -46,13 +48,13 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/ping-tests`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: { accountNumber: account, target: '8.8.8.8', measuredAt: now },
     });
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/traceroute-tests`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: {
         accountNumber: account,
         target: 'example.com',
@@ -64,7 +66,7 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/retired-equipment`,
-      headers: { 'content-type': 'application/json' },
+      headers: jsonHeaders,
       payload: {
         accountNumber: account,
         equipmentModelId: model!.id,
@@ -77,6 +79,7 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/${account}/tool-history`,
+      headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -95,7 +98,7 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
     await app.inject({
       method: 'POST',
       url: `${PREFIX}/distance-measurements`,
-      headers: { 'content-type': 'application/json' },
+      headers: { ...authHeaders, 'content-type': 'application/json' },
       payload: { accountNumber: account, distanceMeters: 5, measuredAt: now },
     });
 
@@ -103,6 +106,7 @@ describe('GET /accounts/{accountNumber}/tool-history', () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/${account}/tool-history?dateFrom=${past}&dateTo=2020-12-31T23:59:59Z`,
+      headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().distanceMeasurements).toHaveLength(0);

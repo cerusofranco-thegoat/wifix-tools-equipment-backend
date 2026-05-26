@@ -7,10 +7,12 @@ import { buildTestApp } from '../helpers/test-app.js';
 import { prisma } from '../../src/db/prisma.js';
 
 let app: FastifyInstance;
+let authHeaders: Record<string, string>;
 
 beforeAll(async () => {
-  app = await buildTestApp();
-  await app.ready();
+  const ctx = await buildTestApp();
+  app = ctx.app;
+  authHeaders = ctx.authHeaders;
 });
 
 afterAll(async () => {
@@ -20,7 +22,11 @@ afterAll(async () => {
 
 describe('GET /catalogs/equipment-models', () => {
   it('devuelve los 10 modelos sembrados con serialFieldType en formato del contrato', async () => {
-    const res = await app.inject({ method: 'GET', url: '/herramientas/v1/catalogs/equipment-models' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/herramientas/v1/catalogs/equipment-models',
+      headers: authHeaders,
+    });
     expect(res.statusCode).toBe(200);
     const data = res.json() as Array<{ name: string; serialFieldType: string; category: string }>;
     expect(Array.isArray(data)).toBe(true);
@@ -44,7 +50,11 @@ describe('GET /catalogs/equipment-models', () => {
 
 describe('GET /catalogs/removal-reasons', () => {
   it('devuelve los 8 motivos ordenados por sortOrder', async () => {
-    const res = await app.inject({ method: 'GET', url: '/herramientas/v1/catalogs/removal-reasons' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/herramientas/v1/catalogs/removal-reasons',
+      headers: authHeaders,
+    });
     expect(res.statusCode).toBe(200);
     const data = res.json() as Array<{ code: string; label: string; active: boolean }>;
     expect(data.length).toBe(8);
@@ -57,9 +67,17 @@ describe('GET /catalogs/removal-reasons', () => {
 
 describe('GET /catalogs/speedtest-servers', () => {
   it('devuelve servidores con location cuando hay coordenadas', async () => {
-    const res = await app.inject({ method: 'GET', url: '/herramientas/v1/catalogs/speedtest-servers' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/herramientas/v1/catalogs/speedtest-servers',
+      headers: authHeaders,
+    });
     expect(res.statusCode).toBe(200);
-    const data = res.json() as Array<{ name: string; host: string; location?: { latitude: number; longitude: number } }>;
+    const data = res.json() as Array<{
+      name: string;
+      host: string;
+      location?: { latitude: number; longitude: number };
+    }>;
     expect(data.length).toBeGreaterThanOrEqual(1);
     const quito = data.find((s) => s.name === 'Servidor Quito');
     expect(quito).toBeDefined();
@@ -70,7 +88,11 @@ describe('GET /catalogs/speedtest-servers', () => {
 
 describe('GET /catalogs/network-servers', () => {
   it('devuelve los servidores de red sembrados con type', async () => {
-    const res = await app.inject({ method: 'GET', url: '/herramientas/v1/catalogs/network-servers' });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/herramientas/v1/catalogs/network-servers',
+      headers: authHeaders,
+    });
     expect(res.statusCode).toBe(200);
     const data = res.json() as Array<{ name: string; target: string; type: string }>;
     expect(data.length).toBeGreaterThanOrEqual(3);

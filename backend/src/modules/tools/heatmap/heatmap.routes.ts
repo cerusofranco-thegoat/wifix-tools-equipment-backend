@@ -2,12 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { parseBody, parseParams, parseQuery } from '../../../lib/validation.js';
 import { uuidParamSchema } from '../../../schemas/common.js';
 import { listFiltersSchema } from '../../../schemas/filters.js';
+import { getAuthUser } from '../../../middleware/authenticate.js';
 import { heatmapInputSchema } from './heatmap.schemas.js';
 import { heatmapService } from './heatmap.service.js';
 
 export async function registerHeatmapRoutes(app: FastifyInstance): Promise<void> {
   app.post('/wifi-heatmaps', async (request, reply) => {
     const body = parseBody(heatmapInputSchema, request.body);
+    body.technicianId = getAuthUser(request).id;
     const dto = await heatmapService.create(body);
     return reply.code(201).send(dto);
   });

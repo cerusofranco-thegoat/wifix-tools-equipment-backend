@@ -39,7 +39,7 @@ export const accountHistoryService = {
       prisma.wifiHeatmap.findMany({
         where: { accountNumber: q.accountNumber, ...createdFilter },
         orderBy: { createdAt: 'desc' },
-        include: { rooms: true },
+        include: { rooms: { include: { measurements: true } } },
       }),
       prisma.pingTest.findMany({
         where: { accountNumber: q.accountNumber, ...measuredFilter },

@@ -9,6 +9,7 @@ import { registerMediaRoutes } from './modules/media/media.routes.js';
 import { registerDistanceRoutes } from './modules/tools/distance/distance.routes.js';
 import { registerSpeedtestRoutes } from './modules/tools/speedtest/speedtest.routes.js';
 import { registerHeatmapRoutes } from './modules/tools/heatmap/heatmap.routes.js';
+import { registerAccessPointsRoutes } from './modules/tools/access-points/access-points.routes.js';
 import { registerPingRoutes } from './modules/tools/ping/ping.routes.js';
 import { registerTracerouteRoutes } from './modules/tools/traceroute/traceroute.routes.js';
 import { registerRetiredEquipmentRoutes } from './modules/retired-equipment/retired-equipment.routes.js';
@@ -59,7 +60,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   await app.register(cors, {
     origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((s) => s.trim()),
-    methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS'],
   });
 
   registerErrorHandler(app);
@@ -86,6 +87,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerDistanceRoutes(api);
       await registerSpeedtestRoutes(api);
       await registerHeatmapRoutes(api);
+      await registerAccessPointsRoutes(api);
       await registerPingRoutes(api);
       await registerTracerouteRoutes(api);
       await registerRetiredEquipmentRoutes(api);

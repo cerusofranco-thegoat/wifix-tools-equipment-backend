@@ -396,6 +396,87 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /accounts/{accountNumber}/wifi-access-points:
+    parameters:
+      - $ref: '#/components/parameters/AccountNumberPath'
+    get:
+      tags: [Mapa de Calor WiFi]
+      summary: Listar APs WiFi registrados de una cuenta
+      description: >
+        APs (router, extensores, nodos mesh) que el técnico identificó en
+        visitas anteriores de esta cuenta. El frontend los usa para
+        pre-cargar nombres por BSSID al iniciar un nuevo relevamiento.
+      operationId: listAccountWifiAccessPoints
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WifiAccessPoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Mapa de Calor WiFi]
+      summary: Registrar (o actualizar) un AP WiFi de la cuenta
+      description: >
+        Crea un `WifiAccessPoint` para la cuenta. Si ya existe uno con el
+        mismo `bssid` para esta cuenta, el servidor lo actualiza
+        (upsert por `accountNumber` + `bssid`).
+      operationId: createAccountWifiAccessPoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WifiAccessPointInput'
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiAccessPoint'
+        '200':
+          description: Actualizado (upsert)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiAccessPoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /wifi-access-points/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [Mapa de Calor WiFi]
+      summary: Renombrar o corregir un AP WiFi
+      operationId: updateWifiAccessPoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WifiAccessPointUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WifiAccessPoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # ====================================================================
   # HERRAMIENTAS — PING (campo 25)
   # ====================================================================
@@ -1439,7 +1520,7 @@ components:
 
     HeatmapRoomInput:
       type: object
-      required: [roomName, signalDbm, measuredAt]
+      required: [roomName, measurements, measuredAt]
       properties:
         roomName:
           type: string
@@ -1449,10 +1530,24 @@ components:
           description: Piso de la habitación. Usar 1 si la vivienda tiene un solo piso.
           default: 1
           example: 2
+        measurements:
+          type: array
+          minItems: 1
+          description: >
+            Lecturas de señal en este punto, una entrada por AP detectado en el
+            scan WiFi. Reemplaza el campo `signalDbm` legacy. Al menos una
+            entrada (típicamente la del AP conectado, marcada con
+            isConnected=true) debe estar presente.
+          items:
+            $ref: '#/components/schemas/RoomApMeasurement'
         signalDbm:
           type: number
           format: double
-          description: Potencia de señal WiFi en dBm (valor típicamente negativo).
+          deprecated: true
+          description: >
+            DEPRECATED. Reemplazado por `measurements[]`. Sólo presente en
+            relevamientos en formato anterior (`legacyFormat: true` en la
+            respuesta) o en clientes que aún no soportan multi-AP.
           example: -58
         measuredAt:
           type: string
@@ -1467,6 +1562,14 @@ components:
             id:
               type: string
               format: uuid
+            legacyFormat:
+              type: boolean
+              default: false
+              description: >
+                True si esta habitación proviene del modelo viejo (un único
+                `signalDbm` por habitación) y fue migrada con una entrada
+                sintética en `measurements`. El frontend puede usar este flag
+                para mostrar un aviso y desactivar la vista "Por equipo".
         - $ref: '#/components/schemas/HeatmapRoomInput'
 
     WifiHeatmapInput:
@@ -1506,6 +1609,111 @@ components:
                 $ref: '#/components/schemas/HeatmapRoom'
             notes:
               type: string
+
+    # ---- Access Points WiFi detectados (auxiliar del campo 24) -------
+
+    RoomApMeasurement:
+      type: object
+      required: [bssid, signalDbm]
+      description: >
+        Lectura de señal hacia un AP específico desde un punto de medición
+        (una habitación). Permite reconstruir la cobertura por equipo.
+      properties:
+        bssid:
+          type: string
+          description: MAC del radio del AP (formato `xx:xx:xx:xx:xx:xx`). Llave técnica para identificar la fuente.
+          example: aa:bb:cc:dd:ee:ff
+        accessPointId:
+          type: string
+          format: uuid
+          description: Referencia al `WifiAccessPoint` cuando ya fue registrado en la visita. Opcional para soportar scans con APs aún no etiquetados.
+        apLabelSnapshot:
+          type: string
+          description: >
+            Nombre amigable del AP al momento de la medición. Histórico —
+            no se actualiza si el AP se renombra después. Útil para mostrar
+            heatmaps viejos coherentes.
+          example: Router principal
+        signalDbm:
+          type: number
+          format: double
+          description: Potencia recibida del AP en dBm. Negativo, más cercano a 0 = mejor.
+          example: -58
+        band:
+          type: string
+          enum: ["2.4GHz", "5GHz", "6GHz", "unknown"]
+          default: unknown
+        channel:
+          type: integer
+          description: Canal WiFi (1-13 en 2.4 GHz, 36-165 en 5 GHz, etc.).
+          example: 36
+        isConnected:
+          type: boolean
+          default: false
+          description: True si el celular del técnico estaba asociado a este BSSID al momento del scan.
+
+    WifiAccessPointInput:
+      type: object
+      required: [bssid, label]
+      properties:
+        bssid:
+          type: string
+          description: MAC del radio del AP (formato `xx:xx:xx:xx:xx:xx`). Único por equipo y banda.
+          example: aa:bb:cc:dd:ee:ff
+        ssid:
+          type: string
+          description: Nombre de red detectado durante el scan.
+          example: Casa_Perez
+        label:
+          type: string
+          description: Nombre amigable puesto por el técnico (visible en la UI).
+          example: Router principal
+        apType:
+          type: string
+          enum: [router, extender, mesh_node, unknown]
+          default: unknown
+          description: Tipo de equipo. Puede dejarse "unknown" si el técnico no está seguro.
+        band:
+          type: string
+          enum: ["2.4GHz", "5GHz", "6GHz", "unknown"]
+          default: unknown
+          description: Banda principal de operación detectada para este BSSID. Un router dual-band típicamente tiene dos BSSIDs (uno por banda).
+        notes:
+          type: string
+
+    WifiAccessPoint:
+      allOf:
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            accountNumber:
+              type: string
+              description: Cuenta del cliente a la que pertenece este equipo. Permite reusar los labels entre visitas de la misma cuenta.
+              example: WX-100123
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+        - $ref: '#/components/schemas/WifiAccessPointInput'
+
+    WifiAccessPointUpdate:
+      type: object
+      description: Campos editables de un `WifiAccessPoint`. Todos opcionales.
+      properties:
+        label:
+          type: string
+        apType:
+          type: string
+          enum: [router, extender, mesh_node, unknown]
+        band:
+          type: string
+          enum: ["2.4GHz", "5GHz", "6GHz", "unknown"]
+        notes:
+          type: string
 
     # ---- Ping (campo 25) ---------------------------------------------
 

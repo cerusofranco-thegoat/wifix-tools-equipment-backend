@@ -6,12 +6,16 @@ import {
   type ListFilters,
 } from '../../../schemas/filters.js';
 
+const INCLUDE_ROOMS_WITH_MEASUREMENTS = {
+  rooms: { include: { measurements: true } },
+} as const;
+
 export const heatmapRepository = {
   create: (data: Prisma.WifiHeatmapCreateInput) =>
-    prisma.wifiHeatmap.create({ data, include: { rooms: true } }),
+    prisma.wifiHeatmap.create({ data, include: INCLUDE_ROOMS_WITH_MEASUREMENTS }),
 
   findById: (id: string) =>
-    prisma.wifiHeatmap.findUnique({ where: { id }, include: { rooms: true } }),
+    prisma.wifiHeatmap.findUnique({ where: { id }, include: INCLUDE_ROOMS_WITH_MEASUREMENTS }),
 
   async list(filters: ListFilters) {
     const where: Prisma.WifiHeatmapWhereInput = buildContextWhere(filters);
@@ -24,7 +28,7 @@ export const heatmapRepository = {
         orderBy: { createdAt: 'desc' },
         skip,
         take: filters.pageSize,
-        include: { rooms: true },
+        include: INCLUDE_ROOMS_WITH_MEASUREMENTS,
       }),
       prisma.wifiHeatmap.count({ where }),
     ]);

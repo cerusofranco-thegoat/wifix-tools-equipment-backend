@@ -34,6 +34,15 @@ async function get(url: string): Promise<LightMyRequestResponse> {
   return await app.inject({ method: 'GET', url: `${PREFIX}${url}`, headers: authHeaders });
 }
 
+async function patch(url: string, payload: unknown): Promise<LightMyRequestResponse> {
+  return await app.inject({
+    method: 'PATCH',
+    url: `${PREFIX}${url}`,
+    headers: { ...authHeaders, 'content-type': 'application/json' },
+    payload: payload as object,
+  });
+}
+
 describe('Distancia', () => {
   it('crea, lista filtrado por accountNumber y consulta por id', async () => {
     const account = acct();
@@ -104,8 +113,8 @@ describe('Speedtest', () => {
   });
 });
 
-describe('Mapa de calor WiFi', () => {
-  it('crea con habitaciones y rechaza signalDbm fuera de -120..0', async () => {
+describe('Mapa de calor WiFi (legacy: signalDbm plano)', () => {
+  it('acepta el formato viejo y devuelve legacyFormat=true + measurements sintéticas', async () => {
     const account = acct();
     const create = await post('/wifi-heatmaps', {
       accountNumber: account,
@@ -118,6 +127,10 @@ describe('Mapa de calor WiFi', () => {
     expect(create.statusCode).toBe(201);
     const dto = create.json();
     expect(dto.rooms).toHaveLength(2);
+    expect(dto.rooms[0].legacyFormat).toBe(true);
+    expect(dto.rooms[0].measurements).toHaveLength(1);
+    expect(dto.rooms[0].measurements[0].bssid).toBe('legacy-unknown');
+    expect(dto.rooms[0].measurements[0].signalDbm).toBe(-58);
 
     const bad = await post('/wifi-heatmaps', {
       accountNumber: account,
@@ -129,6 +142,137 @@ describe('Mapa de calor WiFi', () => {
       accountNumber: account,
       rooms: [],
     });
+    expect(empty.statusCode).toBe(400);
+  });
+});
+
+describe('Mapa de calor WiFi (nuevo: measurements multi-AP)', () => {
+  it('crea con array de measurements por habitación', async () => {
+    const account = acct();
+    const create = await post('/wifi-heatmaps', {
+      accountNumber: account,
+      label: 'multi-AP',
+      rooms: [
+        {
+          roomName: 'Sala',
+          floor: 1,
+          measuredAt: now(),
+          measurements: [
+            { bssid: 'aa:bb:cc:dd:ee:01', signalDbm: -45, band: '5GHz', channel: 36, isConnected: true },
+            { bssid: 'aa:bb:cc:dd:ee:02', signalDbm: -78, band: '2.4GHz', channel: 6 },
+          ],
+        },
+      ],
+    });
+    expect(create.statusCode).toBe(201);
+    const dto = create.json();
+    expect(dto.rooms[0].legacyFormat).toBe(false);
+    expect(dto.rooms[0].measurements).toHaveLength(2);
+    expect(dto.rooms[0].measurements[0].band).toBe('5GHz');
+    expect(dto.rooms[0].measurements[0].isConnected).toBe(true);
+  });
+
+  it('rechaza measurements vacío y bssid inválido', async () => {
+    const account = acct();
+    const emptyMeas = await post('/wifi-heatmaps', {
+      accountNumber: account,
+      rooms: [{ roomName: 'X', measurements: [], measuredAt: now() }],
+    });
+    expect(emptyMeas.statusCode).toBe(400);
+
+    const badBssid = await post('/wifi-heatmaps', {
+      accountNumber: account,
+      rooms: [{
+        roomName: 'Y',
+        measuredAt: now(),
+        measurements: [{ bssid: 'not-a-mac', signalDbm: -50 }],
+      }],
+    });
+    expect(badBssid.statusCode).toBe(400);
+  });
+
+  it('asocia measurements a un WifiAccessPoint pre-registrado vía accessPointId', async () => {
+    const account = acct();
+    const ap = await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'aa:bb:cc:dd:ee:10',
+      label: 'Router principal',
+      apType: 'router',
+      band: '5GHz',
+    });
+    expect(ap.statusCode).toBe(201);
+    const apDto = ap.json();
+
+    const heatmap = await post('/wifi-heatmaps', {
+      accountNumber: account,
+      rooms: [{
+        roomName: 'Sala',
+        measuredAt: now(),
+        measurements: [{
+          bssid: apDto.bssid,
+          accessPointId: apDto.id,
+          apLabelSnapshot: apDto.label,
+          signalDbm: -52,
+          band: '5GHz',
+          isConnected: true,
+        }],
+      }],
+    });
+    expect(heatmap.statusCode).toBe(201);
+    expect(heatmap.json().rooms[0].measurements[0].accessPointId).toBe(apDto.id);
+  });
+});
+
+describe('WiFi Access Points', () => {
+  it('upsert por (accountNumber, bssid): primer POST crea (201), segundo actualiza (200)', async () => {
+    const account = acct();
+    const first = await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'aa:bb:cc:dd:ee:ff',
+      label: 'Router',
+      apType: 'router',
+      band: '5GHz',
+    });
+    expect(first.statusCode).toBe(201);
+    const firstDto = first.json();
+
+    const second = await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'aa:bb:cc:dd:ee:ff',
+      label: 'Router principal (corregido)',
+      apType: 'router',
+      band: '5GHz',
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().id).toBe(firstDto.id);
+    expect(second.json().label).toBe('Router principal (corregido)');
+
+    const bad = await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'not-a-mac',
+      label: 'X',
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('lista APs por cuenta y permite PATCH para renombrar', async () => {
+    const account = acct();
+    await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'aa:bb:cc:dd:ee:01',
+      label: 'Equipo 1',
+    });
+    await post(`/accounts/${account}/wifi-access-points`, {
+      bssid: 'aa:bb:cc:dd:ee:02',
+      label: 'Equipo 2',
+      apType: 'extender',
+    });
+    const list = await get(`/accounts/${account}/wifi-access-points`);
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toHaveLength(2);
+    const target = list.json().find((a: { label: string }) => a.label === 'Equipo 1');
+    expect(target).toBeTruthy();
+
+    const renamed = await patch(`/wifi-access-points/${target.id}`, { label: 'Router principal' });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json().label).toBe('Router principal');
+
+    const empty = await patch(`/wifi-access-points/${target.id}`, {});
     expect(empty.statusCode).toBe(400);
   });
 });

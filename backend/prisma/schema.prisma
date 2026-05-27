@@ -216,18 +216,66 @@ model WifiHeatmap {
 }
 
 model WifiHeatmapRoom {
-  id         String   @id @default(uuid()) @db.Uuid
-  heatmapId  String   @map("heatmap_id") @db.Uuid
-  roomName   String   @map("room_name")
-  floor      Int      @default(1)
-  signalDbm  Float    @map("signal_dbm")
-  measuredAt DateTime @map("measured_at") @db.Timestamptz(6)
-  notes      String?
+  id           String   @id @default(uuid()) @db.Uuid
+  heatmapId    String   @map("heatmap_id") @db.Uuid
+  roomName     String   @map("room_name")
+  floor        Int      @default(1)
+  /// Deprecated. Para multi-AP cada room tiene N entradas en `measurements`.
+  /// Sigue presente para retrocompatibilidad de lectura. En lecturas nuevas
+  /// el valor "efectivo" es el mejor signalDbm de `measurements`.
+  signalDbm    Float?   @map("signal_dbm")
+  legacyFormat Boolean  @default(false) @map("legacy_format")
+  measuredAt   DateTime @map("measured_at") @db.Timestamptz(6)
+  notes        String?
 
-  heatmap WifiHeatmap @relation(fields: [heatmapId], references: [id], onDelete: Cascade)
+  heatmap      WifiHeatmap         @relation(fields: [heatmapId], references: [id], onDelete: Cascade)
+  measurements RoomApMeasurement[]
 
   @@index([heatmapId])
   @@map("wifi_heatmap_rooms")
+}
+
+model WifiAccessPoint {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountNumber String   @map("account_number")
+  bssid         String
+  ssid          String?
+  label         String
+  /// "router" | "extender" | "mesh_node" | "unknown"
+  apType        String   @default("unknown") @map("ap_type")
+  /// "2.4GHz" | "5GHz" | "6GHz" | "unknown"
+  band          String   @default("unknown")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  measurements RoomApMeasurement[]
+
+  @@unique([accountNumber, bssid])
+  @@index([accountNumber])
+  @@map("wifi_access_points")
+}
+
+model RoomApMeasurement {
+  id              String   @id @default(uuid()) @db.Uuid
+  roomId          String   @map("room_id") @db.Uuid
+  accessPointId   String?  @map("access_point_id") @db.Uuid
+  bssid           String
+  apLabelSnapshot String?  @map("ap_label_snapshot")
+  signalDbm       Float    @map("signal_dbm")
+  /// "2.4GHz" | "5GHz" | "6GHz" | "unknown"
+  band            String   @default("unknown")
+  channel         Int?
+  isConnected     Boolean  @default(false) @map("is_connected")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  room        WifiHeatmapRoom  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  accessPoint WifiAccessPoint? @relation(fields: [accessPointId], references: [id], onDelete: SetNull)
+
+  @@index([roomId])
+  @@index([accessPointId])
+  @@index([bssid])
+  @@map("room_ap_measurements")
 }
 
 model PingTest {

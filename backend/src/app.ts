@@ -13,10 +13,9 @@ import { registerPingRoutes } from './modules/tools/ping/ping.routes.js';
 import { registerTracerouteRoutes } from './modules/tools/traceroute/traceroute.routes.js';
 import { registerRetiredEquipmentRoutes } from './modules/retired-equipment/retired-equipment.routes.js';
 import { registerAccountHistoryRoutes } from './modules/account-history/account-history.routes.js';
-// Fase A10 — endpoints de integración (registrados al implementarlos):
-// import { registerClientDataRoutes } from './modules/client-data/client-data.routes.js';
-// import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
-// import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
+import { registerClientDataRoutes } from './modules/client-data/client-data.routes.js';
+import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
+import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -91,9 +90,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerTracerouteRoutes(api);
       await registerRetiredEquipmentRoutes(api);
       await registerAccountHistoryRoutes(api);
-      // await registerClientDataRoutes(api);
-      // await registerNetworkDiagnosticsRoutes(api);
-      // await registerTasksVisitsRoutes(api);
+      await registerClientDataRoutes(api);
+      await registerNetworkDiagnosticsRoutes(api);
+      await registerTasksVisitsRoutes(api);
     },
     { prefix: API_PREFIX },
   );

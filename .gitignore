@@ -18,3 +18,6 @@ Thumbs.db
 /package.json
 /package-lock.json
 /wifix-webapp/
+
+# Output del build de APK (binario grande, no va al repo)
+*.apk

@@ -1,7 +1,12 @@
-# PROGRESS — Módulo Herramientas y Equipos Retirados (Wifix)
+# PROGRESS — App Wifix (Fase 1 + Fase 2)
 
 Registro de avance por fase del proyecto. Se actualiza al cerrar cada
 fase. Las casillas marcadas indican entregables verificados.
+
+**Fase 1** (2026-05-24): módulo Herramientas + Equipos Retirados, sin auth.
+**Fase 2** (2026-05-26): re-scope a la app completa con login + JWT + capa
+de conectores hacia 6 sistemas externos (modo mock) + endpoints de
+integración campos 1-21 + tres pantallas nuevas en el frontend.
 
 ---
 
@@ -149,3 +154,179 @@ fase. Las casillas marcadas indican entregables verificados.
       - traceroute-tests: HTTP 201
       - retired-equipment: HTTP 201
       - `GET /accounts/{accountNumber}/tool-history` → 6 registros
+
+---
+
+# Fase 2 — App Wifix completa
+
+Re-scope a la app completa: login + JWT, capa de conectores hacia los
+sistemas externos en modo mock, endpoints de integración (campos 1-21)
+y pantallas nuevas en el frontend. **El OpenAPI ya cubre los 33
+endpoints** (auth + catálogos + herramientas + retiros + media + historial
++ datos cliente + diagnóstico + tareas/visitas) — no se tocó el contrato.
+
+## PARTE A2 — Backend
+
+### Fase A1δ — Tabla users · ✅ Completada (2026-05-26)
+- [x] Modelo `User` (id uuid, email único, passwordHash, name, active,
+      createdAt) en `prisma/schema.prisma`.
+- [x] Migración `20260526210008_add_users` aplicada.
+- [x] `prisma/seed.ts` siembra usuario inicial `franco@tulpasolutions.com`
+      con bcrypt cost 10. Variables: `SEED_USER_EMAIL`, `SEED_USER_PASSWORD`,
+      `SEED_USER_NAME`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `CONNECTOR_MODE`.
+- [x] Puerto Postgres cambia de 5432 → 5433 (evita choque con otros
+      contenedores locales).
+- **Verificación:** `npm run prisma:migrate && npm run prisma:seed` corre
+  sin error; segunda corrida mantiene los conteos (idempotente).
+
+### Fase A2 — Autenticación · ✅ Completada (2026-05-26)
+- [x] `POST /auth/login` (bcrypt + jose HS256), `GET /auth/me`.
+- [x] Middleware `onRequest` valida `Authorization: Bearer` en todos los
+      endpoints salvo `/health` (raíz + API) y `/auth/login`.
+- [x] Códigos de error nuevos: `UNAUTHORIZED` (401), `CONNECTOR_ERROR` (502).
+- [x] **Decisión pendiente #1 resuelta:** los POST de herramientas y
+      equipos retirados sobreescriben `technicianId = request.authUser.id`,
+      ignorando lo que venga en el cuerpo. `clientId`/`visitId` siguen
+      como valores de prueba.
+- [x] Tests: `tests/helpers/test-app.ts` devuelve `{ app, authHeaders }`
+      con un usuario test y token fresco; los 7 tests previos se actualizaron;
+      `tests/modules/auth.test.ts` nuevo con 7 tests (login OK / inválido /
+      validación email; /me; sin token; firma inválida; /health sin token).
+- **Verificación:** 47/47 tests verdes tras la fase.
+
+### Fase A9 — Capa de conectores (mock + esqueleto real) · ✅ Completada (2026-05-26)
+- [x] `src/connectors/_shared.ts` con PRNG seeded (xmur3 + mulberry32) y
+      helper `notImplemented(operation)`.
+- [x] Seis conectores en `src/connectors/{comarch,fsm,ispmonitor,acs,tec,rms}/`,
+      cada uno con interfaz + `*Mock` determinista por accountNumber/napCode
+      + `*Real` esqueleto con TODO + factory `get<X>Connector()` que respeta
+      `CONNECTOR_MODE`.
+- [x] Datos mock en español, realistas (Ecuador): nombres, calles, planes
+      Wifix Hogar/Business, NAPs `NAP-NN-NN-N`, dispositivos LAN/WiFi.
+- [x] PUT en modo mock guarda override en memoria del proceso para que
+      GET → PUT → GET sea coherente durante la sesión.
+- [x] 8 tests verifican determinismo y persistencia in-memory de PUT.
+
+### Fase A10 — Endpoints de integración campos 1-21 · ✅ Completada (2026-05-26)
+- [x] **client-data** (módulo): `GET/PUT /accounts/{n}/client-profile`,
+      `GET /accounts/{n}/contract-status`.
+- [x] **network-diagnostics**: `nearby-naps`, `naps/{napCode}/ports`,
+      `network-metrics`, `node-events`, `lan-devices`, `wifi-devices`,
+      `GET/PUT wifi-config`. Validación Zod de `WifiConfigUpdate`
+      (ssid 1-32, password 8-63, sin bandas duplicadas).
+- [x] **tasks-visits**: `unsatisfactory-tasks`, `previous-visits`.
+- [x] **13 endpoints** en total. Las escrituras (`PUT client-profile`,
+      `PUT wifi-config`) registran en el log el `user.id` del JWT,
+      `accountNumber` y los campos editados.
+- [x] 12 tests de integración cubriendo cada endpoint, ambos PUT, y
+      validación de inputs.
+
+### Fase A11 — Cierre del backend · ✅ Completada (2026-05-26)
+- [x] **67 tests en 11 archivos** (todas verdes):
+      pagination (9), validation (3), error-handler (6), connectors (8),
+      catalogs (4), auth (7), media (4), tools (7), retired-equipment (5),
+      account-history (2), integration-endpoints (12).
+- [x] `npm run build` y `npm run lint` limpios.
+- [x] `README.md` reescrito: auth, conectores, 13 endpoints nuevos,
+      códigos `UNAUTHORIZED` / `CONNECTOR_ERROR`, puerto 5433, guía para
+      pasar a `CONNECTOR_MODE=real`.
+
+---
+
+## PARTE B2 — Frontend (`wifix-webapp`)
+
+Trabajo en rama nueva **`feature/auth-and-client-data`** (no toca
+`feature/tools-and-retired-equipment`).
+
+### Fase B1δ — Login + token + api.js extendido · ✅ Completada (2026-05-26)
+- [x] Pantalla de login como entrada de la app (sección `.loginscreen`
+      con `.open` por default; se oculta tras autenticar; se reabre si
+      el backend devuelve 401 vía evento `wifix:unauthorized`).
+- [x] `api.js` guarda token + user en `localStorage` (`wifix_token`,
+      `wifix_user`), lo envía en `Authorization: Bearer`, y al recibir
+      401 limpia storage y dispara evento de sesión expirada.
+- [x] Funciones nuevas: `login`, `logout`, `isAuthenticated`, `getMe`,
+      `getClientProfile`, `updateClientProfile`, `getContractStatus`,
+      `getNearbyNaps`, `getNapPorts`, `getNetworkMetrics`, `getNodeEvents`,
+      `getLanDevices`, `getWifiDevices`, `getWifiConfig`,
+      `updateWifiConfig`, `getUnsatisfactoryTasks`, `getPreviousVisits`.
+- [x] Cada función tiene fallback mock por defecto y respeta
+      `WifixAPI.useRealApi = true` para usar el backend real.
+- [x] Header gana un botón de cerrar sesión (icono `logout`).
+
+### Fase B2 — Datos Personales con PUT · ✅ Completada (2026-05-26)
+- [x] `openDatosPersonales` reemplazado: ahora consulta
+      `WifixAPI.getClientProfile(accountNumber)` y muestra los campos 1-5
+      (nombres, dirección, teléfonos, plan, velocidad contratada).
+- [x] Botón "Actualizar datos" abre formulario editable que llama a
+      `PUT client-profile` (campo 4). Tras éxito, re-renderiza la vista
+      con los nuevos datos.
+- [x] Estados de carga / error (`detail-loading`, `detail-error`).
+
+### Fase B3 — Datos del Servicio (campos 6-18) · ✅ Completada (2026-05-26)
+- [x] Acordeón con 7 secciones que consumen el backend:
+      NAPs cercanas (con botón "Ver puertos" que llama a
+      `naps/{napCode}/ports`), status del cliente (`contract-status`),
+      métricas de red (`network-metrics`), eventos del nodo
+      (`node-events`), tareas insatisfactorias (`unsatisfactory-tasks`),
+      visitas anteriores (`previous-visits`), historial de la app
+      (`tool-history`).
+- [x] Cada sección carga on-demand al abrirse y cachea el resultado.
+
+### Fase B4 — Red Interna (campos 19-21 + PUT wifi-config) · ✅ Completada (2026-05-26)
+- [x] Nueva pantalla `detailRed` (HTML) con acordeón de 3 secciones:
+      equipos LAN (`lan-devices`), dispositivos WiFi por banda
+      (`wifi-devices`), y formulario de cambio de SSID/contraseña.
+- [x] El formulario muestra los SSID actuales por banda (2.4 GHz / 5 GHz),
+      permite editar SSID y opcionalmente la contraseña, y llama a
+      `PUT wifi-config`. Validación visual del minlength=8 en el password.
+
+### Fase B5 — Estilos y cierre del frontend · ✅ Completada (2026-05-26)
+- [x] Estilos nuevos al final de `styles.css` (sin tocar previos):
+      `.loginscreen`, `.login-card`, `.login-form`, `.login-error`,
+      `.save-btn.outline`, `.detail-loading/.detail-empty/.detail-error`,
+      `.band-section`, `.band-title`, `.nap-ports-slot`, `.port-cell small`,
+      `#logoutBtn`.
+- [x] Sintaxis JS verificada con `node --check api.js && node --check app.js`.
+- [x] `npx http-server . -p 5174` sirve la app sin error.
+
+---
+
+## PARTE C2 — Integración Fase 2 · ✅ Verificada (2026-05-26)
+
+Backend levantado en `http://localhost:8080`, conectores en modo `mock`.
+Endpoints probados con curl tras login real:
+
+- `POST /auth/login` → HTTP 200, JWT emitido.
+- `GET /accounts/WX-DEMO-001/client-profile` → 200 con datos mock
+  determinista (Pedro Cevallos Aguilar, plan Wifix Hogar 400).
+- `GET /accounts/WX-DEMO-001/wifi-config` → 200 con SSIDs por banda.
+- `PUT /accounts/WX-DEMO-001/wifi-config` (cambia SSIDs) → 200, refleja
+  el cambio.
+- `PUT /accounts/WX-DEMO-001/client-profile` (cambia fullName + phones)
+  → 200, refleja el cambio.
+- `GET /accounts/WX-DEMO-001/unsatisfactory-tasks` → 200 con tareas
+  cerradas como INSATISFACTORIA.
+- Sin token: 401 `UNAUTHORIZED`.
+
+Frontend con `WifixAPI.useRealApi = true` queda listo para hablar con
+el backend; el flag se concentra en `api.js`.
+
+## Decisiones pendientes (estado tras Fase 2)
+
+| # | Tema | Estado |
+|---|------|--------|
+| 1 | Origen de `technicianId` | ✅ **Resuelto** — deriva de `user.id` del JWT en cada POST transaccional. |
+| 2 | Marcas reales de equipos (brand null en seed) | Pendiente — sigue esperando respuesta del socio. |
+| 3 | Servidores de speedtest/red reales | Pendiente — sembrados con ejemplos. |
+| 4 | Ejecución nativa de ping/traceroute/dBm | Pendiente — webapp sigue captando por ingreso manual; Capacitor o app nativa es decisión posterior. |
+
+## Paso siguiente: conectar APIs reales de la operadora
+
+`CONNECTOR_MODE=real` activa el esqueleto; cada `*Real` en
+`src/connectors/<system>/index.ts` reemplaza el `notImplemented(...)`
+por llamadas HTTP a la API del sistema. Falta:
+
+- URLs y credenciales por sistema (comarch, fsm, ispmonitor, acs, tec, rms).
+- Mapeos de los DTOs externos a los del contrato OpenAPI.
+- Tests adicionales contra los conectores reales en un entorno de QA.

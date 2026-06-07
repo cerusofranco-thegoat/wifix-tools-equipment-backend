@@ -72,11 +72,24 @@ export type AddNoteInput = z.infer<typeof addNoteSchema>;
 // Schemas de entrada — sesiones remotas
 // ---------------------------------------------------------------------------
 
-export const openRemoteSessionSchema = z.object({
-  channel: z.enum(REMOTE_SESSION_CHANNELS),
-  targetHost: z.string().optional(),
-  ttlSeconds: z.number().int().min(1).max(1800).optional(),
-});
+export const openRemoteSessionSchema = z
+  .object({
+    channel: z.enum(REMOTE_SESSION_CHANNELS),
+    targetHost: z.string().optional(),
+    ttlSeconds: z.number().int().min(1).max(1800).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.channel === 'BROKER_TUNNEL') {
+      if (!data.targetHost || data.targetHost.trim() === '') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['targetHost'],
+          message:
+            'targetHost es obligatorio para una sesión de túnel; indique la IP del CPE en el LAN.',
+        });
+      }
+    }
+  });
 
 export type OpenRemoteSessionInput = z.infer<typeof openRemoteSessionSchema>;
 

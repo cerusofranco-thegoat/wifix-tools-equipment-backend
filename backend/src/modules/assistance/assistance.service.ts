@@ -1,13 +1,23 @@
 /**
  * Servicio del módulo Asistencia Técnica.
  * Fase B: sesiones, ciclo de vida, sesiones remotas (mock).
- * Fase C: acciones de equipo reales vía conector ACS (mock determinista o real
- *   según CONNECTOR_MODE). Flujo: PENDING → SUCCESS/FAILED + ACTION_RESULT por WS.
+ * Fase C: acciones de equipo reales vía conector ACS.
+ * Fase D: broker WSS real (token single-use, SSRF guard, Jitsi real).
  */
 
+import pino from 'pino';
 import { ApiError } from '../../middleware/error-handler.js';
 import { getAcsConnector } from '../../connectors/acs/index.js';
 import type { WifiBand } from '../../connectors/acs/index.js';
+import { issueSessionToken } from './broker/broker.session-token.js';
+import { assertTargetHostAllowed } from './broker/broker.ssrf-guard.js';
+import { scheduleExpiry, cancelExpiry } from './broker/broker.expiry.js';
+import { sendTunnelError } from './broker/broker.proxy.js';
+import { provisionJitsiRoom } from './broker/broker.jitsi.js';
+import { env } from '../../config/env.js';
+
+// Logger de módulo para contextos donde no hay request.log disponible (callbacks de timers, etc.)
+const moduleLogger = pino({ name: 'assistance.service', level: env.LOG_LEVEL });
 import { assistanceRepository } from './assistance.repository.js';
 import {
   mapSession,
@@ -235,6 +245,22 @@ async function changeStatus(
     payload: { from, to, note: input.note ?? null },
     actorId: userId,
   });
+
+  // Auto-cierre de sesión remota al terminar la sesión de asistencia (ADR-0002 disparador #2)
+  if (isTerminal) {
+    const activeRemote = await assistanceRepository.findActiveRemoteSession(id);
+    if (activeRemote) {
+      cancelExpiry(activeRemote.id);
+      sendTunnelError(id, 'SESSION_CLOSED', `Sesión de asistencia cerrada (${to}).`);
+      await assistanceRepository.closeRemoteSession(activeRemote.id);
+      await assistanceRepository.createEvent({
+        sessionId: id,
+        type: 'REMOTE_SESSION',
+        payload: { remoteSessionId: activeRemote.id, action: 'closed', reason: `assistance_${to.toLowerCase()}` },
+        actorId: userId,
+      });
+    }
+  }
 
   const dto = mapSession(updated);
   broadcastSessionStateChanged(dto);
@@ -502,7 +528,7 @@ async function listActions(
 }
 
 // ---------------------------------------------------------------------------
-// POST /sessions/:id/remote-sessions (AGENT asignado) — MOCK
+// POST /sessions/:id/remote-sessions (AGENT asignado) — REAL (Fase D)
 // ---------------------------------------------------------------------------
 
 async function openRemoteSession(
@@ -538,13 +564,22 @@ async function openRemoteSession(
     throw ApiError.conflict('Ya existe una sesión remota abierta para esta sesión.');
   }
 
-  const ttlSeconds = input.ttlSeconds ?? 600;
+  // --- SSRF Guard: validar targetHost antes de persistir ---
+  const ssrfResult = assertTargetHostAllowed(input.targetHost);
+  if (!ssrfResult.ok) {
+    throw ApiError.validation(
+      `targetHost bloqueado por política de seguridad: ${ssrfResult.reason}`,
+    );
+  }
+  const safeTargetHost = ssrfResult.target || null;
+
+  const ttlSeconds = input.ttlSeconds ?? env.BROKER_DEFAULT_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   const remoteSession = await assistanceRepository.createRemoteSession({
     sessionId,
     channel: input.channel,
-    targetHost: input.targetHost,
+    targetHost: safeTargetHost ?? undefined,
     expiresAt,
   });
 
@@ -554,24 +589,66 @@ async function openRemoteSession(
     payload: {
       remoteSessionId: remoteSession.id,
       channel: input.channel,
-      targetHost: input.targetHost ?? null,
+      targetHost: safeTargetHost,
+      action: 'opened',
     },
     actorId: userId,
   });
 
-  // Token y URL simulados (Fase B mock — Fase D los reemplaza con el broker real)
-  const mockToken = `mock-token-${remoteSession.id}-${Date.now()}`;
-  const mockWsUrl = `wss://broker.wifix.internal/sessions/${sessionId}/tunnel`;
+  // --- Emitir token de un solo uso firmado para el broker ---
+  const tokenResult = await issueSessionToken(
+    userId,
+    sessionId,
+    remoteSession.id,
+    safeTargetHost,
+    ttlSeconds,
+  );
+
+  // B-3: Construir el wsUrl desde la variable de entorno BROKER_PUBLIC_WS_URL.
+  // Esto permite configurar el endpoint real en producción sin recompilar.
+  const wsUrl = env.BROKER_PUBLIC_WS_URL;
 
   const connect = {
-    wsUrl: mockWsUrl,
-    sessionToken: mockToken,
-    expiresAt: expiresAt.toISOString(),
+    wsUrl,
+    sessionToken: tokenResult.jwt,
+    expiresAt: tokenResult.expiresAt.toISOString(),
   };
+
+  // --- Registrar timer de expiración automática ---
+  scheduleExpiry(
+    remoteSession.id,
+    sessionId,
+    tokenResult.jti,
+    tokenResult.expiresAt.getTime(),
+    {
+      onExpire: async (rsId, sId) => {
+        try {
+          await assistanceRepository.expireRemoteSession(rsId);
+          await assistanceRepository.createEvent({
+            sessionId: sId,
+            type: 'REMOTE_SESSION',
+            payload: { remoteSessionId: rsId, action: 'expired' },
+            actorId: null,
+          });
+          // Notificar cierre al túnel del técnico
+          sendTunnelError(sId, 'SESSION_EXPIRED', 'La sesión remota ha expirado.');
+        } catch {
+          // Si la BD no está disponible, el cierre del túnel ya se realizó
+        }
+      },
+      onBeforeExpire: (rsId, sId) => {
+        // M-3: Log estructurado vía pino (moduleLogger) — no console.info en producción
+        moduleLogger.info(
+          { remoteSessionId: rsId, sessionId: sId },
+          'Broker: expiración de sesión remota programada',
+        );
+      },
+    },
+  );
 
   const dto = mapRemoteSession(remoteSession);
 
-  // Notificar a los participantes de la sesión
+  // Notificar a los participantes de la sesión por WS
   broadcastRemoteSessionReady(sessionId, dto, connect);
 
   return { remoteSession: dto, connect };
@@ -595,12 +672,18 @@ async function closeRemoteSession(
   const session = await requireSession(remoteSession.sessionId);
   assertAssignedAgentOrSupervisor(session, userId, role);
 
+  // Cancelar el timer de expiración automática
+  cancelExpiry(remoteSessionId);
+
+  // Cerrar el túnel del técnico (si está activo)
+  sendTunnelError(remoteSession.sessionId, 'SESSION_CLOSED', 'La sesión remota fue cerrada.');
+
   const closed = await assistanceRepository.closeRemoteSession(remoteSessionId);
 
   await assistanceRepository.createEvent({
     sessionId: remoteSession.sessionId,
     type: 'REMOTE_SESSION',
-    payload: { remoteSessionId, action: 'closed' },
+    payload: { remoteSessionId, action: 'closed', closedBy: userId },
     actorId: userId,
   });
 
@@ -608,7 +691,7 @@ async function closeRemoteSession(
 }
 
 // ---------------------------------------------------------------------------
-// POST /sessions/:id/video (participantes) — MOCK
+// POST /sessions/:id/video (participantes) — REAL Jitsi (Fase D)
 // ---------------------------------------------------------------------------
 
 async function provisionVideo(
@@ -619,24 +702,36 @@ async function provisionVideo(
   const session = await requireSession(sessionId);
   assertParticipantOrSupervisor(session, userId, role);
 
-  // Sala Jitsi simulada — Fase D provisiona la real
-  const roomName = `wifix-assist-${sessionId.slice(0, 8)}`;
-  const domain = 'meet.wifix.internal'; // placeholder; configurable vía env en Fase D
-  // JWT de sala simulado (Fase D firma el JWT real contra el Jitsi self-host)
-  const jitsiJwt = `mock-jitsi-jwt-${sessionId}-${Date.now()}`;
+  // Provisionar la sala Jitsi real y firmar el JWT de sala
+  // El userId es el claim `sub`; name y email se toman del JWT de auth pero
+  // el servicio solo recibe userId + role, así que construimos un display name
+  // a partir del rol para no requerir lookup a BD.
+  const displayName =
+    role === 'TECHNICIAN' ? 'Técnico Wifix' : role === 'AGENT' ? 'Agente Call Center' : 'Supervisor';
 
-  // Persistir el videoRoom como evento REMOTE_SESSION con kind=video
+  const jitsiResult = await provisionJitsiRoom(sessionId, {
+    id: userId,
+    name: displayName,
+    email: `${role.toLowerCase()}@wifix.internal`,
+    moderator: true, // técnico y agente son siempre moderadores en sus salas
+  });
+
+  // Persistir el videoRoom como evento (idempotente — solo si no existe)
   const existing = await assistanceRepository.findVideoRoom(sessionId);
   if (!existing) {
     await assistanceRepository.createEvent({
       sessionId,
       type: 'REMOTE_SESSION',
-      payload: { kind: 'video', roomName, domain },
+      payload: { kind: 'video', roomName: jitsiResult.roomName, domain: jitsiResult.domain },
       actorId: userId,
     });
   }
 
-  return { roomName, domain, jwt: jitsiJwt };
+  return {
+    roomName: jitsiResult.roomName,
+    domain: jitsiResult.domain,
+    jwt: jitsiResult.jwt,
+  };
 }
 
 // ---------------------------------------------------------------------------

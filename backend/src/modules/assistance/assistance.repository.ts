@@ -247,6 +247,13 @@ async function closeRemoteSession(id: string): Promise<RemoteSession> {
   });
 }
 
+async function expireRemoteSession(id: string): Promise<RemoteSession> {
+  return prisma.remoteSession.update({
+    where: { id },
+    data: { status: 'EXPIRED', endedAt: new Date() },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Sala de video (campo denormalizado en AssistanceSession — lo guardamos en
 // un evento de tipo REMOTE_SESSION con payload videoRoom para Fase B mock)
@@ -295,6 +302,7 @@ export const assistanceRepository = {
   findActiveRemoteSession,
   findRemoteSessionById,
   closeRemoteSession,
+  expireRemoteSession,
   // Video
   findVideoRoom,
 };

@@ -201,7 +201,11 @@ Request body (JSON):
 ```ts
 interface OpenRemoteSessionBody {
   channel: RemoteSessionChannel;  // 'BROKER_TUNNEL' (router web admin) | 'COBROWSE'
-  targetHost?: string;            // host del CPE en el LAN; default: gateway reportado
+  targetHost?: string;            // host del CPE en el LAN.
+                                  // OBLIGATORIO para channel='BROKER_TUNNEL': debe ser la
+                                  // IP del CPE en el LAN (p.ej. "192.168.1.1"). Si se omite
+                                  // o está vacío con BROKER_TUNNEL, la respuesta es 400
+                                  // VALIDATION_ERROR. Para COBROWSE es opcional.
   ttlSeconds?: number;            // 1..1800; default 600
 }
 ```

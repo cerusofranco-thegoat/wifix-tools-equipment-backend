@@ -28,6 +28,8 @@ import {
   getStaleConnections,
   getConnection,
 } from './assistance.hub.js';
+import { cancelExpiry } from './broker/broker.expiry.js';
+import { sendTunnelError } from './broker/broker.proxy.js';
 
 // Intervalo de heartbeat: 60 segundos (configurable vía env en el futuro)
 const WS_HEARTBEAT_TIMEOUT_MS = 60_000;
@@ -80,6 +82,28 @@ function closeWithError(socket: WebSocket, code: string, message: string): void 
   socket.close(1008, message); // 1008 = Policy Violation
 }
 
+/**
+ * Cierra la sesión remota activa del técnico cuando pierde el heartbeat (ADR-0002).
+ * Fire-and-forget; los errores de BD no propagan.
+ */
+async function closeTechnicianRemoteSession(sessionId: string, reason: string): Promise<void> {
+  try {
+    const active = await assistanceRepository.findActiveRemoteSession(sessionId);
+    if (!active) return;
+    cancelExpiry(active.id);
+    sendTunnelError(sessionId, 'HEARTBEAT_LOST', 'La app del técnico perdió el heartbeat.');
+    await assistanceRepository.closeRemoteSession(active.id);
+    await assistanceRepository.createEvent({
+      sessionId,
+      type: 'REMOTE_SESSION',
+      payload: { remoteSessionId: active.id, action: 'closed', reason },
+      actorId: null,
+    });
+  } catch {
+    // La auditoría y el cierre de BD no deben bloquear el flujo WS
+  }
+}
+
 /** Parsea un mensaje crudo; devuelve null si no es JSON o no tiene `type`. */
 function parseMessage(raw: string): ClientMessage | null {
   try {
@@ -108,6 +132,10 @@ export async function registerAssistanceWs(app: FastifyInstance): Promise<void> 
         // Notificar presencia offline a los compañeros de sala
         if (conn.sessionId) {
           broadcastPeerPresence(conn.sessionId, conn.role, false, connId);
+        }
+        // ADR-0002 disparador #3: técnico sin heartbeat → cerrar sesión remota activa
+        if (conn.role === 'TECHNICIAN' && conn.sessionId) {
+          void closeTechnicianRemoteSession(conn.sessionId, 'heartbeat_timeout');
         }
         try {
           conn.socket.close(1001, 'Heartbeat timeout.');

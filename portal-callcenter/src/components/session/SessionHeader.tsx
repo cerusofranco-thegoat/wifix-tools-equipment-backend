@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useRef, useCallback, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { changeStatus, type ChangeStatusBody } from '../../lib/api/assistance';
 import { useAuthStore } from '../../stores/auth.store';
@@ -6,6 +6,7 @@ import { StatusBadge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { toast } from '../ui/Toast';
 import { ApiError } from '../../lib/api/client';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { AssistanceSession, AssistanceStatus } from '../../types/assistance';
 
 type TransitionStatus = 'ACTIVE' | 'ON_HOLD' | 'RESOLVED' | 'UNRESOLVED' | 'CANCELLED';
@@ -59,6 +60,7 @@ export function SessionHeader({ session }: SessionHeaderProps) {
   const queryClient = useQueryClient();
   const [noteModal, setNoteModal] = useState<TransitionStatus | null>(null);
   const [noteText, setNoteText] = useState('');
+  const modalRef = useRef<HTMLDivElement>(null);
 
   const isAgent = user?.role === 'AGENT';
   const isSupervisor = user?.role === 'SUPERVISOR';
@@ -85,6 +87,16 @@ export function SessionHeader({ session }: SessionHeaderProps) {
         toast('Error al cambiar el estado.', 'error');
       }
     },
+  });
+
+  const closeModal = useCallback(() => {
+    setNoteModal(null);
+    setNoteText('');
+  }, []);
+
+  useFocusTrap(modalRef, {
+    active: noteModal !== null,
+    onEscape: closeModal,
   });
 
   function handleTransition(status: TransitionStatus) {
@@ -181,7 +193,7 @@ export function SessionHeader({ session }: SessionHeaderProps) {
           aria-labelledby="note-modal-title"
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
         >
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
+          <div ref={modalRef} className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
             <h2 id="note-modal-title" className="font-semibold text-gray-900">
               {TRANSITION_LABELS[noteModal]} — nota requerida
             </h2>
@@ -211,7 +223,7 @@ export function SessionHeader({ session }: SessionHeaderProps) {
                   type="button"
                   variant="secondary"
                   size="sm"
-                  onClick={() => { setNoteModal(null); setNoteText(''); }}
+                  onClick={closeModal}
                   disabled={mutation.isPending}
                 >
                   Cancelar

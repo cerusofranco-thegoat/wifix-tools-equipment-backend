@@ -4,9 +4,8 @@ import { getStudy } from '../../lib/api/assistance';
 import { Spinner } from '../ui/Spinner';
 import { ErrorMessage, EmptyState } from '../ui/ErrorMessage';
 import { ApiError } from '../../lib/api/client';
+import { HeatmapView } from './HeatmapView';
 import clsx from 'clsx';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
 interface StudyPanelProps {
   sessionId: string;
@@ -69,10 +68,6 @@ export function StudyPanel({ sessionId }: StudyPanelProps) {
   }
 
   if (!data) return null;
-
-  const heatmapUrl = data.latestHeatmapId
-    ? `${API_BASE}/herramientas/v1/heatmap/${data.latestHeatmapId}/image`
-    : null;
 
   return (
     <div className="space-y-5">
@@ -165,27 +160,15 @@ export function StudyPanel({ sessionId }: StudyPanelProps) {
         </section>
       )}
 
-      {/* Mapa de calor */}
-      {heatmapUrl ? (
+      {/* Mapa de calor WiFi — datos desde GET /herramientas/v1/wifi-heatmaps/:id */}
+      {data.latestHeatmapId && (
         <section aria-labelledby="heatmap-heading" className="bg-white rounded-xl border border-gray-200 p-5">
-          <h2 id="heatmap-heading" className="font-semibold text-gray-900 text-sm mb-3">Mapa de calor WiFi</h2>
-          <img
-            src={heatmapUrl}
-            alt="Mapa de calor de cobertura WiFi"
-            className="rounded-lg max-w-full"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = 'none';
-              const next = e.currentTarget.nextElementSibling as HTMLElement | null;
-              if (next) next.style.display = 'block';
-            }}
-          />
-          <p className="hidden text-xs text-gray-400 mt-2" aria-live="polite">
-            ID del mapa: {data.latestHeatmapId}. La imagen no está disponible en este momento.
-          </p>
+          <h2 id="heatmap-heading" className="font-semibold text-gray-900 text-sm mb-4">
+            Mapa de calor WiFi
+          </h2>
+          <HeatmapView heatmapId={data.latestHeatmapId} />
         </section>
-      ) : data.latestHeatmapId ? (
-        <p className="text-xs text-gray-400">ID de mapa de calor: {data.latestHeatmapId}</p>
-      ) : null}
+      )}
     </div>
   );
 }

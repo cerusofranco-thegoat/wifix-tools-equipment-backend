@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes } from 'react';
+import { forwardRef, type ButtonHTMLAttributes } from 'react';
 import clsx from 'clsx';
 
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
@@ -24,17 +24,21 @@ const sizeMap: Record<Size, string> = {
   lg: 'px-6 py-3 text-base',
 };
 
-export function Button({
-  variant = 'primary',
-  size = 'md',
-  loading = false,
-  disabled,
-  className,
-  children,
-  ...props
-}: ButtonProps) {
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  {
+    variant = 'primary',
+    size = 'md',
+    loading = false,
+    disabled,
+    className,
+    children,
+    ...props
+  },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       {...props}
       disabled={disabled ?? loading}
       aria-disabled={disabled ?? loading}
@@ -56,4 +60,4 @@ export function Button({
       {children}
     </button>
   );
-}
+});

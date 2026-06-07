@@ -23,7 +23,7 @@ describe('SSRF guard — casos borde (hardening Fase D)', () => {
   // El guard detecta la forma normalizada hex que produce URL():
   //   [::ffff:127.0.0.1] -> hostname ::ffff:7f00:1 -> loopback mapped -> bloqueado
   //   [::ffff:169.254.169.254] -> hostname ::ffff:a9fe:a9fe -> link-local mapped -> bloqueado
-  //   [::ffff:10.0.0.1] -> hostname ::ffff:a00:1 -> mapped RFC1918 -> bloqueado (usar IPv4 directo)
+  //   [::ffff:192.168.1.1] -> unwrap a IPv4 privada -> PERMITIDO (política mapped→IPv4)
 
   it('[::ffff:127.0.0.1] (mapped loopback, URL form) → bloqueado', () => {
     const result = checkTargetHost('http://[::ffff:127.0.0.1]/');
@@ -35,22 +35,30 @@ describe('SSRF guard — casos borde (hardening Fase D)', () => {
     expect(result.allowed).toBe(false);
   });
 
-  it('[::ffff:10.0.0.1] (mapped RFC1918, URL form) → bloqueado (IPv4-mapped no soportado)', () => {
-    // Por política, se bloquea aunque la IPv4 embebida sea privada.
-    // El agente debe usar la notación IPv4 directa.
-    const result = checkTargetHost('http://[::ffff:10.0.0.1]/');
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/IPv4-mapped/i);
+  // Política nueva: mapped con IPv4 privada → se desenvuelve y se permite.
+  // El host devuelto es la IPv4 extraída, no la forma mapped.
+  // Decisión de diseño: el agente puede recibir la dirección en forma mapped del
+  // stack de red; forzar reformateo sería innecesario y rompería flujos válidos.
+  it('[::ffff:192.168.1.1] (mapped RFC1918, URL form) → PERMITIDO (unwrap a IPv4 privada)', () => {
+    const result = checkTargetHost('http://[::ffff:192.168.1.1]/');
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.host).toBe('192.168.1.1');
+      expect(result.port).toBe(80);
     }
   });
 
-  it('[::ffff:192.168.1.1] (mapped RFC1918, URL form) → bloqueado', () => {
-    const result = checkTargetHost('http://[::ffff:192.168.1.1]/');
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/IPv4-mapped/i);
+  it('[::ffff:10.0.0.1] (mapped RFC1918, URL form) → PERMITIDO (unwrap a IPv4 privada)', () => {
+    const result = checkTargetHost('http://[::ffff:10.0.0.1]/');
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.host).toBe('10.0.0.1');
     }
+  });
+
+  it('[::ffff:8.8.8.8] (mapped IP pública, URL form) → bloqueado', () => {
+    const result = checkTargetHost('http://[::ffff:8.8.8.8]/');
+    expect(result.allowed).toBe(false);
   });
 
   // Sin corchetes no es URL válida → "targetHost inválido" (también bloqueado)
@@ -72,9 +80,6 @@ describe('SSRF guard — casos borde (hardening Fase D)', () => {
   it('[::] (IPv6 any-address, URL form) → bloqueado explícitamente', () => {
     const result = checkTargetHost('http://[::]/');
     expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/any-address/i);
-    }
   });
 
   it('[0:0:0:0:0:0:0:0] (IPv6 any-address explícita, URL form) → bloqueado', () => {
@@ -94,16 +99,88 @@ describe('SSRF guard — casos borde (hardening Fase D)', () => {
     expect(result.allowed).toBe(false);
   });
 
-  // --- IPv6 no-loopback (fc00::/7 ULA) ---
+  // --- IPv6 ULA — NUEVOS casos con política habilitada ---
 
-  it('[fc00::1] (IPv6 ULA privada, URL form) → bloqueado', () => {
+  it('[fd12:3456:789a::1] (IPv6 ULA, URL form) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[fd12:3456:789a::1]/');
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.port).toBe(80);
+    }
+  });
+
+  it('[fc00::1] (IPv6 ULA fc00::/8, URL form) → PERMITIDO', () => {
     const result = checkTargetHost('http://[fc00::1]/');
+    expect(result.allowed).toBe(true);
+  });
+
+  it('[fd00::1] (IPv6 ULA fd00::/8, URL form) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[fd00::1]/');
+    expect(result.allowed).toBe(true);
+  });
+
+  // --- IMDS AWS IPv6 — bloqueado aunque esté dentro de ULA (blocklist tiene prioridad) ---
+
+  // IMDS AWS IPv6 — bloqueado aunque esté dentro de ULA (blocklist tiene prioridad).
+  // fd00:ec2::254 puede interceptarse por BLOCKED_HOSTNAMES (string crudo) o por
+  // BLOCKED_IPV6_NORMALIZED (forma expandida). Ambos caminos son correctos; la prueba
+  // solo verifica que el resultado final sea allowed:false.
+  it('[fd00:ec2::254] (AWS IMDS IPv6, forma comprimida) → bloqueado pese a ser ULA', () => {
+    const result = checkTargetHost('http://[fd00:ec2::254]/');
     expect(result.allowed).toBe(false);
   });
 
-  it('[fd12:3456::1] (IPv6 ULA, URL form) → bloqueado', () => {
-    const result = checkTargetHost('http://[fd12:3456::1]/');
+  it('[fd00:0ec2:0000:0000:0000:0000:0000:0254] (AWS IMDS IPv6, forma expandida) → bloqueado', () => {
+    const result = checkTargetHost('http://[fd00:0ec2:0000:0000:0000:0000:0000:0254]/');
     expect(result.allowed).toBe(false);
+  });
+
+  // --- Link-local IPv6 — PERMITIDO ---
+
+  it('[fe80::1] (IPv6 link-local, URL form) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[fe80::1]/');
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.port).toBe(80);
+    }
+  });
+
+  it('[fe80::abcd:1234] (IPv6 link-local con interfaz simulada) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[fe80::abcd:1234]/');
+    expect(result.allowed).toBe(true);
+  });
+
+  // --- GUA (2000::/3) — PERMITIDO ---
+
+  it('[2607:f8b0:4005:80a::200e] (IPv6 GUA — Google DNS range) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[2607:f8b0:4005:80a::200e]/');
+    expect(result.allowed).toBe(true);
+    if (result.allowed) {
+      expect(result.port).toBe(80);
+    }
+  });
+
+  it('[2001:db8::1] (IPv6 GUA documentation range) → PERMITIDO', () => {
+    const result = checkTargetHost('http://[2001:db8::1]/');
+    expect(result.allowed).toBe(true);
+  });
+
+  // --- Puerto inválido sobre IPv6 permitida ---
+
+  it('[fd12::1]:8080 (ULA con puerto no permitido) → bloqueado por puerto', () => {
+    const result = checkTargetHost('http://[fd12::1]:8080/');
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/puerto/i);
+    }
+  });
+
+  it('[fe80::1]:8443 (link-local con puerto no permitido) → bloqueado por puerto', () => {
+    const result = checkTargetHost('http://[fe80::1]:8443/');
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/puerto/i);
+    }
   });
 
   // --- IPv4 válidas siguen funcionando ---

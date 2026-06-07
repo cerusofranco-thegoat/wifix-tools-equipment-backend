@@ -155,22 +155,38 @@ Restricción: el agente solo puede abrir nuevos streams con `OPEN_STREAM`. DATA 
 
 ### 5.2 Defensa SSRF (política de targetHost)
 
-El agente NO puede dirigir el broker a un host arbitrario. La validación se aplica en `broker.ssrf-guard.ts` al abrir la sesión remota:
+El agente NO puede dirigir el broker a un host arbitrario. La validación se aplica en `broker.ssrf-guard.ts` al abrir la sesión remota.
 
 **PERMITIDO:**
 - IPs privadas RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`.
+- IPv6 LAN — **ULA** `fc00::/7` (cubre `fc00::/8` y `fd00::/8`), **link-local** `fe80::/10`, **GUA** `2000::/3`.
+- IPv4-mapped IPv6 (`::ffff:x.x.x.x`) con IPv4 embebida RFC 1918: se desenvuelve y se aplica la política IPv4 completa.
 - Puertos: solo **80** y **443**.
 - Esquemas: solo **http** y **https**.
-- Solo **direcciones IP** (no hostnames DNS arbitrarios).
+- Solo **direcciones IP literales** (no hostnames DNS arbitrarios — previene rebinding).
 
-**BLOQUEADO explícitamente:**
-- Loopback: `127.0.0.0/8`, `::1`.
-- Link-local: `169.254.0.0/16` (incluye `169.254.169.254` — AWS IMDS), `fe80::/10`.
-- Hostnames bloqueados: `localhost`, `metadata.google.internal`, `metadata`, `169.254.169.254`, `fd00:ec2::254`.
-- Cualquier hostname que no sea una IP literal (previene DNS rebinding).
-- IPs públicas (cualquier IPv4 fuera de RFC 1918).
+**BLOQUEADO — blocklist con prioridad absoluta sobre el allow:**
+- Loopback: `127.0.0.0/8`, `::1` (y forma expandida `0:0:0:0:0:0:0:1`).
+- Any-address: `0.0.0.0`, `::`.
+- IMDS de cloud:
+  - `169.254.169.254` (AWS/GCP IMDS IPv4, también como hostname literal).
+  - `fd00:ec2::254` (AWS IMDS IPv6 — **bloqueado pese a caer en ULA**; la comparación
+    se hace sobre la forma normalizada/expandida para cubrir cualquier notación).
+  - Hostnames: `localhost`, `metadata.google.internal`, `metadata`.
+- Link-local IPv4: `169.254.0.0/16`.
+- IPv4-mapped con IP no-privada (loopback, link-local, pública).
+- IPs públicas (cualquier IPv4 fuera de RFC 1918 y cualquier IPv6 fuera de ULA/link-local/GUA).
 - Puertos distintos de 80 y 443.
 - Esquemas distintos de http/https.
+
+**Nota sobre GUA (`2000::/3`):**
+Habilitar GUA permite que el agente dirija el túnel hacia una IPv6 globalmente
+enrutable. Este riesgo residual es aceptado por decisión de producto: los CPE de
+Xtrim con IPv6 pueden exponer su panel en el prefijo global delegado por el ISP,
+ya que IPv6 no usa NAT. Los controles complementarios que acotan este riesgo son:
+la blocklist de IMDS/loopback/any, la restricción a puertos 80/443, la exigencia
+de IPs literales (sin DNS), el rate-limiting de apertura de RemoteSessions y la
+auditoría de cada request proxeado.
 
 El `targetHost` queda fijo en el token desde la apertura. El agente no puede cambiarlo a mitad de sesión porque el broker usa el `targetHost` del token (no el de cada trama OPEN_STREAM).
 

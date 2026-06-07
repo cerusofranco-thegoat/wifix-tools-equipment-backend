@@ -136,3 +136,26 @@ Wifi Monitor envía cada estudio (fire-and-forget) a un backend nuevo en Next.js
 ### Consecuencias
 - **Gana:** un solo modelo de datos vivo; se preserva el histórico útil sin dependencia continua.
 - **Cuesta:** un trabajo puntual de ETL y mapeo si se decide importar.
+
+---
+
+## 0007. SSRF del broker: el targetHost admite IPv6 LAN completo (ULA + link-local + GUA)
+
+- Estado: aceptada
+- Fecha: 2026-06-07
+- Contexto del proyecto: Wifix / Asistencia Técnica
+
+### Contexto
+El SSRF guard del broker (`broker.ssrf-guard.ts`, introducido en Fase D) inicialmente solo permitía IPv4 privada RFC 1918 como `targetHost` y bloqueaba toda IPv6. Pero IPv6 no usa NAT: un CPE con IPv6 expone su panel de administración en la LAN en cualquiera de tres tipos de dirección —ULA (`fc00::/7`), link-local (`fe80::/10`) o **GUA / global** (`2000::/3`, el prefijo que el ISP **delega a la LAN**)— y un porcentaje del parque puede tener el panel en una GUA. Para que el técnico y el Call Center puedan operar **todo** el parque, se necesita admitir IPv6 LAN en sus tres formas.
+
+### Decisión
+El `targetHost` admite IPv6 en **ULA + link-local + GUA**. Por decisión de producto (Franco, 2026-06-07) se incluye **GUA global** para cubrir CPE cuyo panel esté en el prefijo IPv6 delegado por el ISP. El **blocklist tiene prioridad sobre el allow** y bloquea, en cualquier notación (comparando sobre la forma IPv6 expandida/canónica): loopback (`::1`), any-address (`::`), e **IMDS/metadata de cloud — incluido `fd00:ec2::254`, que cae dentro de ULA**. Las direcciones IPv4-mapped (`::ffff:x.x.x.x`) se **desenvuelven** y se les aplica la política IPv4 completa. Se mantiene: solo IPs literales (sin DNS, anti-rebinding), puertos 80/443, esquemas http/https.
+
+### Alternativas consideradas
+- **Solo ULA (`fc00::/7`)** — lo más seguro, pero no cubre CPE con panel en link-local ni en el prefijo global del ISP.
+- **ULA + link-local** — cubre todo el IPv6 con alcance local, sin abrir internet público; descartada porque no cubre los CPE con panel en GUA.
+- **ULA + link-local + GUA (elegida)** — cobertura total del parque a costa de mayor superficie SSRF.
+
+### Consecuencias
+- **Gana:** cobertura de todo el parque IPv6, sea cual sea el tipo de dirección LAN del CPE.
+- **Cuesta (riesgo residual aceptado):** permitir GUA implica que un agente (o una credencial de agente comprometida) puede dirigir el túnel del técnico a **cualquier host IPv6 público de internet** (abuso de proxy / SSRF saliente). Controles compensatorios: blocklist de IMDS/loopback/any, puertos 80/443, solo IPs literales (sin DNS), rate-limiting de apertura de sesiones remotas, auditoría de cada request del túnel y gating por consentimiento del cliente. Quedan permitidas por ser GUA las direcciones de transición que embeben IPv4 (6to4 `2002::/16`, Teredo `2001::/32`); NAT64 `64:ff9b::/96` queda bloqueado por no caer en los rangos permitidos. Si la superficie SSRF saliente se vuelve un problema, el siguiente paso es una allowlist de prefijos por operadora o resolver el gateway del lado del técnico y firmarlo en el token.

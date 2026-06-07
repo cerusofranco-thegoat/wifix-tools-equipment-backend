@@ -139,6 +139,16 @@ export const createOperatorTicketSchema = z.object({
 export type CreateOperatorTicketInput = z.infer<typeof createOperatorTicketSchema>;
 
 // ---------------------------------------------------------------------------
+// Schemas de entrada — auto-asistencia (Fase F)
+// ---------------------------------------------------------------------------
+
+export const applyRemediationSchema = z.object({
+  remediationId: z.string().min(1, 'remediationId es obligatorio.'),
+});
+
+export type ApplyRemediationInput = z.infer<typeof applyRemediationSchema>;
+
+// ---------------------------------------------------------------------------
 // UUID param schema (reutilizable)
 // ---------------------------------------------------------------------------
 

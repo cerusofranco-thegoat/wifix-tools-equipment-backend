@@ -16,10 +16,14 @@ import {
   openRemoteSessionSchema,
   requestActionSchema,
   createOperatorTicketSchema,
+  applyRemediationSchema,
   uuidParamSchema,
   paginationOnlySchema,
 } from './assistance.schemas.js';
 import { assistanceService } from './assistance.service.js';
+import { getStudyOverview } from './study.service.js';
+import { createOperatorTicket } from './tickets.service.js';
+import { getAutoAssistAnalysis, applyRemediation } from './auto-assist.service.js';
 import { remoteSessionRateLimitConfig } from './broker/broker.rate-limit.js';
 
 export async function registerAssistanceRoutes(app: FastifyInstance): Promise<void> {
@@ -194,27 +198,51 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   });
 
   // -------------------------------------------------------------------------
-  // Estudio WiFi — GET /sessions/:id/study
-  // Fase C/F — stub 501
+  // Estudio WiFi — GET /sessions/:id/study (Fase F — REAL)
+  // Auth: participantes o SUPERVISOR
   // -------------------------------------------------------------------------
-  app.get('/sessions/:id/study', async (_request, reply) => {
-    return reply.code(501).send({
-      code: 'NOT_IMPLEMENTED',
-      message: 'Este endpoint se implementa en la Fase C/F.',
-    });
+  app.get('/sessions/:id/study', async (request, reply) => {
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await getStudyOverview(id, actor.id, actor.role);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
-  // Ticket de operadora — POST /sessions/:id/tickets
-  // Fase C/F — stub 501
+  // Ticket de operadora — POST /sessions/:id/tickets (Fase F — REAL)
+  // Auth: AGENT asignado o SUPERVISOR. Síncrono → 502 si la operadora falla.
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/tickets', async (request, reply) => {
-    requireRole(request, 'AGENT', 'SUPERVISOR');
-    parseParams(uuidParamSchema, request.params);
-    parseBody(createOperatorTicketSchema, request.body);
-    return reply.code(501).send({
-      code: 'NOT_IMPLEMENTED',
-      message: 'Este endpoint se implementa en la Fase F.',
-    });
+    const actor = requireRole(request, 'AGENT', 'SUPERVISOR');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(createOperatorTicketSchema, request.body);
+    const result = await createOperatorTicket(id, body, actor.id, actor.role);
+    return reply.code(201).send(result);
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-asistencia — GET /sessions/:id/auto-assist (Fase F)
+  // Devuelve causas detectadas + remediaciones propuestas. NO aplica nada.
+  // Auth: participantes o SUPERVISOR.
+  // -------------------------------------------------------------------------
+  app.get('/sessions/:id/auto-assist', async (request, reply) => {
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await getAutoAssistAnalysis(id, actor.id, actor.role);
+    return reply.send(result);
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-asistencia — POST /sessions/:id/auto-assist/apply (Fase F)
+  // Aplica una remediación propuesta.
+  // Auth: AGENT asignado; sesión ACTIVE; consentAt obligatorio.
+  // 409 si no hay consentimiento. 502 si el conector falla.
+  // -------------------------------------------------------------------------
+  app.post('/sessions/:id/auto-assist/apply', async (request, reply) => {
+    const actor = requireRole(request, 'AGENT');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(applyRemediationSchema, request.body);
+    const result = await applyRemediation(id, body, actor.id);
+    return reply.code(200).send(result);
   });
 }

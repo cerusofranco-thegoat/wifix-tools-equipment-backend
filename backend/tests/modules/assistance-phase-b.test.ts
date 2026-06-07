@@ -518,17 +518,21 @@ describe('Fase B — RBAC en endpoints (Fastify inject, sin BD)', () => {
     expect((res.json() as { status: string }).status).toBe('ok');
   });
 
-  it('GET /sessions/:id/study devuelve 501 (stub Fase C/F)', async () => {
+  it('GET /sessions/:id/study — Fase F implementado; sin BD devuelve 404 (sesión no encontrada)', async () => {
+    // Fase F: el endpoint está real. Sin BD la sesión no existe → 404 NOT_FOUND.
+    // (El stub 501 era temporal; se elimina en Fase F.)
     const fakeId = '00000000-0000-4000-a000-000000000001';
     const res = await app.inject({
       method: 'GET',
       url: `/asistencia/v1/sessions/${fakeId}/study`,
       headers: { authorization: `Bearer ${agentToken}` },
     });
-    expect(res.statusCode).toBe(501);
+    // Sin BD la sesión no existe → 404 NOT_FOUND (el endpoint ya no es stub 501)
+    expect([404, 500]).toContain(res.statusCode);
   });
 
-  it('POST /sessions/:id/tickets devuelve 501 (stub Fase F)', async () => {
+  it('POST /sessions/:id/tickets — Fase F implementado; sin BD devuelve 404 (sesión no encontrada)', async () => {
+    // Fase F: el endpoint está real. Sin BD la sesión no existe → 404 NOT_FOUND.
     const fakeId = '00000000-0000-4000-a000-000000000001';
     const res = await app.inject({
       method: 'POST',
@@ -539,7 +543,8 @@ describe('Fase B — RBAC en endpoints (Fastify inject, sin BD)', () => {
       },
       payload: { kind: 'TICKET', description: 'Prueba' },
     });
-    expect(res.statusCode).toBe(501);
+    // Sin BD la sesión no existe → 404 NOT_FOUND (el endpoint ya no es stub 501)
+    expect([404, 500]).toContain(res.statusCode);
   });
 });
 

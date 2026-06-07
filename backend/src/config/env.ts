@@ -77,6 +77,37 @@ const envSchema = z.object({
     .string()
     .url('BROKER_PUBLIC_WS_URL debe ser una URL válida (wss:// o ws://)')
     .default('ws://localhost:8080/asistencia/v1/broker/connect'),
+  // ---------------------------------------------------------------------------
+  // Configuración por conector — Fase F (ADR-0005: retiro de Proxy Xtrim)
+  // Todas son opcionales con defaults vacíos seguros; el skeleton real lanza
+  // notImplemented hasta que se entreguen valores reales.
+  // ---------------------------------------------------------------------------
+
+  // --- Conector: ticketing (generación de tickets en la operadora) ---
+  TICKETING_BASE_URL: z.string().default(''),
+  TICKETING_API_KEY: z.string().default(''),
+  TICKETING_USERNAME: z.string().default(''),
+  TICKETING_PASSWORD: z.string().default(''),
+
+  // --- Conector: scheduling (agendamiento de visitas técnicas) ---
+  SCHEDULING_BASE_URL: z.string().default(''),
+  SCHEDULING_API_KEY: z.string().default(''),
+
+  // --- Conector: FSM (órdenes CreaFsmVistec) ---
+  FSM_BASE_URL: z.string().default(''),
+  FSM_API_KEY: z.string().default(''),
+  FSM_USERNAME: z.string().default(''),
+  FSM_PASSWORD: z.string().default(''),
+
+  // --- Conector: ISP Monitor (métricas de red y telemetría de planta) ---
+  ISPMONITOR_BASE_URL: z.string().default(''),
+  ISPMONITOR_API_KEY: z.string().default(''),
+
+  // --- Conector: Comarch / TYTAN (perfiles y estado de contratos) ---
+  COMARCH_BASE_URL: z.string().default(''),
+  COMARCH_USERNAME: z.string().default(''),
+  COMARCH_PASSWORD: z.string().default(''),
+
   // --- Rate-limiting del broker (Fase D hardening) ---
   // Máximo de requests de emisión de token (POST /remote-sessions) por agente por ventana.
   BROKER_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),

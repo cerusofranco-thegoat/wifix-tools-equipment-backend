@@ -389,7 +389,90 @@ Errores: `400`, `401`, `403`, `404`, `502` (operadora no responde).
 
 ---
 
-## 7. WebSocket de señalización — `/asistencia/v1/ws`
+## 7. Auto-asistencia (Fase F)
+
+El motor de auto-asistencia corre el estudio + telemetría de planta, detecta causas con reglas puras y propone remediaciones. Las remediaciones se aplican vía el conector ACS (igual que en §4). La aplicación es **síncrona** (→ 502 si el conector falla) y **auditada** (AssistanceEvent + ConnectorCallLog). Es **reversible**: el estado previo se persiste en el request de la RemoteAction antes de aplicar.
+
+### Detectar causas — GET /sessions/{id}/auto-assist
+
+Propósito: analizar métricas de la cuenta y devolver causas detectadas + remediaciones propuestas. **No aplica ninguna acción**.
+Auth: participantes o `SUPERVISOR`.
+
+Response 200:
+```ts
+type CauseCode =
+  | 'WIFI_SIGNAL_LOW'
+  | 'SNR_DEGRADED'
+  | 'CHANNEL_SATURATED'
+  | 'ONU_RX_POWER_OUT_OF_RANGE'
+  | 'CABLEMODEM_DOWNSTREAM_LOW'
+  | 'CABLEMODEM_MER_LOW';
+
+type RemediationAction = 'SET_CHANNEL' | 'REPROVISION' | 'REBOOT' | 'FACTORY_RESET';
+
+interface DetectedCause {
+  code: CauseCode;
+  description: string;
+  measuredValue: number;
+  threshold: number;
+}
+
+interface ProposedRemediation {
+  id: string;                        // ID determinista (ej. "remediation:SET_CHANNEL:WIFI_SIGNAL_LOW")
+  cause: CauseCode;
+  action: RemediationAction;
+  description: string;
+  params: Record<string, unknown>;   // parámetros listos para aplicar (ej. { band, channel })
+  previousState: null;               // siempre null en propuesta; se rellena al aplicar
+  reversible: boolean;
+}
+
+interface AutoAssistAnalysis {
+  accountNumber: string;
+  sessionId: string;
+  causes: DetectedCause[];
+  proposals: ProposedRemediation[];
+  analysedAt: string;               // ISO 8601
+}
+```
+Errores: `401`, `403`, `404`.
+
+### Aplicar remediación — POST /sessions/{id}/auto-assist/apply
+
+Propósito: aplica una remediación propuesta por `GET /auto-assist`. Requiere consentimiento.
+Auth: `AGENT` asignado. Sesión `ACTIVE`.
+
+Request body:
+```ts
+interface ApplyRemediationBody {
+  remediationId: string;             // ID de la propuesta devuelta por GET /auto-assist
+}
+```
+Response 200:
+```ts
+interface ApplyRemediationResult {
+  remediationId: string;
+  action: RemediationAction;
+  status: 'APPLIED' | 'FAILED';
+  message: string;
+  previousState: Record<string, unknown> | null;  // para revertir manualmente si hace falta
+}
+```
+Errores:
+- `400` `remediationId` ausente.
+- `401` no autenticado.
+- `403` no es el agente asignado.
+- `404` sesión no encontrada.
+- `409` sesión no `ACTIVE` o sin `consentAt` (mensaje en español explícito).
+- `502` el conector ACS no respondió o rechazó la acción.
+
+El resultado también se emite por WebSocket como evento `ACTION_RESULT` (reutiliza el canal de §4).
+
+> **Reversión manual:** si el operador desea revertir una remediación, usa `POST /sessions/{id}/actions` con la acción correspondiente y los parámetros del campo `previousState` del resultado.
+
+---
+
+## 8. WebSocket de señalización — `/asistencia/v1/ws`
 
 Conexión autenticada con el JWT (header `Authorization` o query `?token=`). Un mensaje = un objeto JSON `{ type, ... }`.
 
@@ -423,7 +506,7 @@ Reglas:
 
 ---
 
-## 8. Notas para implementación (Fases B–F)
+## 9. Notas para implementación (Fases B–F)
 
 - **Fase B:** sesiones + WS + máquina de estados, con ACS y broker en mock.
 - **Fase C:** acciones ACS reales (extiende el conector `acs` existente con `reboot`, `setChannel`, `factoryReset`, `reprovision`, `runDiagnostic`).

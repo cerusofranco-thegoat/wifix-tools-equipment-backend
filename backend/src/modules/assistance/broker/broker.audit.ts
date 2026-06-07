@@ -8,6 +8,10 @@
  * para poder ser testeado sin BD.
  */
 
+import pino from 'pino';
+
+const moduleLogger = pino({ name: 'broker.audit' });
+
 // ---------------------------------------------------------------------------
 // Tipos de entrada
 // ---------------------------------------------------------------------------
@@ -70,8 +74,11 @@ export async function auditTunnelRequest(
 ): Promise<void> {
   try {
     await persist(data);
-  } catch {
-    // La auditoría no debe interrumpir el flujo del proxy
+  } catch (err) {
+    // [BAJO-3] Loguear el error de auditoría en vez de suprimirlo silenciosamente.
+    // La auditoría no debe interrumpir el flujo del proxy, pero el error no debe
+    // desaparecer sin rastro — puede indicar problemas de BD o de configuración.
+    moduleLogger.warn({ err }, 'Error al persistir evento de auditoría del proxy');
   }
 }
 

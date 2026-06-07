@@ -218,11 +218,74 @@ interface OpenRemoteSessionResult {
     sessionToken: string;         // token de un solo uso, alcance a este CPE/sesión
     expiresAt: string;
   };
+  // proxyCookieHeader NO se incluye en el JSON body — se emite como Set-Cookie HTTP.
 }
 ```
+
+**Cookie de proxy (Fase E):** además del body JSON, la respuesta incluye una cabecera `Set-Cookie` que el navegador almacena automáticamente:
+
+```
+Set-Cookie: wifix_proxy_session=<uuid-opaco>;
+            HttpOnly;
+            Secure (solo en producción);
+            SameSite=Strict;
+            Path=/asistencia/v1/broker/proxy/{remoteSessionId};
+            Expires=<expiresAt en UTC>
+```
+
+- El valor es un UUID v4 opaco — el agente nunca recibe ni necesita el `sessionToken` del broker para navegar el panel del router.
+- `Path` acotado al `remoteSessionId` de esta sesión: no contamina otras sesiones ni el resto del portal.
+- La cookie se invalida server-side al cerrar la sesión (manual o por expiración de TTL).
+
 Errores: `400` body inválido; `401`; `403` (no es el agente asignado); `404`; `409` (sesión no `ACTIVE`, sin consentimiento, o ya hay una sesión remota abierta).
 
-> Seguridad: el token es de un solo uso, de vida corta, con alcance a un único CPE y sesión. El túnel se cierra automáticamente al expirar, al cerrar la sesión, o cuando la app del técnico pasa a segundo plano.
+> Seguridad: el token es de un solo uso, de vida corta, con alcance a un único CPE y sesión. El túnel se cierra automáticamente al expirar, al cerrar la sesión, o cuando la app del técnico pasa a segundo plano. La cookie de proxy se invalida en los tres mismos disparadores de auto-cierre.
+
+### Proxy HTTP del panel del router — ALL /broker/proxy/{remoteSessionId}/*
+
+Propósito: el agente navega el panel web del router del cliente desde el portal del Call Center (dentro de un `<iframe>`). El proxy convierte cada request HTTP del navegador en una trama `OPEN_STREAM` por el túnel del técnico, recibe la respuesta y la devuelve al navegador.
+
+Auth: **cookie de sesión de proxy** `wifix_proxy_session` (httpOnly, emitida en `POST /sessions/{id}/remote-sessions`). **No se usa el JWT Bearer ni el sessionToken del broker.** El navegador envía la cookie automáticamente sin que el JS del portal la vea.
+
+Métodos: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` (HEAD lo gestiona Fastify automáticamente junto con GET).
+
+Path: el wildcard `/*` corresponde al path que el navegador solicita en el panel del router (p.ej. `/admin/login`, `/cgi-bin/save`). La query string se pasa tal cual al router.
+
+Comportamiento:
+1. Valida la cookie de proxy (server-side, no revela sessionToken al navegador).
+2. Verifica que la cookie corresponde al `remoteSessionId` de la URL (403 si no).
+3. Verifica que la `RemoteSession` está `OPEN` y no expirada (404/401 si no).
+4. Verifica que hay un túnel activo del técnico (502 si no).
+5. Re-aplica el SSRF guard sobre el `targetHost` almacenado (defensa en profundidad).
+6. Valida el path (sin CRLF/NUL, longitud máx. 2048 chars).
+7. Reenvía la request al router por el túnel del técnico (solo headers seguros; no reenvía la cookie de proxy ni el `Authorization` del portal).
+8. Para respuestas `Content-Type: text/html`: inyecta `<base href="...">`, reescribe `href`/`src`/`action` absolutos y `url()` en CSS inline.
+9. Strip de `X-Frame-Options` y `Content-Security-Policy` del router; añade `Content-Security-Policy: frame-ancestors <PORTAL_ORIGIN>` propia.
+10. Reescribe las `Set-Cookie` del router: `Path` acotado al path del proxy, elimina `Domain`, eleva `SameSite` a `Strict`.
+11. Audita cada request como `AssistanceEvent` tipo `REMOTE_SESSION` (fire-and-forget, sin datos sensibles).
+12. Rate-limit: 120 req/min por IP (`PROXY_RATE_LIMIT_MAX`).
+13. Timeout de 504 si el técnico no responde en 20s.
+
+Errores:
+
+| Código HTTP | `code` | Causa |
+|---|---|---|
+| `401` | `UNAUTHORIZED` | Cookie ausente, inválida o expirada |
+| `403` | `FORBIDDEN` | Cookie no corresponde a esta remoteSession, o targetHost bloqueado |
+| `404` | `NOT_FOUND` | RemoteSession no encontrada o no `OPEN` |
+| `405` | `VALIDATION_ERROR` | Método HTTP no permitido |
+| `413` | `VALIDATION_ERROR` | Body excede 4 MB |
+| `502` | `TUNNEL_UNAVAILABLE` | Técnico sin túnel activo |
+| `504` | `TIMEOUT` | El técnico no respondió en 20s |
+
+Notas de seguridad:
+- El `targetHost` es INMUTABLE desde la apertura de la RemoteSession. El agente no puede cambiarlo por URL ni por header.
+- El navegador del agente nunca recibe el `sessionToken` del broker WSS.
+- Las `Set-Cookie` del router quedan confinadas al path del proxy de esta sesión — no filtran al portal ni a otras sesiones.
+
+Limitaciones de reescritura de HTML:
+- Paneles que construyen URLs en JavaScript en runtime (p.ej. `fetch('/api/data')`, `window.location = '/dashboard'`) no se reescriben automáticamente. El tag `<base>` ayuda con la navegación declarativa; el JS dinámico requeriría un Service Worker (fuera de alcance).
+- URLs absolutas del router codificadas en JS tampoco se reescriben.
 
 ### Cerrar sesión remota — POST /remote-sessions/{id}/close
 Propósito: cerrar el canal intermediado.

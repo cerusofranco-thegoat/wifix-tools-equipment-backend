@@ -152,6 +152,9 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   // Sesión remota — POST /sessions/:id/remote-sessions
   // Rol: AGENT asignado
   // Rate-limit: BROKER_RATE_LIMIT_MAX por IP en BROKER_RATE_LIMIT_WINDOW_MS.
+  // Emite una cookie de sesión de proxy httpOnly acotada al remoteSessionId
+  // para que el navegador del agente pueda navegar el panel del router sin
+  // necesitar el sessionToken del broker (Fase E).
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/remote-sessions', {
     config: { rateLimit: remoteSessionRateLimitConfig },
@@ -160,7 +163,12 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
     const { id } = parseParams(uuidParamSchema, request.params);
     const body = parseBody(openRemoteSessionSchema, request.body);
     const result = await assistanceService.openRemoteSession(id, body, actor.id);
-    return reply.code(201).send(result);
+    // Emitir cookie de proxy: httpOnly, SameSite=Strict, Path acotado.
+    // El navegador la almacena y la envía automáticamente en cada request al proxy.
+    reply.header('set-cookie', result.proxyCookieHeader);
+    // No incluir proxyCookieHeader en el body JSON (el agente no necesita verla)
+    const { proxyCookieHeader: _dropped, ...responseBody } = result;
+    return reply.code(201).send(responseBody);
   });
 
   // -------------------------------------------------------------------------

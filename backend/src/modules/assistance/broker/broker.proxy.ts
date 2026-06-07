@@ -33,7 +33,7 @@ import {
   type BrokerFrame,
 } from './broker.framing.js';
 import { getTunnel } from './broker.tunnel-store.js';
-import { redactHeaders, buildAuditPayload, auditTunnelRequest } from './broker.audit.js';
+import { buildAuditPayload, auditTunnelRequest } from './broker.audit.js';
 import type { AuditPersistFn } from './broker.audit.js';
 
 // ---------------------------------------------------------------------------
@@ -104,9 +104,23 @@ function getOrCreateEmitter(sessionId: string, tunnelSocket: WebSocket): EventEm
   return emitter;
 }
 
-let _streamIdCounter = 0;
-function nextStreamId(): number {
-  return ++_streamIdCounter;
+/**
+ * Contador de streamId por sesión (keyed por sessionId).
+ * Reemplaza el contador global que colisionaba entre sesiones paralelas.
+ * Cada sesión tiene su propio contador, garantizando unicidad dentro del mismo túnel.
+ */
+const _sessionStreamCounters = new Map<string, number>();
+
+function nextStreamId(sessionId: string): number {
+  const current = _sessionStreamCounters.get(sessionId) ?? 0;
+  const next = current + 1;
+  _sessionStreamCounters.set(sessionId, next);
+  return next;
+}
+
+/** Limpia el contador de una sesión al cerrar el túnel (llamado por broker.ws). */
+export function clearStreamCounter(sessionId: string): void {
+  _sessionStreamCounters.delete(sessionId);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +150,8 @@ export interface ProxyRequestInput {
  */
 export async function proxyRequest(input: ProxyRequestInput): Promise<ProxyResult> {
   const startMs = Date.now();
-  const streamId = nextStreamId();
+  // [MEDIO-4] Contador por sesión — evita colisiones entre sesiones paralelas.
+  const streamId = nextStreamId(input.sessionId);
 
   // Validar método
   if (!isAllowedMethod(input.method)) {
@@ -151,17 +166,16 @@ export async function proxyRequest(input: ProxyRequestInput): Promise<ProxyResul
 
   const emitter = getOrCreateEmitter(input.sessionId, tunnel.socket);
 
-  // Redactar cabeceras antes de enviar al técnico (no loguear credenciales del router)
-  const safeHeaders = redactHeaders(input.headers);
-
-  // Enviar OPEN_STREAM al técnico
+  // [CRÍTICO-2] Enviar input.headers (ya saneados por filterAgentHeaders) sin redactar.
+  // Redactar aquí rompería silenciosamente cabeceras legítimas (ej. Basic Auth del router).
+  // La redacción solo se aplica en el payload de auditoría/log (abajo).
   tunnel.socket.send(
     serializeFrame({
       type: 'OPEN_STREAM',
       streamId,
       method: input.method.toUpperCase(),
       path: input.path,
-      headers: safeHeaders,
+      headers: input.headers,
     }),
   );
 
@@ -203,9 +217,11 @@ export async function proxyRequest(input: ProxyRequestInput): Promise<ProxyResul
           if (responseReceived) break; // ignorar duplicados
           responseReceived = true;
           responseStatus = (frame as ResponseFrame).status;
-          // B-4: Redactar Set-Cookie y cabeceras sensibles del router antes de
-          // reenviarlas al agente. El agente no debe recibir cookies de sesión del router.
-          responseHeaders = redactHeaders((frame as ResponseFrame).headers);
+          // [CRÍTICO-1] Almacenar los headers BRUTOS del router sin redactar.
+          // El caller (broker.http-proxy) necesita los Set-Cookie reales para
+          // reescribirlos (confinamiento al path del proxy). La redacción se aplica
+          // SOLO en el payload de auditoría/log (ver auditTunnelRequest abajo).
+          responseHeaders = (frame as ResponseFrame).headers;
           break;
         }
         case 'DATA': {

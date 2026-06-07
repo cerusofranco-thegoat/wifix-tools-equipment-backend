@@ -22,6 +22,7 @@ import { registerAssistanceRoutes } from './modules/assistance/assistance.routes
 import { registerAssistanceWs } from './modules/assistance/assistance.ws.js';
 import { registerBrokerTunnelWs } from './modules/assistance/broker/broker.ws.js';
 import { registerBrokerAgentWs } from './modules/assistance/broker/broker.agent-ws.js';
+import { registerBrokerHttpProxy } from './modules/assistance/broker/broker.http-proxy.js';
 import { startExpirySweep, stopExpirySweep } from './modules/assistance/broker/broker.expiry.js';
 import { registerBrokerRateLimit } from './modules/assistance/broker/broker.rate-limit.js';
 
@@ -144,6 +145,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       // Broker WSS (Fase D): túnel del técnico y conexión del agente
       await registerBrokerTunnelWs(assistanceApi);
       await registerBrokerAgentWs(assistanceApi);
+      // Proxy HTTP del broker (Fase E): navegación del panel del router desde el portal
+      await registerBrokerHttpProxy(assistanceApi);
     },
     { prefix: ASSISTANCE_PREFIX },
   );

@@ -26,6 +26,10 @@ const envSchema = z.object({
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  // Origen del portal del Call Center (usado en CSP frame-ancestors del proxy HTTP).
+  // En producción debe ser el origen HTTPS del portal (p.ej. https://portal.wifix.internal).
+  // En desarrollo apunta al servidor de desarrollo del portal (Vite, port 5174 por convención).
+  PORTAL_ORIGIN: z.string().default('http://localhost:5174'),
   // --- Jitsi self-host (Fase D) ---
   JITSI_DOMAIN: z.string().default('meet.wifix.internal'),
   JITSI_APP_ID: z.string().default('wifix'),
@@ -61,6 +65,17 @@ const envSchema = z.object({
   BROKER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   // Máximo de conexiones WS (túnel/agente) por IP por ventana.
   BROKER_WS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+  // Máx. requests al proxy HTTP del broker por IP por ventana (Fase E).
+  // Default: 120 / 60 000 ms (navegación del panel del router).
+  PROXY_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120),
+  // [MEDIO-2] Controla el atributo Secure de la cookie de proxy.
+  // Default: true (la cookie solo viaja por HTTPS).
+  // Establecer a false ÚNICAMENTE en entornos de desarrollo local sobre HTTP.
+  // No usar false en staging ni producción.
+  COOKIE_SECURE: z
+    .string()
+    .transform((v) => v !== 'false' && v !== '0')
+    .default('true'),
 });
 
 const parsed = envSchema.safeParse(process.env);

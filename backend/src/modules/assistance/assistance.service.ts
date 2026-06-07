@@ -14,6 +14,11 @@ import { assertTargetHostAllowed } from './broker/broker.ssrf-guard.js';
 import { scheduleExpiry, cancelExpiry } from './broker/broker.expiry.js';
 import { sendTunnelError } from './broker/broker.proxy.js';
 import { provisionJitsiRoom, type JitsiParticipantRole } from './broker/broker.jitsi.js';
+import {
+  issueProxyCookie,
+  invalidateProxyCookieBySession,
+  buildProxyCookieSetHeader,
+} from './broker/broker.proxy-cookie-store.js';
 import { env } from '../../config/env.js';
 
 // Logger de módulo para contextos donde no hay request.log disponible (callbacks de timers, etc.)
@@ -251,6 +256,8 @@ async function changeStatus(
     const activeRemote = await assistanceRepository.findActiveRemoteSession(id);
     if (activeRemote) {
       cancelExpiry(activeRemote.id);
+      // Invalidar la cookie de sesión de proxy HTTP (Fase E)
+      invalidateProxyCookieBySession(activeRemote.id);
       sendTunnelError(id, 'SESSION_CLOSED', `Sesión de asistencia cerrada (${to}).`);
       await assistanceRepository.closeRemoteSession(activeRemote.id);
       await assistanceRepository.createEvent({
@@ -538,6 +545,12 @@ async function openRemoteSession(
 ): Promise<{
   remoteSession: RemoteSessionDto;
   connect: { wsUrl: string; sessionToken: string; expiresAt: string };
+  /**
+   * Cabecera Set-Cookie lista para incluir en la respuesta HTTP.
+   * El route handler debe pasarla al reply con reply.header('set-cookie', ...).
+   * httpOnly + Secure + SameSite=Strict + Path acotado + Expires = expiresAt.
+   */
+  proxyCookieHeader: string;
 }> {
   const session = await requireSession(sessionId);
 
@@ -622,6 +635,8 @@ async function openRemoteSession(
     tokenResult.expiresAt.getTime(),
     {
       onExpire: async (rsId, sId) => {
+        // Invalidar la cookie de sesión de proxy HTTP (Fase E) — sincrónico, sin await
+        invalidateProxyCookieBySession(rsId);
         try {
           await assistanceRepository.expireRemoteSession(rsId);
           await assistanceRepository.createEvent({
@@ -651,7 +666,25 @@ async function openRemoteSession(
   // Notificar a los participantes de la sesión por WS
   broadcastRemoteSessionReady(sessionId, dto, connect);
 
-  return { remoteSession: dto, connect };
+  // --- Emitir cookie de sesión de proxy HTTP (Fase E) ---
+  // La cookie es httpOnly, SameSite=Strict, Path acotado al remoteSessionId.
+  // El navegador del agente NUNCA ve el sessionToken del broker.
+  // El targetHost queda fijado en el store server-side; el agente no puede cambiarlo.
+  const proxyCookieValue = issueProxyCookie({
+    remoteSessionId: remoteSession.id,
+    sessionId,
+    agentId: userId,
+    targetHost: safeTargetHost ?? '',
+    expiresAt: tokenResult.expiresAt.getTime(),
+  });
+
+  const proxyCookieHeader = buildProxyCookieSetHeader(
+    proxyCookieValue,
+    remoteSession.id,
+    tokenResult.expiresAt,
+  );
+
+  return { remoteSession: dto, connect, proxyCookieHeader };
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +707,9 @@ async function closeRemoteSession(
 
   // Cancelar el timer de expiración automática
   cancelExpiry(remoteSessionId);
+
+  // Invalidar la cookie de sesión de proxy HTTP (Fase E)
+  invalidateProxyCookieBySession(remoteSessionId);
 
   // Cerrar el túnel del técnico (si está activo)
   sendTunnelError(remoteSession.sessionId, 'SESSION_CLOSED', 'La sesión remota fue cerrada.');

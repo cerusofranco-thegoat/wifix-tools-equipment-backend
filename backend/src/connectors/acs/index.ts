@@ -140,6 +140,14 @@ export interface AcsConnector {
 // Helpers internos del mock
 // ---------------------------------------------------------------------------
 
+/**
+ * Época de referencia fija para el mock ACS.
+ * Usar Date.now() como base haría que leaseExpiresAt cambie entre llamadas
+ * (aunque el offset seeded sea idéntico), rompiendo los tests de determinismo.
+ * Con esta constante, mismo accountNumber → misma lista byte a byte.
+ */
+const ACS_MOCK_EPOCH_MS = Date.parse('2026-01-01T00:00:00.000Z');
+
 const HOSTNAMES = [
   'iPhone-Maria', 'Android-Juan', 'LaptopHP', 'MacBook-Pro', 'TV-Samsung',
   'Chromecast', 'PS5', 'Xbox-Series', 'Switch-Nintendo', 'Echo-Dot',
@@ -182,7 +190,7 @@ export const acsMock: AcsConnector = {
     const n = rng.intBetween(2, 6);
     const devices: LanDevice[] = [];
     for (let i = 0; i < n; i++) {
-      const lease = new Date(Date.now() + rng.intBetween(30, 1440) * 60 * 1000);
+      const lease = new Date(ACS_MOCK_EPOCH_MS + rng.intBetween(30, 1440) * 60 * 1000);
       devices.push({
         hostname: `${rng.pick(HOSTNAMES)}-${i + 1}`,
         ipAddress: `192.168.1.${rng.intBetween(20, 220)}`,

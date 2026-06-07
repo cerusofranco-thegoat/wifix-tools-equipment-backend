@@ -21,3 +21,6 @@ Thumbs.db
 
 # Output del build de APK (binario grande, no va al repo)
 *.apk
+
+# Paquetes de entrega comprimidos (no van al repo)
+*.zip

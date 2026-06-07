@@ -24,6 +24,16 @@ import { parseFrame, serializeFrame, makeErrorFrame } from './broker.framing.js'
 import { proxyRequest } from './broker.proxy.js';
 import { assistanceRepository } from '../assistance.repository.js';
 import { env } from '../../../config/env.js';
+import { wsRateLimitConfig } from './broker.rate-limit.js';
+
+// ---------------------------------------------------------------------------
+// Límite defensivo de DATA entrante del agente por stream
+// ---------------------------------------------------------------------------
+// Aunque en el protocolo v1 el body del agente es siempre Buffer.alloc(0),
+// el agente PUEDE enviar tramas DATA. Se aplica una cota defensiva para
+// prevenir agotamiento de memoria si un agente envía datos masivos antes de
+// que el protocolo v2 los utilice formalmente.
+const MAX_AGENT_BODY_BYTES = 4 * 1024 * 1024; // 4 MB (mismo orden que MAX_BODY_SIZE_BYTES del proxy)
 
 /** Cierra el socket agente con un mensaje de error JSON. */
 function closeAgentWithError(socket: WebSocket, code: string, message: string): void {
@@ -36,7 +46,7 @@ function closeAgentWithError(socket: WebSocket, code: string, message: string): 
 }
 
 export async function registerBrokerAgentWs(app: FastifyInstance): Promise<void> {
-  app.get('/broker/connect', { websocket: true }, async (socket: WebSocket, request) => {
+  app.get('/broker/connect', { websocket: true, config: { rateLimit: wsRateLimitConfig } }, async (socket: WebSocket, request) => {
     // -------------------------------------------------------------------
     // 1. Extraer el sessionToken (query string ?sessionToken=...)
     // -------------------------------------------------------------------
@@ -108,6 +118,11 @@ export async function registerBrokerAgentWs(app: FastifyInstance): Promise<void>
     // -------------------------------------------------------------------
     // 5. Procesar tramas del agente → técnico (proxy)
     // -------------------------------------------------------------------
+
+    // Acumulador de bytes DATA enviados por el agente (por stream).
+    // Se usa para aplicar el límite defensivo MAX_AGENT_BODY_BYTES.
+    const agentDataBytesPerStream = new Map<number, number>();
+
     socket.on('message', async (raw: Buffer | ArrayBuffer | Buffer[]) => {
       const rawStr = raw.toString();
       const parseResult = parseFrame(rawStr);
@@ -124,6 +139,53 @@ export async function registerBrokerAgentWs(app: FastifyInstance): Promise<void>
       }
 
       const frame = parseResult.frame;
+
+      // Límite defensivo: DATA entrante del agente acumulado por stream.
+      // Previene agotamiento de memoria aunque en v1 el body siempre sea vacío.
+      // Si se excede → cierra el stream con FRAME_ERROR y audita el evento.
+      if (frame.type === 'DATA') {
+        const chunkBytes = Buffer.byteLength(frame.data, 'base64');
+        const accumulated = (agentDataBytesPerStream.get(frame.streamId) ?? 0) + chunkBytes;
+        agentDataBytesPerStream.set(frame.streamId, accumulated);
+        if (accumulated > MAX_AGENT_BODY_BYTES) {
+          agentDataBytesPerStream.delete(frame.streamId);
+          void assistanceRepository.createEvent({
+            sessionId,
+            type: 'REMOTE_SESSION',
+            payload: {
+              kind: 'security_audit',
+              event: 'agent_data_limit_exceeded',
+              streamId: frame.streamId,
+              accumulated,
+              limit: MAX_AGENT_BODY_BYTES,
+            },
+            actorId: agentId,
+          }).catch(() => {
+            // Auditoría no bloquea
+          });
+          try {
+            socket.send(
+              serializeFrame(
+                makeErrorFrame(
+                  frame.streamId,
+                  'FRAME_ERROR',
+                  'El volumen de datos DATA del agente excede el límite permitido (4 MB).',
+                ),
+              ),
+            );
+          } catch {
+            // ignore
+          }
+          socket.close(1008, 'Límite de datos excedido.');
+        }
+        // DATA no es procesado por el proxy directamente aquí; solo se contabiliza.
+        return;
+      }
+
+      // Limpiar el acumulador cuando el stream termina normalmente
+      if (frame.type === 'END_STREAM') {
+        agentDataBytesPerStream.delete(frame.streamId);
+      }
 
       if (frame.type !== 'OPEN_STREAM') {
         // El agente solo puede iniciar streams con OPEN_STREAM.

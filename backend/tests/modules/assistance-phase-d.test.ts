@@ -616,7 +616,7 @@ describe('Fase D — Jitsi: firma JWT de sala', () => {
   it('signJitsiRoomToken produce un JWT no vacío', async () => {
     const jwt = await signJitsiRoomToken({
       room: 'wifix-assist-test',
-      user: { id: 'user-1', name: 'Técnico Test', email: 'tech@wifix.test', moderator: true },
+      user: { id: 'user-1', name: 'Técnico Test', email: 'tech@wifix.test', role: 'TECHNICIAN' },
     });
     expect(typeof jwt).toBe('string');
     expect(jwt.split('.').length).toBe(3); // header.payload.signature
@@ -627,7 +627,7 @@ describe('Fase D — Jitsi: firma JWT de sala', () => {
     const userId = 'agent-jitsi-test';
     const jwt = await signJitsiRoomToken({
       room,
-      user: { id: userId, name: 'Agente Test', email: 'agent@wifix.test', moderator: true },
+      user: { id: userId, name: 'Agente Test', email: 'agent@wifix.test', role: 'AGENT' },
     });
 
     // Decodificar payload sin verificar (solo para inspeccionar en tests)
@@ -644,6 +644,7 @@ describe('Fase D — Jitsi: firma JWT de sala', () => {
     expect(context).toBeDefined();
     const contextUser = context['user'] as Record<string, unknown>;
     expect(contextUser['id']).toBe(userId);
+    // AGENT es moderador
     expect(contextUser['moderator']).toBe(true);
   });
 
@@ -652,7 +653,7 @@ describe('Fase D — Jitsi: firma JWT de sala', () => {
       id: 'tech-1',
       name: 'Técnico',
       email: 'tech@wifix.test',
-      moderator: true,
+      role: 'TECHNICIAN',
     });
     expect(result.roomName).toContain('wifix-assist-');
     expect(typeof result.domain).toBe('string');
@@ -663,7 +664,7 @@ describe('Fase D — Jitsi: firma JWT de sala', () => {
   it('JWT de sala expira en el futuro (exp > now)', async () => {
     const jwt = await signJitsiRoomToken({
       room: 'test-room',
-      user: { id: 'u', name: 'U', email: 'u@test.com', moderator: false },
+      user: { id: 'u', name: 'U', email: 'u@test.com', role: 'TECHNICIAN' },
     });
     const payloadB64 = jwt.split('.')[1]!;
     const decoded = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as { exp: number };

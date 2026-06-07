@@ -20,6 +20,7 @@ import {
   paginationOnlySchema,
 } from './assistance.schemas.js';
 import { assistanceService } from './assistance.service.js';
+import { remoteSessionRateLimitConfig } from './broker/broker.rate-limit.js';
 
 export async function registerAssistanceRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
@@ -148,10 +149,13 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   });
 
   // -------------------------------------------------------------------------
-  // Sesión remota — POST /sessions/:id/remote-sessions (MOCK)
+  // Sesión remota — POST /sessions/:id/remote-sessions
   // Rol: AGENT asignado
+  // Rate-limit: BROKER_RATE_LIMIT_MAX por IP en BROKER_RATE_LIMIT_WINDOW_MS.
   // -------------------------------------------------------------------------
-  app.post('/sessions/:id/remote-sessions', async (request, reply) => {
+  app.post('/sessions/:id/remote-sessions', {
+    config: { rateLimit: remoteSessionRateLimitConfig },
+  }, async (request, reply) => {
     const actor = requireRole(request, 'AGENT');
     const { id } = parseParams(uuidParamSchema, request.params);
     const body = parseBody(openRemoteSessionSchema, request.body);

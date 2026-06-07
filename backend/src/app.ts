@@ -23,6 +23,7 @@ import { registerAssistanceWs } from './modules/assistance/assistance.ws.js';
 import { registerBrokerTunnelWs } from './modules/assistance/broker/broker.ws.js';
 import { registerBrokerAgentWs } from './modules/assistance/broker/broker.agent-ws.js';
 import { startExpirySweep, stopExpirySweep } from './modules/assistance/broker/broker.expiry.js';
+import { registerBrokerRateLimit } from './modules/assistance/broker/broker.rate-limit.js';
 
 const API_PREFIX = '/herramientas/v1';
 const ASSISTANCE_PREFIX = '/asistencia/v1';
@@ -133,6 +134,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // ---------------------------------------------------------------------------
   await app.register(
     async (assistanceApi) => {
+      // Rate-limiting del broker: se registra primero para que los overrides
+      // por-ruta estén disponibles cuando se registran las rutas a continuación.
+      // `global: false` garantiza que no afecta a rutas fuera de este scope.
+      await registerBrokerRateLimit(assistanceApi);
+
       await registerAssistanceRoutes(assistanceApi);
       await registerAssistanceWs(assistanceApi);
       // Broker WSS (Fase D): túnel del técnico y conexión del agente

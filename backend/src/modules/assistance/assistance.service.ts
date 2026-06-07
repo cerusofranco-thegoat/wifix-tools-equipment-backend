@@ -13,7 +13,7 @@ import { issueSessionToken } from './broker/broker.session-token.js';
 import { assertTargetHostAllowed } from './broker/broker.ssrf-guard.js';
 import { scheduleExpiry, cancelExpiry } from './broker/broker.expiry.js';
 import { sendTunnelError } from './broker/broker.proxy.js';
-import { provisionJitsiRoom } from './broker/broker.jitsi.js';
+import { provisionJitsiRoom, type JitsiParticipantRole } from './broker/broker.jitsi.js';
 import { env } from '../../config/env.js';
 
 // Logger de módulo para contextos donde no hay request.log disponible (callbacks de timers, etc.)
@@ -709,11 +709,13 @@ async function provisionVideo(
   const displayName =
     role === 'TECHNICIAN' ? 'Técnico Wifix' : role === 'AGENT' ? 'Agente Call Center' : 'Supervisor';
 
+  // Rol explícito por perfil: AGENT/SUPERVISOR son moderadores de la sala;
+  // TECHNICIAN opera el equipo en campo pero no modera la llamada.
   const jitsiResult = await provisionJitsiRoom(sessionId, {
     id: userId,
     name: displayName,
     email: `${role.toLowerCase()}@wifix.internal`,
-    moderator: true, // técnico y agente son siempre moderadores en sus salas
+    role: role as JitsiParticipantRole,
   });
 
   // Persistir el videoRoom como evento (idempotente — solo si no existe)

@@ -27,6 +27,7 @@ import { ApiError } from '../../../middleware/error-handler.js';
 import { assistanceRepository } from '../assistance.repository.js';
 import { registerTunnel, removeTunnel } from './broker.tunnel-store.js';
 import { parseFrame, serializeFrame, makePingFrame } from './broker.framing.js';
+import { wsRateLimitConfig } from './broker.rate-limit.js';
 
 // Keep-alive del túnel: enviar PING cada 30s
 const TUNNEL_PING_INTERVAL_MS = 30_000;
@@ -42,7 +43,7 @@ function closeWithError(socket: WebSocket, code: string, message: string): void 
 }
 
 export async function registerBrokerTunnelWs(app: FastifyInstance): Promise<void> {
-  app.get('/broker/tunnel', { websocket: true }, async (socket: WebSocket, request) => {
+  app.get('/broker/tunnel', { websocket: true, config: { rateLimit: wsRateLimitConfig } }, async (socket: WebSocket, request) => {
     // -------------------------------------------------------------------
     // 1. Extraer JWT (header o query string)
     // -------------------------------------------------------------------

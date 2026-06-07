@@ -16,11 +16,30 @@
  *   para acotar qué puede solicitar el agente, independientemente de quién resuelve.
  *
  * Política (ver también docs/asistencia-broker-protocolo.md):
- *   PERMITIDO  — rangos LAN privados RFC 1918 / RFC 4193 (192.168.x.x, 10.x.x.x,
+ *   PERMITIDO  — rangos LAN privados RFC 1918 (192.168.x.x, 10.x.x.x,
  *                172.16-31.x.x); puertos 80 y 443 únicamente.
- *   BLOQUEADO  — loopback (127.x.x.x, ::1), link-local (169.254.x.x, fe80::/10),
- *                localhost como hostname, cualquier IP pública o no LAN,
+ *   BLOQUEADO  — loopback (127.x.x.x, ::1 y formas alternas), link-local
+ *                (169.254.x.x, fe80::/10), localhost como hostname,
+ *                any-address (0.0.0.0, ::), cualquier IP pública o no LAN,
  *                cualquier puerto distinto de 80/443.
+ *
+ * Nota sobre IPv6:
+ *   IPv6 privada (fc00::/7, ULA) está intencionalmente NO soportada.
+ *   Los CPE de Xtrim usan IPv4 LAN; soportar IPv6 ULA ampliaría la
+ *   superficie de ataque sin beneficio operacional.
+ *
+ *   IPv4-mapped IPv6 (::ffff:x.x.x.x) se detecta explícitamente en sus dos
+ *   formas posibles tras pasar por URL():
+ *     - Dotted-decimal: ::ffff:127.0.0.1  (si el agente envía el raw)
+ *     - Hex-pair: ::ffff:7f00:1          (normalización de URL())
+ *   La IPv4 embebida se extrae y se aplica la política IPv4 completa.
+ *   En la práctica siempre se bloquea, ya que el agente debe usar IPv4 directa.
+ *
+ * Nota sobre la API URL():
+ *   URL() devuelve hostname con corchetes para IPv6: "[::1]", "[::ffff:7f00:1]".
+ *   isIPv6() de node:net devuelve false para la forma con corchetes.
+ *   Este módulo normaliza el hostname quitando corchetes antes de todas las
+ *   comprobaciones.
  *
  * Módulo sin I/O → testeable sin BD.
  */
@@ -28,7 +47,22 @@
 import { isIPv4, isIPv6 } from 'node:net';
 
 // ---------------------------------------------------------------------------
-// Rangos LAN privados permitidos (RFC 1918 + loopback excluido)
+// Utilidades de normalización
+// ---------------------------------------------------------------------------
+
+/**
+ * Elimina los corchetes de una dirección IPv6 tal como la devuelve URL().
+ * URL() almacena las IPv6 como "[::1]"; isIPv6() solo acepta "::1".
+ */
+function stripBrackets(host: string): string {
+  if (host.startsWith('[') && host.endsWith(']')) {
+    return host.slice(1, -1);
+  }
+  return host;
+}
+
+// ---------------------------------------------------------------------------
+// Rangos LAN privados permitidos (RFC 1918)
 // ---------------------------------------------------------------------------
 
 /** Devuelve true si la IP IPv4 está en un rango LAN privado (RFC 1918). */
@@ -38,34 +72,100 @@ function isPrivateIPv4(ip: string): boolean {
     return false;
   }
   const [a, b] = parts as [number, number, number, number];
-  // 10.0.0.0/8
-  if (a === 10) return true;
-  // 172.16.0.0/12
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
+  if (a === 10) return true;                            // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12
+  if (a === 192 && b === 168) return true;              // 192.168.0.0/16
   return false;
 }
 
-/** Devuelve true si la IP es loopback. */
-function isLoopback(ip: string): boolean {
-  if (isIPv4(ip)) {
-    return ip.startsWith('127.');
+/** Devuelve true si la IP IPv4 es loopback (127.x.x.x). */
+function isLoopbackIPv4(ip: string): boolean {
+  return ip.startsWith('127.');
+}
+
+/** Devuelve true si la IP IPv4 es link-local (169.254.x.x). */
+function isLinkLocalIPv4(ip: string): boolean {
+  return ip.startsWith('169.254.');
+}
+
+/** Devuelve true si la IP IPv4 es any-address (0.0.0.0). */
+function isAnyAddressIPv4(ip: string): boolean {
+  return ip === '0.0.0.0';
+}
+
+// ---------------------------------------------------------------------------
+// Extracción de IPv4 embebida en direcciones IPv4-mapped IPv6
+// ---------------------------------------------------------------------------
+
+/**
+ * Intenta extraer la IPv4 embebida en una dirección IPv4-mapped IPv6.
+ *
+ * Reconoce DOS formas, ambas con prefijo ::ffff: (RFC 4291 §2.5.5.2):
+ *   1. Dotted-decimal: "::ffff:127.0.0.1"  (input del agente sin pasar por URL)
+ *   2. Hex-pair: "::ffff:7f00:1"           (normalización de URL() para [::ffff:127.0.0.1])
+ *
+ * Devuelve la IPv4 como string ("127.0.0.1") si es mapped; null si no lo es.
+ */
+function extractIPv4FromMapped(ip: string): string | null {
+  const lower = ip.toLowerCase();
+
+  if (!lower.startsWith('::ffff:')) return null;
+
+  const rest = ip.slice(7); // quitar "::ffff:"
+
+  // Forma 1: dotted-decimal  ::ffff:127.0.0.1
+  if (isIPv4(rest)) {
+    return rest;
   }
-  if (isIPv6(ip)) {
-    return ip === '::1' || ip.toLowerCase() === '0:0:0:0:0:0:0:1';
+
+  // Forma 2: hex-pair  ::ffff:7f00:1  (dos grupos hex separados por ':')
+  // URL() normaliza ::ffff:127.0.0.1  a  ::ffff:7f00:1
+  const hexParts = rest.split(':');
+  if (hexParts.length === 2) {
+    const hi = parseInt(hexParts[0]!, 16);
+    const lo = parseInt(hexParts[1]!, 16);
+    if (!isNaN(hi) && !isNaN(lo)) {
+      const b1 = (hi >> 8) & 0xff;
+      const b2 = hi & 0xff;
+      const b3 = (lo >> 8) & 0xff;
+      const b4 = lo & 0xff;
+      return `${b1}.${b2}.${b3}.${b4}`;
+    }
   }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Comprobaciones de categoría para IPv6
+// ---------------------------------------------------------------------------
+
+/** Devuelve true si la dirección IPv6 es loopback (::1 y variantes). */
+function isLoopbackIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower === '::1') return true;
+  if (lower === '0:0:0:0:0:0:0:1') return true;
+  // IPv4-mapped de loopback
+  const mapped = extractIPv4FromMapped(ip);
+  if (mapped !== null && isLoopbackIPv4(mapped)) return true;
   return false;
 }
 
-/** Devuelve true si la IP es link-local (169.254.x.x ó fe80::/10). */
-function isLinkLocal(ip: string): boolean {
-  if (isIPv4(ip)) {
-    return ip.startsWith('169.254.');
-  }
-  if (isIPv6(ip)) {
-    return ip.toLowerCase().startsWith('fe80:');
-  }
+/** Devuelve true si la dirección IPv6 es link-local (fe80::/10). */
+function isLinkLocalIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower.startsWith('fe80:')) return true;
+  // IPv4-mapped de link-local
+  const mapped = extractIPv4FromMapped(ip);
+  if (mapped !== null && isLinkLocalIPv4(mapped)) return true;
+  return false;
+}
+
+/** Devuelve true si la dirección IPv6 es any-address (:: y variantes). */
+function isAnyAddressIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower === '::') return true;
+  if (lower === '0:0:0:0:0:0:0:0') return true;
   return false;
 }
 
@@ -105,16 +205,20 @@ export type SsrfCheckResult =
 /**
  * Valida un targetHost antes de usarlo en el broker.
  *
- * Acepta host bare (p.ej. "192.168.1.1"), host:puerto, o URL completa.
+ * Acepta host bare (p.ej. "192.168.1.1"), host:puerto, [::1]:puerto, o URL completa.
  * Siempre devuelve { allowed, ... }; nunca lanza.
  *
- * Reglas:
+ * Reglas (en orden de aplicación):
  *   1. El host no puede ser un hostname bloqueado (localhost, IMDS, etc.).
- *   2. Si el host es una IP pública o no LAN privada → bloqueado.
- *   3. Si el host es loopback → bloqueado.
- *   4. Si el host es link-local → bloqueado.
- *   5. Puerto (si se especifica) debe ser 80 o 443.
- *   6. Esquema (si se especifica) debe ser http o https.
+ *   2. Si no es IP → bloqueado (sin resolución DNS).
+ *   3. IPv4 any-address (0.0.0.0) → bloqueado.
+ *   4. IPv4 loopback (127.x.x.x) → bloqueado.
+ *   5. IPv4 link-local (169.254.x.x) → bloqueado.
+ *   6. Si es IPv6: desenvuelve mapped, comprueba loopback/link-local/any-address.
+ *      Cualquier IPv6 no-mapped (incl. fc00::/7 ULA) → bloqueado.
+ *   7. Solo IPv4 privada RFC 1918 es permitida.
+ *   8. Puerto debe ser 80 o 443.
+ *   9. Esquema debe ser http o https.
  */
 export function checkTargetHost(raw: string): SsrfCheckResult {
   if (!raw || raw.trim().length === 0) {
@@ -142,7 +246,9 @@ export function checkTargetHost(raw: string): SsrfCheckResult {
     };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  // URL() guarda IPv6 con corchetes: "[::1]". Quitarlos para las comprobaciones.
+  const rawHostname = parsed.hostname.toLowerCase();
+  const hostname = stripBrackets(rawHostname);
 
   // Comprobar hostnames bloqueados explícitamente
   if (BLOCKED_HOSTNAMES.has(hostname)) {
@@ -158,20 +264,58 @@ export function checkTargetHost(raw: string): SsrfCheckResult {
     };
   }
 
-  if (isLoopback(hostname)) {
-    return { allowed: false, reason: `Loopback no permitido como targetHost: ${hostname}.` };
-  }
-
-  if (isLinkLocal(hostname)) {
-    return { allowed: false, reason: `Link-local no permitido: ${hostname}.` };
-  }
-
-  if (!isPrivateIPv4(hostname)) {
-    // Para IPv6 privadas (fc00::/7) la política es bloquear por default por simplicidad:
-    // los routers domésticos de Xtrim usan IPv4 LAN.
+  // --- Comprobaciones IPv4 ---
+  if (isIPv4(hostname)) {
+    if (isAnyAddressIPv4(hostname)) {
+      return {
+        allowed: false,
+        reason: `Dirección any-address no permitida como targetHost: ${hostname}.`,
+      };
+    }
+    if (isLoopbackIPv4(hostname)) {
+      return { allowed: false, reason: `Loopback no permitido como targetHost: ${hostname}.` };
+    }
+    if (isLinkLocalIPv4(hostname)) {
+      return { allowed: false, reason: `Link-local no permitido: ${hostname}.` };
+    }
+    if (!isPrivateIPv4(hostname)) {
+      return {
+        allowed: false,
+        reason: `Solo se permiten IPs de rangos privados RFC 1918 (10.x, 172.16-31.x, 192.168.x). IP recibida: ${hostname}.`,
+      };
+    }
+    // IPv4 privada válida — continuar a validación de puerto
+  } else {
+    // --- Comprobaciones IPv6 ---
+    // any-address (:: / 0:0:0:0:0:0:0:0)
+    if (isAnyAddressIPv6(hostname)) {
+      return {
+        allowed: false,
+        reason: `Dirección any-address IPv6 no permitida como targetHost: ${hostname}.`,
+      };
+    }
+    // loopback (::1, 0:0:0:0:0:0:0:1, ::ffff:127.x.x.x)
+    if (isLoopbackIPv6(hostname)) {
+      return { allowed: false, reason: `Loopback IPv6 no permitido como targetHost: ${hostname}.` };
+    }
+    // link-local (fe80::, ::ffff:169.254.x.x)
+    if (isLinkLocalIPv6(hostname)) {
+      return { allowed: false, reason: `Link-local IPv6 no permitido: ${hostname}.` };
+    }
+    // IPv4-mapped: desenvuelve y re-aplica política IPv4
+    const mappedIPv4 = extractIPv4FromMapped(hostname);
+    if (mappedIPv4 !== null) {
+      return {
+        allowed: false,
+        reason: `IPv4-mapped IPv6 no permitida. Use la dirección IPv4 directamente: ${mappedIPv4}.`,
+      };
+    }
+    // Cualquier otra IPv6 (::1 ya capturado, fc00::/7 ULA, etc.) → bloqueado.
+    // IPv6 privada (fc00::/7) intencionalmente NO soportada.
+    // Los CPE de Xtrim usan IPv4 LAN.
     return {
       allowed: false,
-      reason: `Solo se permiten IPs de rangos privados RFC 1918 (10.x, 172.16-31.x, 192.168.x). IP recibida: ${hostname}.`,
+      reason: `Direcciones IPv6 no permitidas como targetHost. Use la dirección IPv4 del equipo.`,
     };
   }
 

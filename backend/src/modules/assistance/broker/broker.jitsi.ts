@@ -11,6 +11,16 @@
  *
  * Firmado HS256 con JITSI_APP_SECRET vía jose (mismo stack del proyecto).
  *
+ * Notas de seguridad (Fase D hardening):
+ *   TTL: El JWT se emite con TTL corto (JITSI_JWT_TTL, default 1800s = 30 min).
+ *        provisionJitsiRoom se llama en cada solicitud POST /sessions/:id/video,
+ *        de modo que el participante siempre recibe un token fresco al unirse.
+ *        El cliente debe reinvocar /video si el JWT expira durante la llamada.
+ *
+ *   Rol moderador por rol de aplicación (decisión de producto):
+ *        AGENT y SUPERVISOR → moderator: true  (lidera la llamada desde el Call Center)
+ *        TECHNICIAN         → moderator: false (opera el equipo, no modera la sala)
+ *
  * Módulo sin I/O → testeable sin BD.
  */
 
@@ -22,12 +32,14 @@ function jitsiSecretKey(): Uint8Array {
   return new TextEncoder().encode(env.JITSI_APP_SECRET);
 }
 
+/** Roles del sistema que pueden provisionar una sala Jitsi. */
+export type JitsiParticipantRole = 'TECHNICIAN' | 'AGENT' | 'SUPERVISOR';
+
 export interface JitsiUserContext {
   id: string;
   name: string;
   email: string;
-  /** Si el usuario es moderador de la sala (técnico y agente lo son en este contexto). */
-  moderator: boolean;
+  role: JitsiParticipantRole;
 }
 
 export interface SignJitsiTokenInput {
@@ -39,6 +51,17 @@ export interface JitsiRoomResult {
   roomName: string;
   domain: string;
   jwt: string;
+}
+
+/**
+ * Devuelve true si el rol debe ser moderador de la sala Jitsi.
+ *
+ * Política:
+ *   AGENT / SUPERVISOR → moderador (dirigen la llamada desde el Call Center)
+ *   TECHNICIAN         → no moderador (ejecuta acciones en campo)
+ */
+function isModerator(role: JitsiParticipantRole): boolean {
+  return role === 'AGENT' || role === 'SUPERVISOR';
 }
 
 /**
@@ -55,6 +78,10 @@ export function deriveRoomName(sessionId: string): string {
  *
  * Sigue el contrato de claims esperado por Jitsi Meet self-host moderno:
  *   https://jitsi.github.io/handbook/docs/dev-guide/dev-guide-ljm-tokens
+ *
+ * El JWT tiene vida corta (JITSI_JWT_TTL, default 1800s) y se reemite en
+ * cada llamada a provisionJitsiRoom para garantizar que el token es siempre
+ * fresco al momento de unirse.
  */
 export async function signJitsiRoomToken(input: SignJitsiTokenInput): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -70,7 +97,7 @@ export async function signJitsiRoomToken(input: SignJitsiTokenInput): Promise<st
         id: input.user.id,
         name: input.user.name,
         email: input.user.email,
-        moderator: input.user.moderator,
+        moderator: isModerator(input.user.role),
       },
     },
   })
@@ -83,16 +110,16 @@ export async function signJitsiRoomToken(input: SignJitsiTokenInput): Promise<st
 /**
  * Provisiona una sala Jitsi para una sesión de asistencia.
  * La sala es idempotente: el mismo sessionId siempre produce el mismo roomName.
+ * El JWT se reemite en cada llamada para garantizar TTL corto al unirse.
  *
  * @param sessionId  ID de la AssistanceSession.
- * @param user       Datos del usuario que solicita el JWT.
+ * @param user       Datos del usuario que solicita el JWT (incluye su rol).
  */
 export async function provisionJitsiRoom(
   sessionId: string,
   user: JitsiUserContext,
 ): Promise<JitsiRoomResult> {
   const roomName = deriveRoomName(sessionId);
-  // TODO(seguridad): atar TTL del JWT de sala a la duración de la sesión; revisar rol moderador
   const jwt = await signJitsiRoomToken({ room: roomName, user });
   return { roomName, domain: env.JITSI_DOMAIN, jwt };
 }

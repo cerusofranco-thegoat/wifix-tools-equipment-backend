@@ -34,7 +34,7 @@ const envSchema = z.object({
     .string()
     .min(16, 'JITSI_APP_SECRET debe tener al menos 16 caracteres')
     .default('dev-jitsi-secret-change-me-please-32chars'),
-  JITSI_JWT_TTL: z.coerce.number().int().positive().default(3600),
+  JITSI_JWT_TTL: z.coerce.number().int().positive().default(1800),
   // --- Broker WSS (Fase D) ---
   BROKER_TOKEN_SECRET: z
     .string()
@@ -54,6 +54,13 @@ const envSchema = z.object({
     .string()
     .url('BROKER_PUBLIC_WS_URL debe ser una URL válida (wss:// o ws://)')
     .default('ws://localhost:8080/asistencia/v1/broker/connect'),
+  // --- Rate-limiting del broker (Fase D hardening) ---
+  // Máximo de requests de emisión de token (POST /remote-sessions) por agente por ventana.
+  BROKER_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+  // Ventana de tiempo en milisegundos para el rate-limit del broker.
+  BROKER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  // Máximo de conexiones WS (túnel/agente) por IP por ventana.
+  BROKER_WS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);

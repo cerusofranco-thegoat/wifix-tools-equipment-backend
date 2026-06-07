@@ -84,10 +84,32 @@ export type OpenRemoteSessionInput = z.infer<typeof openRemoteSessionSchema>;
 // Schemas de entrada — acciones ACS
 // ---------------------------------------------------------------------------
 
-export const requestActionSchema = z.object({
-  action: z.enum(REMOTE_ACTION_TYPES),
-  params: z.record(z.unknown()).optional(),
+const runDiagnosticParamsSchema = z.object({
+  target: z.string().min(1, 'target es obligatorio para RUN_DIAGNOSTIC.'),
+  kind: z.enum(['ping', 'traceroute'], {
+    errorMap: () => ({ message: "kind debe ser 'ping' o 'traceroute'." }),
+  }),
 });
+
+export const requestActionSchema = z
+  .object({
+    action: z.enum(REMOTE_ACTION_TYPES),
+    params: z.record(z.unknown()).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.action === 'RUN_DIAGNOSTIC') {
+      const parsed = runDiagnosticParamsSchema.safeParse(data.params);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['params', ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
+    }
+  });
 
 export type RequestActionInput = z.infer<typeof requestActionSchema>;
 

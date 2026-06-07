@@ -118,8 +118,9 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   });
 
   // -------------------------------------------------------------------------
-  // Acciones ACS — POST /sessions/:id/actions (MOCK)
-  // Rol: AGENT asignado
+  // Acciones ACS — POST /sessions/:id/actions
+  // Fase C: conector real (mock determinista o real según CONNECTOR_MODE)
+  // Rol: AGENT asignado; sesión ACTIVE; respuesta 202 + ACTION_RESULT por WS
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/actions', async (request, reply) => {
     const actor = requireRole(request, 'AGENT');

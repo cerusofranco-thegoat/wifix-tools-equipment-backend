@@ -241,7 +241,7 @@ interface RequestActionBody {
   params?:
     | { ssid?: string; password?: string; band?: '2.4GHz' | '5GHz' }   // SET_WIFI
     | { band: '2.4GHz' | '5GHz'; channel: number }                      // SET_CHANNEL
-    | { target: string }                                                // RUN_DIAGNOSTIC (ping/traceroute)
+    | { target: string; kind: 'ping' | 'traceroute' }                   // RUN_DIAGNOSTIC
     | Record<string, never>;                                            // REBOOT / FACTORY_RESET / REPROVISION
 }
 ```

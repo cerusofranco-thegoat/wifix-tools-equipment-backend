@@ -27,6 +27,14 @@ export {
   type WifiConfigUpdate,
   type WifiBandConfig,
   type WifiBand,
+  type RebootResult,
+  type SetChannelParams,
+  type SetChannelResult,
+  type FactoryResetResult,
+  type ReprovisionResult,
+  type DiagnosticResult,
+  type DiagnosticHop,
+  type RunDiagnosticParams,
 } from './acs/index.js';
 
 export {

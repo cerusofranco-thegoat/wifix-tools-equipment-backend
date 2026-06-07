@@ -1,11 +1,13 @@
 /**
  * Servicio del módulo Asistencia Técnica.
- * Fase B: lógica de negocio de sesiones, ciclo de vida, acciones (mock) y
- * sesiones remotas (mock). El servicio orquesta repositorio + hub WS + ACS mock.
+ * Fase B: sesiones, ciclo de vida, sesiones remotas (mock).
+ * Fase C: acciones de equipo reales vía conector ACS (mock determinista o real
+ *   según CONNECTOR_MODE). Flujo: PENDING → SUCCESS/FAILED + ACTION_RESULT por WS.
  */
 
 import { ApiError } from '../../middleware/error-handler.js';
-import { acsMock } from '../../connectors/acs/index.js';
+import { getAcsConnector } from '../../connectors/acs/index.js';
+import type { WifiBand } from '../../connectors/acs/index.js';
 import { assistanceRepository } from './assistance.repository.js';
 import {
   mapSession,
@@ -322,59 +324,109 @@ async function requestAction(
 
   const dto = mapRemoteAction(action);
 
-  // Ejecutar el mock de forma asíncrona (fire-and-forget) y emitir por WS
-  void executeActionMock(action.id, sessionId, input, session.accountNumber);
+  // Ejecutar la acción vía el conector ACS (mock o real según env) de forma
+  // asíncrona (fire-and-forget) para devolver 202 inmediatamente.
+  void executeAction(action.id, sessionId, input, session.accountNumber);
 
   return { action: dto };
 }
 
 /**
- * Ejecuta la acción via acsMock y actualiza el resultado en BD.
- * Se llama sin await (fire-and-forget) para devolver 202 inmediatamente.
+ * Ejecuta la acción vía el conector ACS (mock determinista o real según CONNECTOR_MODE).
+ * Persiste PENDING → SUCCESS/FAILED en RemoteAction y emite ACTION_RESULT por WS.
+ * 502 CONNECTOR_ERROR si el ACS no responde o el equipo no soporta la acción.
  */
-async function executeActionMock(
+async function executeAction(
   actionId: string,
   sessionId: string,
   input: RequestActionInput,
   accountNumber: string,
 ): Promise<void> {
+  const acs = getAcsConnector();
+
   try {
     let result: Record<string, unknown>;
 
-    // Mapear la acción al método disponible en acsMock
     switch (input.action) {
       case 'SET_WIFI': {
-        const bands = [];
+        /**
+         * SET_WIFI se mapea a updateWifiConfig — no se duplica la lógica.
+         * Params del contrato: { ssid?, password?, band? }
+         */
+        const bands: { band: WifiBand; ssid: string; password?: string }[] = [];
         if (input.params && typeof input.params === 'object') {
           const p = input.params as { ssid?: string; password?: string; band?: string };
           if (p.band && p.ssid) {
-            bands.push({ band: p.band as '2.4GHz' | '5GHz', ssid: p.ssid, password: p.password });
+            bands.push({
+              band: p.band as WifiBand,
+              ssid: p.ssid,
+              ...(p.password ? { password: p.password } : {}),
+            });
           }
         }
         if (bands.length > 0) {
-          const updated = await acsMock.updateWifiConfig(accountNumber, { bands });
+          const updated = await acs.updateWifiConfig(accountNumber, { bands });
           result = { success: true, config: updated };
         } else {
           result = { success: true, message: 'No se especificaron bandas para actualizar.' };
         }
         break;
       }
-      case 'REBOOT':
-      case 'SET_CHANNEL':
-      case 'FACTORY_RESET':
-      case 'REPROVISION':
-      case 'RUN_DIAGNOSTIC': {
-        // Para acciones no soportadas por acsMock actual, simulamos respuesta exitosa
-        result = {
-          success: true,
-          action: input.action,
-          message: `Acción ${input.action} ejecutada (mock).`,
-          params: input.params ?? null,
-        };
+
+      case 'REBOOT': {
+        const r = await acs.reboot(accountNumber);
+        result = r as unknown as Record<string, unknown>;
         break;
       }
+
+      case 'SET_CHANNEL': {
+        const p = (input.params ?? {}) as { band?: string; channel?: number };
+        if (!p.band || p.channel === undefined) {
+          throw ApiError.validation(
+            'SET_CHANNEL requiere los parámetros band y channel.',
+          );
+        }
+        const r = await acs.setChannel(accountNumber, {
+          band: p.band as WifiBand,
+          channel: p.channel,
+        });
+        result = r as unknown as Record<string, unknown>;
+        break;
+      }
+
+      case 'FACTORY_RESET': {
+        const r = await acs.factoryReset(accountNumber);
+        result = r as unknown as Record<string, unknown>;
+        break;
+      }
+
+      case 'REPROVISION': {
+        const r = await acs.reprovision(accountNumber);
+        result = r as unknown as Record<string, unknown>;
+        break;
+      }
+
+      case 'RUN_DIAGNOSTIC': {
+        /**
+         * Ejecuta ping/traceroute a través del conector ACS.
+         * El resultado sigue el formato TR-143, compatible con los tipos de
+         * PingTestDto y TracerouteDto del módulo /herramientas/v1.
+         * Los parámetros { target, kind } son validados por el schema Zod antes
+         * de llegar aquí, por lo que target y kind siempre están presentes.
+         */
+        const p = (input.params ?? {}) as { target?: string; kind?: 'ping' | 'traceroute' };
+        if (!p.target || !p.kind) {
+          throw ApiError.validation(
+            'RUN_DIAGNOSTIC requiere los parámetros target y kind.',
+          );
+        }
+        const r = await acs.runDiagnostic(accountNumber, { target: p.target, kind: p.kind });
+        result = r as unknown as Record<string, unknown>;
+        break;
+      }
+
       default: {
-        result = { success: false, message: 'Acción desconocida.' };
+        throw ApiError.validation(`Acción desconocida: ${input.action as string}.`);
       }
     }
 
@@ -383,20 +435,50 @@ async function executeActionMock(
       'SUCCESS',
       result,
     );
-    const updatedDto = mapRemoteAction(updated);
-    broadcastActionResult(sessionId, updatedDto);
-  } catch {
-    const errorResult = { success: false, message: 'Error ejecutando la acción (mock).' };
+    broadcastActionResult(sessionId, mapRemoteAction(updated));
+  } catch (err) {
+    // Determinar si el error viene del conector (502) o es de validación (re-lanzar)
+    if (err instanceof ApiError && err.code === 'VALIDATION_ERROR') {
+      // Error de parámetros — marcar como FAILED pero no 502
+      const errorResult = {
+        success: false,
+        code: 'VALIDATION_ERROR',
+        message: err.message,
+      };
+      try {
+        const updated = await assistanceRepository.updateRemoteActionResult(
+          actionId,
+          'FAILED',
+          errorResult,
+        );
+        broadcastActionResult(sessionId, mapRemoteAction(updated));
+      } catch {
+        // Si falla la actualización del resultado, ya no hay más que hacer.
+      }
+      return;
+    }
+
+    // Error de conector (ACS no responde, equipo sin soporte, notImplemented, etc.)
+    const errorMessage =
+      err instanceof Error
+        ? err.message
+        : 'El conector ACS no pudo ejecutar la acción.';
+
+    const errorResult: Record<string, unknown> = {
+      success: false,
+      code: 'CONNECTOR_ERROR',
+      message: errorMessage,
+    };
+
     try {
       const updated = await assistanceRepository.updateRemoteActionResult(
         actionId,
         'FAILED',
         errorResult,
       );
-      const updatedDto = mapRemoteAction(updated);
-      broadcastActionResult(sessionId, updatedDto);
+      broadcastActionResult(sessionId, mapRemoteAction(updated));
     } catch {
-      // Si falla la actualización del resultado, no hay más que hacer.
+      // Si falla la actualización del resultado, ya no hay más que hacer.
     }
   }
 }

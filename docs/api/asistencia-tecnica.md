@@ -249,7 +249,14 @@ Response 202:
 ```ts
 { action: RemoteAction }          // status 'PENDING'; el resultado llega por WS (ACTION_RESULT)
 ```
-Errores: `400`; `401`; `403`; `404`; `409` (sesión no `ACTIVE`); `502` (ACS no responde / equipo sin soporte).
+Errores **síncronos** (en la respuesta HTTP): `400`; `401`; `403`; `404`; `409` (sesión no `ACTIVE`).
+
+> **Fallo del conector (asíncrono):** como la ejecución es asíncrona (el endpoint
+> responde `202` y el resultado llega por WS), un fallo del ACS —no responde, o el
+> equipo no soporta la acción— **no** produce un `502` HTTP. Se reporta como la acción
+> en estado `FAILED` con `result.code = 'CONNECTOR_ERROR'` y `result.message` en español,
+> emitida por el evento `ACTION_RESULT` del WebSocket. El `502 CONNECTOR_ERROR` solo
+> aplica a endpoints que llaman al conector de forma **síncrona** (p.ej. `POST /sessions/{id}/tickets`).
 
 ### Listar acciones — GET /sessions/{id}/actions
 Auth: participantes o `SUPERVISOR`.

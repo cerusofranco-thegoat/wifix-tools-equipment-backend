@@ -1,14 +1,13 @@
 /**
  * Rutas del módulo Asistencia Técnica — prefijo /asistencia/v1
- * Fase 0: handlers en stub. Devuelven 501 con mensaje claro.
- * La lógica de negocio se implementa a partir de la Fase B.
+ * Fase B: lógica real en todos los endpoints salvo /study y /tickets (Fase C/F).
  *
  * El WebSocket (/asistencia/v1/ws) está registrado en assistance.ws.ts
  * y se registra desde app.ts junto con este archivo.
  */
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { parseBody, parseParams, parseQuery } from '../../lib/validation.js';
-import { requireRole } from '../../middleware/authenticate.js';
+import { requireRole, getAuthUser } from '../../middleware/authenticate.js';
 import {
   createSessionSchema,
   listSessionsSchema,
@@ -18,15 +17,9 @@ import {
   requestActionSchema,
   createOperatorTicketSchema,
   uuidParamSchema,
+  paginationOnlySchema,
 } from './assistance.schemas.js';
-
-/** Respuesta de stub uniforme para endpoints aún no implementados */
-async function notImplemented(reply: FastifyReply): Promise<void> {
-  await reply.code(501).send({
-    code: 'NOT_IMPLEMENTED',
-    message: 'Este endpoint se implementa en la Fase B.',
-  });
-}
+import { assistanceService } from './assistance.service.js';
 
 export async function registerAssistanceRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
@@ -45,9 +38,10 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   // Rol: TECHNICIAN
   // -------------------------------------------------------------------------
   app.post('/sessions', async (request, reply) => {
-    requireRole(request, 'TECHNICIAN');
-    parseBody(createSessionSchema, request.body);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'TECHNICIAN');
+    const body = parseBody(createSessionSchema, request.body);
+    const result = await assistanceService.createSession(body, actor.id);
+    return reply.code(201).send(result);
   });
 
   // -------------------------------------------------------------------------
@@ -56,17 +50,20 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   // -------------------------------------------------------------------------
   app.get('/sessions', async (request, reply) => {
     requireRole(request, 'AGENT', 'SUPERVISOR');
-    parseQuery(listSessionsSchema, request.query);
-    return notImplemented(reply);
+    const query = parseQuery(listSessionsSchema, request.query);
+    const result = await assistanceService.listSessions(query);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
   // Detalle — GET /sessions/:id
-  // Rol: participantes o SUPERVISOR (la verificación fina va en Fase B)
+  // Rol: participantes o SUPERVISOR
   // -------------------------------------------------------------------------
   app.get('/sessions/:id', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await assistanceService.getSessionDetail(id, actor.id, actor.role);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
@@ -74,67 +71,91 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   // Rol: AGENT
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/assign', async (request, reply) => {
-    requireRole(request, 'AGENT');
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'AGENT');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await assistanceService.assignSession(id, actor.id);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
   // Transición de estado — POST /sessions/:id/status
-  // Rol: AGENT asignado | SUPERVISOR (la verificación fina va en Fase B)
+  // Rol: AGENT asignado | SUPERVISOR
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/status', async (request, reply) => {
-    requireRole(request, 'AGENT', 'SUPERVISOR');
-    parseParams(uuidParamSchema, request.params);
-    parseBody(changeStatusSchema, request.body);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'AGENT', 'SUPERVISOR');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(changeStatusSchema, request.body);
+    const result = await assistanceService.changeStatus(id, body, actor.id, actor.role);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
   // Timeline — GET /sessions/:id/events
   // -------------------------------------------------------------------------
   app.get('/sessions/:id/events', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const query = parseQuery(paginationOnlySchema, request.query);
+    const result = await assistanceService.listEvents(
+      id,
+      query.page,
+      query.pageSize,
+      actor.id,
+      actor.role,
+    );
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
   // Nota — POST /sessions/:id/notes
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/notes', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    parseBody(addNoteSchema, request.body);
-    return notImplemented(reply);
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(addNoteSchema, request.body);
+    const result = await assistanceService.addNote(id, body, actor.id, actor.role);
+    return reply.code(201).send(result);
   });
 
   // -------------------------------------------------------------------------
-  // Acciones ACS — POST /sessions/:id/actions
-  // Rol: AGENT
+  // Acciones ACS — POST /sessions/:id/actions (MOCK)
+  // Rol: AGENT asignado
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/actions', async (request, reply) => {
-    requireRole(request, 'AGENT');
-    parseParams(uuidParamSchema, request.params);
-    parseBody(requestActionSchema, request.body);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'AGENT');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(requestActionSchema, request.body);
+    const result = await assistanceService.requestAction(id, body, actor.id);
+    return reply.code(202).send(result);
   });
 
   // -------------------------------------------------------------------------
   // Listar acciones — GET /sessions/:id/actions
   // -------------------------------------------------------------------------
   app.get('/sessions/:id/actions', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const query = parseQuery(paginationOnlySchema, request.query);
+    const result = await assistanceService.listActions(
+      id,
+      query.page,
+      query.pageSize,
+      actor.id,
+      actor.role,
+    );
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
-  // Sesión remota — POST /sessions/:id/remote-sessions
-  // Rol: AGENT
+  // Sesión remota — POST /sessions/:id/remote-sessions (MOCK)
+  // Rol: AGENT asignado
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/remote-sessions', async (request, reply) => {
-    requireRole(request, 'AGENT');
-    parseParams(uuidParamSchema, request.params);
-    parseBody(openRemoteSessionSchema, request.body);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'AGENT');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const body = parseBody(openRemoteSessionSchema, request.body);
+    const result = await assistanceService.openRemoteSession(id, body, actor.id);
+    return reply.code(201).send(result);
   });
 
   // -------------------------------------------------------------------------
@@ -142,35 +163,45 @@ export async function registerAssistanceRoutes(app: FastifyInstance): Promise<vo
   // Rol: AGENT | SUPERVISOR
   // -------------------------------------------------------------------------
   app.post('/remote-sessions/:id/close', async (request, reply) => {
-    requireRole(request, 'AGENT', 'SUPERVISOR');
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = requireRole(request, 'AGENT', 'SUPERVISOR');
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await assistanceService.closeRemoteSession(id, actor.id, actor.role);
+    return reply.send(result);
   });
 
   // -------------------------------------------------------------------------
-  // Video Jitsi — POST /sessions/:id/video
+  // Video Jitsi — POST /sessions/:id/video (MOCK)
+  // Participantes o SUPERVISOR
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/video', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+    const actor = getAuthUser(request);
+    const { id } = parseParams(uuidParamSchema, request.params);
+    const result = await assistanceService.provisionVideo(id, actor.id, actor.role);
+    return reply.code(201).send(result);
   });
 
   // -------------------------------------------------------------------------
   // Estudio WiFi — GET /sessions/:id/study
+  // Fase C/F — stub 501
   // -------------------------------------------------------------------------
-  app.get('/sessions/:id/study', async (request, reply) => {
-    parseParams(uuidParamSchema, request.params);
-    return notImplemented(reply);
+  app.get('/sessions/:id/study', async (_request, reply) => {
+    return reply.code(501).send({
+      code: 'NOT_IMPLEMENTED',
+      message: 'Este endpoint se implementa en la Fase C/F.',
+    });
   });
 
   // -------------------------------------------------------------------------
   // Ticket de operadora — POST /sessions/:id/tickets
-  // Rol: AGENT | SUPERVISOR
+  // Fase C/F — stub 501
   // -------------------------------------------------------------------------
   app.post('/sessions/:id/tickets', async (request, reply) => {
     requireRole(request, 'AGENT', 'SUPERVISOR');
     parseParams(uuidParamSchema, request.params);
     parseBody(createOperatorTicketSchema, request.body);
-    return notImplemented(reply);
+    return reply.code(501).send({
+      code: 'NOT_IMPLEMENTED',
+      message: 'Este endpoint se implementa en la Fase F.',
+    });
   });
 }

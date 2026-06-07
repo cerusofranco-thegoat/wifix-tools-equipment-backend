@@ -109,26 +109,28 @@ describe('Fase 0 — requireRole', () => {
     expect(body.code).toBe('FORBIDDEN');
   });
 
-  it('AGENT puede acceder a GET /sessions (stub 501)', async () => {
+  it('AGENT puede acceder a GET /sessions (implementado en Fase B — sin BD: 500)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${ASSISTANCE_PREFIX}/sessions`,
       headers: { authorization: `Bearer ${agentToken}` },
     });
-    // stub: 501 (no 403 ni 401)
-    expect(res.statusCode).toBe(501);
+    // Fase B: endpoint implementado. Sin BD responde 500; nunca 403 ni 401.
+    expect(res.statusCode).not.toBe(403);
+    expect(res.statusCode).not.toBe(401);
   });
 
-  it('SUPERVISOR puede acceder a GET /sessions (stub 501)', async () => {
+  it('SUPERVISOR puede acceder a GET /sessions (implementado en Fase B — sin BD: 500)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${ASSISTANCE_PREFIX}/sessions`,
       headers: { authorization: `Bearer ${supervisorToken}` },
     });
-    expect(res.statusCode).toBe(501);
+    expect(res.statusCode).not.toBe(403);
+    expect(res.statusCode).not.toBe(401);
   });
 
-  it('TECHNICIAN puede acceder a POST /sessions (su rol)', async () => {
+  it('TECHNICIAN puede acceder a POST /sessions (su rol — implementado en Fase B)', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `${ASSISTANCE_PREFIX}/sessions`,
@@ -138,7 +140,10 @@ describe('Fase 0 — requireRole', () => {
       },
       payload: { accountNumber: 'ACC-001', consent: true },
     });
-    expect(res.statusCode).toBe(501);
+    // Fase B: endpoint implementado. Sin BD responde 500; nunca 403 ni 401 ni 400.
+    expect(res.statusCode).not.toBe(403);
+    expect(res.statusCode).not.toBe(401);
+    expect(res.statusCode).not.toBe(400);
   });
 
   it('AGENT no puede acceder a POST /sessions (403)', async () => {

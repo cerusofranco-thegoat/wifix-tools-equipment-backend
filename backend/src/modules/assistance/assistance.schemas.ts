@@ -110,3 +110,9 @@ export type CreateOperatorTicketInput = z.infer<typeof createOperatorTicketSchem
 export const uuidParamSchema = z.object({
   id: z.string().uuid('El id debe ser un UUID v4 válido.'),
 });
+
+// ---------------------------------------------------------------------------
+// Schema de paginación sin filtros adicionales (para events y actions)
+// ---------------------------------------------------------------------------
+
+export const paginationOnlySchema = paginationSchema;

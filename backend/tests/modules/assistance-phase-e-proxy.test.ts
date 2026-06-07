@@ -37,16 +37,16 @@ import {
 } from '../../src/modules/assistance/broker/broker.proxy-cookie-store.js';
 
 describe('ProxyCookieStore — ciclo completo', () => {
-  beforeEach(() => {
-    clearProxyCookieStore();
+  beforeEach(async () => {
+    await clearProxyCookieStore();
   });
 
-  afterEach(() => {
-    clearProxyCookieStore();
+  afterEach(async () => {
+    await clearProxyCookieStore();
   });
 
-  it('emite una cookie opaca UUID y la almacena en el store', () => {
-    const value = issueProxyCookie({
+  it('emite una cookie opaca UUID y la almacena en el store', async () => {
+    const value = await issueProxyCookie({
       remoteSessionId: 'rs-1',
       sessionId: 'sess-1',
       agentId: 'agent-1',
@@ -55,19 +55,19 @@ describe('ProxyCookieStore — ciclo completo', () => {
     });
     expect(typeof value).toBe('string');
     expect(value).toMatch(/^[0-9a-f-]{36}$/i); // UUID v4
-    expect(proxyCookieStoreSize()).toBe(1);
+    expect(await proxyCookieStoreSize()).toBe(1);
   });
 
-  it('lookup devuelve la entrada correcta para una cookie válida', () => {
+  it('lookup devuelve la entrada correcta para una cookie válida', async () => {
     const expiresAt = Date.now() + 600_000;
-    const value = issueProxyCookie({
+    const value = await issueProxyCookie({
       remoteSessionId: 'rs-2',
       sessionId: 'sess-2',
       agentId: 'agent-2',
       targetHost: '10.0.0.1',
       expiresAt,
     });
-    const entry = lookupProxyCookie(value);
+    const entry = await lookupProxyCookie(value);
     expect(entry).not.toBeUndefined();
     expect(entry?.remoteSessionId).toBe('rs-2');
     expect(entry?.agentId).toBe('agent-2');
@@ -75,34 +75,34 @@ describe('ProxyCookieStore — ciclo completo', () => {
     expect(entry?.cookieValue).toBe(value);
   });
 
-  it('lookup devuelve undefined para cookie desconocida', () => {
-    expect(lookupProxyCookie('no-existe')).toBeUndefined();
+  it('lookup devuelve undefined para cookie desconocida', async () => {
+    expect(await lookupProxyCookie('no-existe')).toBeUndefined();
   });
 
-  it('lookup devuelve undefined y purga la entrada si está expirada', () => {
-    const value = issueProxyCookie({
+  it('lookup devuelve undefined y purga la entrada si está expirada', async () => {
+    const value = await issueProxyCookie({
       remoteSessionId: 'rs-3',
       sessionId: 'sess-3',
       agentId: 'agent-3',
       targetHost: '192.168.0.1',
       expiresAt: Date.now() - 1, // ya expirada
     });
-    expect(proxyCookieStoreSize()).toBe(1);
-    const entry = lookupProxyCookie(value);
+    expect(await proxyCookieStoreSize()).toBe(1);
+    const entry = await lookupProxyCookie(value);
     expect(entry).toBeUndefined();
     // La entrada debe haberse purgado
-    expect(proxyCookieStoreSize()).toBe(0);
+    expect(await proxyCookieStoreSize()).toBe(0);
   });
 
-  it('invalidateProxyCookieBySession elimina todas las cookies de esa sesión', () => {
-    const v1 = issueProxyCookie({
+  it('invalidateProxyCookieBySession elimina todas las cookies de esa sesión', async () => {
+    const v1 = await issueProxyCookie({
       remoteSessionId: 'rs-inv',
       sessionId: 'sess-inv',
       agentId: 'agent-1',
       targetHost: '192.168.1.1',
       expiresAt: Date.now() + 600_000,
     });
-    const v2 = issueProxyCookie({
+    const v2 = await issueProxyCookie({
       remoteSessionId: 'rs-other',
       sessionId: 'sess-other',
       agentId: 'agent-2',
@@ -110,32 +110,32 @@ describe('ProxyCookieStore — ciclo completo', () => {
       expiresAt: Date.now() + 600_000,
     });
 
-    invalidateProxyCookieBySession('rs-inv');
+    await invalidateProxyCookieBySession('rs-inv');
 
-    expect(peekProxyCookie(v1)).toBeUndefined();
+    expect(await peekProxyCookie(v1)).toBeUndefined();
     // La otra sesión no debe verse afectada
-    expect(peekProxyCookie(v2)).not.toBeUndefined();
+    expect(await peekProxyCookie(v2)).not.toBeUndefined();
   });
 
-  it('purgeExpiredProxyCookies elimina solo las expiradas', () => {
-    issueProxyCookie({
+  it('purgeExpiredProxyCookies elimina solo las expiradas', async () => {
+    await issueProxyCookie({
       remoteSessionId: 'rs-fresh',
       sessionId: 'sess-fresh',
       agentId: 'ag',
       targetHost: '192.168.1.1',
       expiresAt: Date.now() + 600_000,
     });
-    issueProxyCookie({
+    await issueProxyCookie({
       remoteSessionId: 'rs-stale',
       sessionId: 'sess-stale',
       agentId: 'ag',
       targetHost: '192.168.1.2',
       expiresAt: Date.now() - 1,
     });
-    expect(proxyCookieStoreSize()).toBe(2);
-    const purged = purgeExpiredProxyCookies();
+    expect(await proxyCookieStoreSize()).toBe(2);
+    const purged = await purgeExpiredProxyCookies();
     expect(purged).toBe(1);
-    expect(proxyCookieStoreSize()).toBe(1);
+    expect(await proxyCookieStoreSize()).toBe(1);
   });
 
   it('buildProxyCookieSetHeader produce cabecera con atributos de seguridad correctos', () => {
@@ -150,15 +150,15 @@ describe('ProxyCookieStore — ciclo completo', () => {
     // (La env de test tiene NODE_ENV=test, no producción)
   });
 
-  it('cada emisión produce un valor distinto (UUID único)', () => {
-    const v1 = issueProxyCookie({
+  it('cada emisión produce un valor distinto (UUID único)', async () => {
+    const v1 = await issueProxyCookie({
       remoteSessionId: 'rs-u1',
       sessionId: 'sess-u1',
       agentId: 'ag',
       targetHost: '192.168.1.1',
       expiresAt: Date.now() + 600_000,
     });
-    const v2 = issueProxyCookie({
+    const v2 = await issueProxyCookie({
       remoteSessionId: 'rs-u2',
       sessionId: 'sess-u2',
       agentId: 'ag',
@@ -174,12 +174,12 @@ describe('ProxyCookieStore — ciclo completo', () => {
 // ---------------------------------------------------------------------------
 
 describe('targetHost inmutabilidad — viene del store, no de la URL', () => {
-  beforeEach(() => clearProxyCookieStore());
-  afterEach(() => clearProxyCookieStore());
+  beforeEach(async () => { await clearProxyCookieStore(); });
+  afterEach(async () => { await clearProxyCookieStore(); });
 
-  it('el targetHost devuelto por lookupProxyCookie es el almacenado al emitir (no el de la URL)', () => {
+  it('el targetHost devuelto por lookupProxyCookie es el almacenado al emitir (no el de la URL)', async () => {
     const originalHost = '192.168.1.1';
-    const cookieValue = issueProxyCookie({
+    const cookieValue = await issueProxyCookie({
       remoteSessionId: 'rs-imm',
       sessionId: 'sess-imm',
       agentId: 'agent-imm',
@@ -187,7 +187,7 @@ describe('targetHost inmutabilidad — viene del store, no de la URL', () => {
       expiresAt: Date.now() + 600_000,
     });
 
-    const entry = lookupProxyCookie(cookieValue);
+    const entry = await lookupProxyCookie(cookieValue);
     expect(entry?.targetHost).toBe(originalHost);
     // Aunque un atacante modifique el URL o el header, el targetHost siempre
     // proviene del store server-side fijado al emitir la cookie.

@@ -159,3 +159,76 @@ El `targetHost` admite IPv6 en **ULA + link-local + GUA**. Por decisión de prod
 ### Consecuencias
 - **Gana:** cobertura de todo el parque IPv6, sea cual sea el tipo de dirección LAN del CPE.
 - **Cuesta (riesgo residual aceptado):** permitir GUA implica que un agente (o una credencial de agente comprometida) puede dirigir el túnel del técnico a **cualquier host IPv6 público de internet** (abuso de proxy / SSRF saliente). Controles compensatorios: blocklist de IMDS/loopback/any, puertos 80/443, solo IPs literales (sin DNS), rate-limiting de apertura de sesiones remotas, auditoría de cada request del túnel y gating por consentimiento del cliente. Quedan permitidas por ser GUA las direcciones de transición que embeben IPv4 (6to4 `2002::/16`, Teredo `2001::/32`); NAT64 `64:ff9b::/96` queda bloqueado por no caer en los rangos permitidos. Si la superficie SSRF saliente se vuelve un problema, el siguiente paso es una allowlist de prefijos por operadora o resolver el gateway del lado del técnico y firmarlo en el token.
+
+---
+
+## 0008. Estado atómico del broker en multi-instancia vía Redis opcional
+
+- Estado: aceptada
+- Fecha: 2026-06-07
+- Contexto del proyecto: Wifix / Asistencia Técnica
+
+### Contexto
+
+Los stores del broker (`broker.token-store.ts` y `broker.proxy-cookie-store.ts`) usaban `Map` en memoria de proceso. Esto era correcto para una instancia única de Node.js, pero en un despliegue multi-réplica (balanceo de carga, escala horizontal en Hetzner/DokPloy) introduce dos problemas:
+
+1. **Tokens de un solo uso no son atómicos cross-instancia**: dos réplicas distintas pueden ver el mismo token como "no usado" simultáneamente y ambas aceptarlo. La ventana TOCTOU que se resolvió en proceso único (check-and-set síncrono en el Map) reaparece entre procesos.
+2. **Cookies de proxy no son visibles cross-instancia**: si la cookie se emite en la réplica A y el request del proxy llega a la réplica B, el lookup devuelve undefined y la request falla con 401.
+
+### Decisión
+
+Se introduce un **adaptador Redis opcional** para ambos stores, activado con la variable de entorno `REDIS_URL`. La dependencia elegida es **`ioredis`** (única dependencia nueva autorizada).
+
+**Dos implementaciones por store, seleccionadas por una factory:**
+- **InMemory** (default, sin `REDIS_URL`): el comportamiento actual, refactorizado detrás de la interfaz `TokenStore` / `ProxyCookieStore`. Válido para instancia única.
+- **Redis** (con `REDIS_URL`): atómico cross-instancia.
+
+**Atomicidad de la reserva de token (lo crítico):**
+En Redis, `reserve(jti)` ejecuta `SET token:used:<jti> "1" NX EX <ttl>`. La semántica de `NX` (solo escribe si la clave no existe) garantiza que exactamente un proceso gana la reserva, independientemente de cuántas réplicas ejecuten la operación simultáneamente. Esto cierra la ventana TOCTOU a nivel de clúster.
+
+**Cookies de proxy en Redis:**
+`issue()` almacena la entrada como JSON con `EX` (TTL). `lookup()` lee la clave directamente. `invalidateBySession()` mantiene un índice auxiliar `proxysession:<remoteSessionId>` (Set de Redis) que mapea cada RemoteSession a sus cookieValues; la invalidación borra el Set y todas las cookies referenciadas.
+
+**Gating por `REDIS_URL`:**
+Si la variable no está definida, el proceso arranca con InMemory sin cambio de comportamiento. Si está definida, ambas factories crean un cliente `ioredis` y devuelven la implementación Redis.
+
+**Timers de expiración (`broker.expiry.ts`):**
+Los timers individuales de RemoteSession no cambian: siguen siendo `setTimeout` por proceso, porque la expiración lógica de la sesión (cerrar el túnel, marcar EXPIRED en BD) requiere acceso al socket del técnico que vive en el proceso. Los TTL de Redis (`EX`) expiran las claves de tokens/cookies automáticamente como safety net adicional.
+
+### Implementaciones creadas
+
+- `broker.token-store.interface.ts` — interfaz `TokenStore`
+- `broker.token-store.inmemory.ts` — implementación InMemory
+- `broker.token-store.redis.ts` — implementación Redis (SET NX EX)
+- `broker.token-store.factory.ts` — factory que elige según `REDIS_URL`
+- `broker.proxy-cookie-store.interface.ts` — interfaz `ProxyCookieStore`
+- `broker.proxy-cookie-store.inmemory.ts` — implementación InMemory
+- `broker.proxy-cookie-store.redis.ts` — implementación Redis (JSON + EX + índice Set)
+- `broker.proxy-cookie-store.factory.ts` — factory que elige según `REDIS_URL`
+
+Los archivos públicos `broker.token-store.ts` y `broker.proxy-cookie-store.ts` pasan a ser thin wrappers que delegan a la factory, manteniendo la misma API (ahora async).
+
+### Limitación de afinidad del túnel WebSocket
+
+El store del túnel (`broker.tunnel-store.ts`) **NO puede ir a Redis**: los objetos `WebSocket` son handles de I/O ligados al proceso y no son serializables.
+
+En un despliegue multi-instancia, el túnel del técnico vive en una instancia específica. Si el request del proxy HTTP del agente cae en una instancia distinta, el lookup del túnel falla y la request recibe 502 TUNNEL_UNAVAILABLE aunque el técnico esté conectado.
+
+**Soluciones pendientes (no implementadas en esta fase):**
+
+1. **Sticky routing en el balanceador (recomendada para primera producción)**: configurar nginx/Traefik/HAProxy para afinidad por `sessionId` (cookie o header `X-Session-Id`). Todas las requests de una misma sesión llegan a la réplica que tiene el túnel. Sin cambio de código, solo configuración de infraestructura.
+
+2. **Pub/sub entre instancias (solución escalable)**: la réplica receptora del proxy publica la trama HTTP en un canal Redis `broker:tunnel:<sessionId>`; la réplica con el socket suscrito reenvía la trama al técnico y publica la respuesta. Requiere cambio en `broker.proxy.ts` y `broker.ws.ts`.
+
+Esta limitación está documentada en el header de `broker.tunnel-store.ts`.
+
+### Alternativas consideradas
+
+- **Redis siempre (sin gating)**: descartado; penaliza el modo de desarrollo y las instancias únicas con una dependencia de infraestructura innecesaria.
+- **Otro cliente Redis (`redis`, `node-redis`)**: `ioredis` es la opción más estable y usada en el ecosistema Fastify/Node.js con soporte nativo de pipelines y SCAN. Una sola dependencia nueva autorizada.
+- **Memoria compartida entre procesos (cluster Node.js)**: acoplada al runtime Node.js, no funciona con réplicas en contenedores distintos (DokPloy/Docker).
+
+### Consecuencias
+
+- **Gana:** despliegue multi-réplica seguro para tokens y cookies de proxy; reserva de token atómica sin TOCTOU a escala; cookies de proxy visibles desde cualquier réplica.
+- **Cuesta:** `ioredis` como dependencia de producción; Redis como servicio de infraestructura requerido si se usa multi-instancia; la afinidad del túnel (el problema más complejo) queda pendiente para la siguiente iteración.

@@ -10,6 +10,33 @@
  * correspondiente a su sessionId y usa ese socket para enviar tramas al técnico.
  *
  * Módulo sin I/O → testeable sin BD.
+ *
+ * ---------------------------------------------------------------------------
+ * LIMITACIÓN MULTI-INSTANCIA — sticky routing requerido (ADR-0008)
+ * ---------------------------------------------------------------------------
+ * Este store NO puede ir a Redis ni a ningún almacén externo porque los
+ * WebSockets (socket: WebSocket) son objetos vivos ligados al proceso.
+ * Un socket abierto en la instancia A no puede ser serializado ni transferido
+ * a la instancia B.
+ *
+ * En un despliegue multi-instancia (varias réplicas detrás de un balanceador),
+ * el túnel del técnico vive en UNA instancia específica. Si el request del
+ * proxy HTTP del agente cae en UNA INSTANCIA DISTINTA, el lookup de este
+ * store devolverá undefined aunque el técnico esté conectado — la sesión
+ * parecerá "sin túnel" desde esa instancia.
+ *
+ * Soluciones posibles (ninguna implementada aún — ver ADR-0008):
+ *   1. **Sticky routing en el balanceador**: afinidad por sessionId garantiza
+ *      que todas las requests de una sesión llegan a la instancia que tiene el
+ *      túnel. Es la solución más sencilla (configuración de nginx/Traefik/HAProxy).
+ *   2. **Pub/sub entre instancias**: la instancia receptora del proxy publica
+ *      la trama en un canal Redis; la instancia con el túnel se suscribe y la
+ *      reenvía al técnico. Más complejo pero sin necesidad de sticky routing.
+ *
+ * El adaptador Redis introducido en ADR-0008 resuelve la **atomicidad de tokens
+ * y cookies de proxy** (instancias múltiples pueden verificar/invalidar sin
+ * condición de carrera). La **afinidad del túnel** queda pendiente hasta que
+ * se implemente sticky routing o pub/sub.
  */
 
 import type { WebSocket } from '@fastify/websocket';

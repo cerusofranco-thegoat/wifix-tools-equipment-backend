@@ -134,33 +134,33 @@ describe('Seguridad C-1 — Secretos hardcodeados bloqueados en producción', ()
 // ---------------------------------------------------------------------------
 
 describe('Seguridad C-2 — TOCTOU: reserveToken/releaseToken y consumo concurrente', () => {
-  beforeEach(() => clearTokenStore());
-  afterEach(() => clearTokenStore());
+  beforeEach(async () => { await clearTokenStore(); });
+  afterEach(async () => { await clearTokenStore(); });
 
-  it('reserveToken: primer llamador obtiene true (reserva exitosa)', () => {
+  it('reserveToken: primer llamador obtiene true (reserva exitosa)', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    expect(reserveToken(entry.jti)).toBe(true);
+    await registerToken(entry);
+    expect(await reserveToken(entry.jti)).toBe(true);
   });
 
-  it('reserveToken: segundo llamador con el mismo jti obtiene false (ya reservado)', () => {
+  it('reserveToken: segundo llamador con el mismo jti obtiene false (ya reservado)', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    expect(reserveToken(entry.jti)).toBe(true); // primer reserva
-    expect(reserveToken(entry.jti)).toBe(false); // segunda reserva → bloqueada
+    await registerToken(entry);
+    expect(await reserveToken(entry.jti)).toBe(true); // primer reserva
+    expect(await reserveToken(entry.jti)).toBe(false); // segunda reserva → bloqueada
   });
 
-  it('reserveToken: jti inexistente → false', () => {
-    expect(reserveToken('jti-no-existe-en-store')).toBe(false);
+  it('reserveToken: jti inexistente → false', async () => {
+    expect(await reserveToken('jti-no-existe-en-store')).toBe(false);
   });
 
-  it('releaseToken: libera una reserva hecha por reserveToken', () => {
+  it('releaseToken: libera una reserva hecha por reserveToken', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    reserveToken(entry.jti); // reservar
-    releaseToken(entry.jti); // liberar
+    await registerToken(entry);
+    await reserveToken(entry.jti); // reservar
+    await releaseToken(entry.jti); // liberar
     // Después de liberar, una nueva reserva debe funcionar
-    expect(reserveToken(entry.jti)).toBe(true);
+    expect(await reserveToken(entry.jti)).toBe(true);
   });
 
   it('C-2 end-to-end: dos llamadas concurrentes a verifyAndConsumeToken con el mismo JWT → solo una tiene éxito', async () => {

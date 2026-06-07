@@ -106,25 +106,25 @@ function makeTokenEntry(overrides: Partial<BrokerTokenEntry> = {}): BrokerTokenE
 // ---------------------------------------------------------------------------
 
 describe('Fase D — Token store: uso único y expiración', () => {
-  beforeEach(() => {
-    clearTokenStore();
+  beforeEach(async () => {
+    await clearTokenStore();
   });
 
-  afterEach(() => {
-    clearTokenStore();
+  afterEach(async () => {
+    await clearTokenStore();
   });
 
-  it('registerToken agrega el token al store', () => {
+  it('registerToken agrega el token al store', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    expect(tokenStoreSize()).toBe(1);
-    expect(peekToken(entry.jti)).toBeDefined();
+    await registerToken(entry);
+    expect(await tokenStoreSize()).toBe(1);
+    expect(await peekToken(entry.jti)).toBeDefined();
   });
 
-  it('consumeToken: primer consumo exitoso (ok=true)', () => {
+  it('consumeToken: primer consumo exitoso (ok=true)', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    const result = consumeToken(entry.jti);
+    await registerToken(entry);
+    const result = await consumeToken(entry.jti);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.entry.jti).toBe(entry.jti);
@@ -132,54 +132,54 @@ describe('Fase D — Token store: uso único y expiración', () => {
     }
   });
 
-  it('consumeToken: segundo consumo → ALREADY_USED', () => {
+  it('consumeToken: segundo consumo → ALREADY_USED', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    consumeToken(entry.jti); // primer consumo
-    const second = consumeToken(entry.jti); // segundo consumo
+    await registerToken(entry);
+    await consumeToken(entry.jti); // primer consumo
+    const second = await consumeToken(entry.jti); // segundo consumo
     expect(second.ok).toBe(false);
     if (!second.ok) {
       expect(second.reason).toBe('ALREADY_USED');
     }
   });
 
-  it('consumeToken: token no registrado → NOT_FOUND', () => {
-    const result = consumeToken('jti-inexistente');
+  it('consumeToken: token no registrado → NOT_FOUND', async () => {
+    const result = await consumeToken('jti-inexistente');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('NOT_FOUND');
     }
   });
 
-  it('consumeToken: token expirado → EXPIRED', () => {
+  it('consumeToken: token expirado → EXPIRED', async () => {
     const entry = makeTokenEntry({ expiresAt: Date.now() - 1000 }); // ya expiró
-    registerToken(entry);
-    const result = consumeToken(entry.jti);
+    await registerToken(entry);
+    const result = await consumeToken(entry.jti);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('EXPIRED');
     }
   });
 
-  it('revokeToken elimina el token del store', () => {
+  it('revokeToken elimina el token del store', async () => {
     const entry = makeTokenEntry();
-    registerToken(entry);
-    revokeToken(entry.jti);
-    expect(peekToken(entry.jti)).toBeUndefined();
+    await registerToken(entry);
+    await revokeToken(entry.jti);
+    expect(await peekToken(entry.jti)).toBeUndefined();
   });
 
-  it('purgeExpiredTokens elimina entradas expiradas o usadas', () => {
+  it('purgeExpiredTokens elimina entradas expiradas o usadas', async () => {
     const expired = makeTokenEntry({ expiresAt: Date.now() - 1000, jti: 'jti-expired' });
     const used = makeTokenEntry({ used: true, jti: 'jti-used' });
     const valid = makeTokenEntry({ jti: 'jti-valid' });
-    registerToken(expired);
-    registerToken(used);
-    registerToken(valid);
-    const purged = purgeExpiredTokens();
+    await registerToken(expired);
+    await registerToken(used);
+    await registerToken(valid);
+    const purged = await purgeExpiredTokens();
     expect(purged).toBe(2); // expired + used
-    expect(peekToken(valid.jti)).toBeDefined();
-    expect(peekToken(expired.jti)).toBeUndefined();
-    expect(peekToken(used.jti)).toBeUndefined();
+    expect(await peekToken(valid.jti)).toBeDefined();
+    expect(await peekToken(expired.jti)).toBeUndefined();
+    expect(await peekToken(used.jti)).toBeUndefined();
   });
 });
 
@@ -365,27 +365,21 @@ describe('Fase D — Token scope: denegación de sesiones ajenas', () => {
     }
   });
 
-  it('Token expirado → EXPIRED al verificar', async () => {
-    // Emitimos con TTL=1s y esperamos que jose ya haya pasado la exp
-    // En vez de esperar, manipulamos el store directamente:
-    // issueSessionToken con ttl muy corto y luego forzar tiempo en el store
-    const tokenResult = await issueSessionToken(
-      'agent-001',
-      'session-B',
-      'rs-003',
-      null,
-      1, // 1 segundo
-    );
+  it('Token expirado → EXPIRED al consumir en store', async () => {
+    // Registramos un token con expiresAt ya en el pasado directamente
+    // (evitamos depender de mutación del objeto interno, que ya no es posible con la API async).
+    const expiredEntry: import('../../src/modules/assistance/broker/broker.token-store.interface.js').BrokerTokenEntry = {
+      jti: 'jti-expired-direct',
+      remoteSessionId: 'rs-exp',
+      sessionId: 'session-exp',
+      targetHost: null,
+      agentId: 'agent-exp',
+      expiresAt: Date.now() - 1000, // ya expirado
+      used: false,
+    };
+    await registerToken(expiredEntry);
 
-    // Marcar la entrada como expirada en el store directamente
-    const entry = peekToken(tokenResult.jti);
-    if (entry) {
-      entry.expiresAt = Date.now() - 1000; // ya expiró
-    }
-
-    // El JWT de jose también tiene exp = now+1s; para el test sin esperar,
-    // verificamos solo el store (consumeToken) directamente:
-    const storeResult = consumeToken(tokenResult.jti);
+    const storeResult = await consumeToken(expiredEntry.jti);
     expect(storeResult.ok).toBe(false);
     if (!storeResult.ok) {
       expect(storeResult.reason).toBe('EXPIRED');

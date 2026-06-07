@@ -257,7 +257,7 @@ async function changeStatus(
     if (activeRemote) {
       cancelExpiry(activeRemote.id);
       // Invalidar la cookie de sesión de proxy HTTP (Fase E)
-      invalidateProxyCookieBySession(activeRemote.id);
+      await invalidateProxyCookieBySession(activeRemote.id);
       sendTunnelError(id, 'SESSION_CLOSED', `Sesión de asistencia cerrada (${to}).`);
       await assistanceRepository.closeRemoteSession(activeRemote.id);
       await assistanceRepository.createEvent({
@@ -635,8 +635,8 @@ async function openRemoteSession(
     tokenResult.expiresAt.getTime(),
     {
       onExpire: async (rsId, sId) => {
-        // Invalidar la cookie de sesión de proxy HTTP (Fase E) — sincrónico, sin await
-        invalidateProxyCookieBySession(rsId);
+        // Invalidar la cookie de sesión de proxy HTTP (Fase E)
+        await invalidateProxyCookieBySession(rsId);
         try {
           await assistanceRepository.expireRemoteSession(rsId);
           await assistanceRepository.createEvent({
@@ -670,7 +670,7 @@ async function openRemoteSession(
   // La cookie es httpOnly, SameSite=Strict, Path acotado al remoteSessionId.
   // El navegador del agente NUNCA ve el sessionToken del broker.
   // El targetHost queda fijado en el store server-side; el agente no puede cambiarlo.
-  const proxyCookieValue = issueProxyCookie({
+  const proxyCookieValue = await issueProxyCookie({
     remoteSessionId: remoteSession.id,
     sessionId,
     agentId: userId,
@@ -709,7 +709,7 @@ async function closeRemoteSession(
   cancelExpiry(remoteSessionId);
 
   // Invalidar la cookie de sesión de proxy HTTP (Fase E)
-  invalidateProxyCookieBySession(remoteSessionId);
+  await invalidateProxyCookieBySession(remoteSessionId);
 
   // Cerrar el túnel del técnico (si está activo)
   sendTunnelError(remoteSession.sessionId, 'SESSION_CLOSED', 'La sesión remota fue cerrada.');

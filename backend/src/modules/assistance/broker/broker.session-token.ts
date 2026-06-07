@@ -12,7 +12,14 @@
  *   1. Servicio llama issueSessionToken() → JWT firmado + jti registrado en store.
  *   2. Agente se conecta al broker con el JWT.
  *   3. Broker llama verifyAndConsumeToken() → verifica firma + consume jti.
- *   4. Si el agente intenta reutilizar el mismo JWT → consumeToken devuelve ALREADY_USED → rechazado.
+ *   4. Si el agente intenta reutilizar el mismo JWT → reserveToken devuelve false → rechazado.
+ *
+ * Atomicidad TOCTOU:
+ *   - InMemory: reserveToken es check-and-set síncrono (sin await entre check y set).
+ *   - Redis: SET NX EX — atómica cross-instancia (garantizada por Redis).
+ *   - En ambos casos no hay nueva ventana TOCTOU introducida por el paso a async:
+ *     el único await antes de marcar el token es la resolución de la Promise de
+ *     reserveToken, que en InMemory resuelve en el mismo tick.
  */
 
 import { SignJWT, jwtVerify, decodeJwt, errors as joseErrors } from 'jose';
@@ -74,7 +81,7 @@ export async function issueSessionToken(
     .sign(brokerSecretKey());
 
   // Registrar en el store de uso único
-  registerToken({
+  await registerToken({
     jti,
     remoteSessionId,
     sessionId,
@@ -101,18 +108,22 @@ export type VerifyTokenResult =
  *
  * Implementación libre de condición TOCTOU:
  *   1. Decodifica el jti sin verificar firma (solo para leer el claim).
- *   2. Llama a reserveToken(jti) de forma síncrona — check-and-set atómico en el Map.
- *      Si falla (ya usado / no existe) → rechazado inmediatamente, antes del await.
+ *   2. Llama a reserveToken(jti) — atómico (SET NX EX en Redis; check-and-set en InMemory).
+ *      Si falla (ya usado / no existe) → rechazado inmediatamente.
  *   3. Solo si la reserva tuvo éxito, realiza el await jwtVerify (costoso).
  *   4. Si la verificación posterior (firma, exp, claims) falla → releaseToken(jti)
  *      para no dejar el token marcado como "usado" por un JWT malformado ajeno.
+ *      (En Redis release es no-op por diseño; ver broker.token-store.redis.ts).
  *
- * Resultado de replay (segundo intento concurrente con el mismo token):
- *   El segundo llamador llega a reserveToken ya con entry.used=true → ALREADY_USED.
+ * Nota sobre atomicidad async:
+ *   En InMemory, el await de reserveToken() resuelve en el mismo turno del event loop
+ *   (la Promise envuelve una operación síncrona), por lo que la semántica de "sin
+ *   TOCTOU en proceso único" se mantiene. En Redis la atomicidad es garantizada por
+ *   el SET NX EX del servidor Redis, independientemente del await.
  */
 export async function verifyAndConsumeToken(rawJwt: string): Promise<VerifyTokenResult> {
   // -------------------------------------------------------------------
-  // 1. Decodificar jti sin verificar firma (solo para la reserva síncrona)
+  // 1. Decodificar jti sin verificar firma (solo para la reserva)
   // -------------------------------------------------------------------
   let preliminaryJti: string;
   try {
@@ -126,20 +137,12 @@ export async function verifyAndConsumeToken(rawJwt: string): Promise<VerifyToken
   }
 
   // -------------------------------------------------------------------
-  // 2. Reservar el jti de forma síncrona (elimina ventana TOCTOU)
-  //    Si ya está marcado como used o no existe → rechazar antes del await
+  // 2. Reservar el jti de forma atómica
   // -------------------------------------------------------------------
-
-  // Comprobar si existe en el store antes de reservar (para distinguir NOT_FOUND)
-  // Nota: consumeToken hace check completo pero tiene el mismo problema TOCTOU.
-  // Usamos reserveToken que es check-and-set atómico.
-  const reserved = reserveToken(preliminaryJti);
+  const reserved = await reserveToken(preliminaryJti);
   if (!reserved) {
     // Puede ser NOT_FOUND o ALREADY_USED; distinguimos consultando el store.
-    // consumeToken a estas alturas devuelve ALREADY_USED o NOT_FOUND correctamente
-    // porque reserveToken ya verificó el estado.
-    const probe: ConsumeResult = consumeToken(preliminaryJti);
-    // probe.ok siempre será false aquí porque la reserva falló
+    const probe: ConsumeResult = await consumeToken(preliminaryJti);
     if (!probe.ok) {
       if (probe.reason === 'ALREADY_USED') return { ok: false, reason: 'ALREADY_USED' };
       if (probe.reason === 'EXPIRED') return { ok: false, reason: 'EXPIRED' };
@@ -161,19 +164,19 @@ export async function verifyAndConsumeToken(rawJwt: string): Promise<VerifyToken
     const { payload } = await jwtVerify(rawJwt, brokerSecretKey(), { algorithms: ['HS256'] });
 
     if (!payload.jti || typeof payload.jti !== 'string') {
-      releaseToken(preliminaryJti);
+      await releaseToken(preliminaryJti);
       return { ok: false, reason: 'MALFORMED' };
     }
     if (!payload.sub) {
-      releaseToken(preliminaryJti);
+      await releaseToken(preliminaryJti);
       return { ok: false, reason: 'MALFORMED' };
     }
     if (typeof payload['sessionId'] !== 'string') {
-      releaseToken(preliminaryJti);
+      await releaseToken(preliminaryJti);
       return { ok: false, reason: 'MALFORMED' };
     }
     if (typeof payload['remoteSessionId'] !== 'string') {
-      releaseToken(preliminaryJti);
+      await releaseToken(preliminaryJti);
       return { ok: false, reason: 'MALFORMED' };
     }
 
@@ -185,8 +188,7 @@ export async function verifyAndConsumeToken(rawJwt: string): Promise<VerifyToken
       typeof payload['targetHost'] === 'string' ? payload['targetHost'] : null;
     expiresAt = (payload.exp ?? 0) * 1000;
   } catch (err) {
-    // Verificación fallida: liberar la reserva para no consumir el token en falso
-    releaseToken(preliminaryJti);
+    await releaseToken(preliminaryJti);
     if (err instanceof joseErrors.JWTExpired) {
       return { ok: false, reason: 'EXPIRED' };
     }
@@ -198,7 +200,7 @@ export async function verifyAndConsumeToken(rawJwt: string): Promise<VerifyToken
   //    con el jti preliminar (protege contra sustitución de header)
   // -------------------------------------------------------------------
   if (jtiFromJwt !== preliminaryJti) {
-    releaseToken(preliminaryJti);
+    await releaseToken(preliminaryJti);
     return { ok: false, reason: 'MALFORMED' };
   }
 

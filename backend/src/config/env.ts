@@ -25,7 +25,26 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  // Lista de orígenes permitidos en CORS, separada por comas.
+  // Ejemplo: http://localhost:5173,https://callcenter.wifix.app
+  // Un solo origen también es válido (retrocompatible).
+  // El valor especial '*' desactiva la verificación de origen (solo desarrollo local).
+  CORS_ORIGIN: z
+    .string()
+    .default('http://localhost:5173')
+    .transform((val) =>
+      val
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  // URL de Redis para los stores del broker (opcional).
+  // Si está definida, los stores de tokens y cookies de proxy usarán Redis
+  // (atómico, multi-instancia). Si no está definida, se usa la implementación
+  // en memoria (solo apta para instancia única).
+  // Formato: redis://[[usuario:]contraseña@]host[:puerto][/db]
+  // Ejemplo producción: redis://wifix:secreto@redis.internal:6379/0
+  REDIS_URL: z.string().url().optional(),
   // Origen del portal del Call Center (usado en CSP frame-ancestors del proxy HTTP).
   // En producción debe ser el origen HTTPS del portal (p.ej. https://portal.wifix.internal).
   // En desarrollo apunta al servidor de desarrollo del portal (Vite, port 5174 por convención).

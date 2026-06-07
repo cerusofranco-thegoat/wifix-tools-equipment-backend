@@ -122,7 +122,7 @@ async function runExpiry(
   }
 
   // 2. Revocar el token
-  revokeToken(jti);
+  await revokeToken(jti);
 
   // 3. Marcar como EXPIRED en BD (vía callback)
   try {
@@ -132,7 +132,7 @@ async function runExpiry(
   }
 
   // 4. Purgar tokens expirados de paso
-  purgeExpiredTokens();
+  await purgeExpiredTokens();
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ let sweepTimer: ReturnType<typeof setInterval> | null = null;
 export function startExpirySweep(intervalMs = 60_000): void {
   if (sweepTimer) return; // ya iniciado
   sweepTimer = setInterval(() => {
-    purgeExpiredTokens();
+    void purgeExpiredTokens();
   }, intervalMs);
   if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
 }

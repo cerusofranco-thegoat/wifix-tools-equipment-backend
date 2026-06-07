@@ -339,7 +339,7 @@ async function handleProxyRequest(
     });
   }
 
-  const cookieEntry = lookupProxyCookie(cookieValue);
+  const cookieEntry = await lookupProxyCookie(cookieValue);
   if (!cookieEntry) {
     return reply.code(401).send({
       code: 'UNAUTHORIZED',

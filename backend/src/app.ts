@@ -85,8 +85,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     },
   });
 
+  // env.CORS_ORIGIN ya es string[] (parseado en env.ts desde la lista separada por comas).
+  // Si el único elemento es '*', se deshabilita la verificación de origen (solo desarrollo).
+  const corsOrigins = env.CORS_ORIGIN;
   await app.register(cors, {
-    origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((s) => s.trim()),
+    origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? true : corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 

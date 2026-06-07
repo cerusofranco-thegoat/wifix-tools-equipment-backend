@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import cors from '@fastify/cors';
+import websocketPlugin from '@fastify/websocket';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerAuthenticate } from './middleware/authenticate.js';
@@ -17,13 +18,17 @@ import { registerAccountHistoryRoutes } from './modules/account-history/account-
 import { registerClientDataRoutes } from './modules/client-data/client-data.routes.js';
 import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
 import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
+import { registerAssistanceRoutes } from './modules/assistance/assistance.routes.js';
+import { registerAssistanceWs } from './modules/assistance/assistance.ws.js';
 
 const API_PREFIX = '/herramientas/v1';
+const ASSISTANCE_PREFIX = '/asistencia/v1';
 
 const AUTH_EXCLUDED_PATHS: Array<string | RegExp> = [
   '/health',
   `${API_PREFIX}/health`,
   `${API_PREFIX}/auth/login`,
+  `${ASSISTANCE_PREFIX}/health`,
 ];
 
 export interface BuildAppOptions {
@@ -60,8 +65,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   await app.register(cors, {
     origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((s) => s.trim()),
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
+
+  // WebSocket plugin — debe registrarse antes de los plugins que lo usan
+  await app.register(websocketPlugin);
 
   registerErrorHandler(app);
 
@@ -99,7 +107,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     { prefix: API_PREFIX },
   );
 
+  // ---------------------------------------------------------------------------
+  // Módulo Asistencia Técnica — /asistencia/v1
+  // Registrado como segundo grupo de rutas, independiente de herramientas.
+  // ---------------------------------------------------------------------------
+  await app.register(
+    async (assistanceApi) => {
+      await registerAssistanceRoutes(assistanceApi);
+      await registerAssistanceWs(assistanceApi);
+    },
+    { prefix: ASSISTANCE_PREFIX },
+  );
+
   return app;
 }
 
-export { API_PREFIX };
+export { API_PREFIX, ASSISTANCE_PREFIX };

@@ -1,11 +1,13 @@
 // Seed de catálogos + usuario inicial — Fase A1 / A1δ (autenticación).
 // Idempotente: usa upsert para que correrlo varias veces no rompa.
-import {
-  PrismaClient,
+import type {
   EquipmentCategory,
   EquipmentSerialFieldType,
   RemovalReasonCode,
-  NetworkServerType,
+  NetworkServerType} from '@prisma/client';
+import {
+  PrismaClient,
+  UserRole,
 } from '@prisma/client';
 import bcrypt from 'bcrypt';
 
@@ -14,6 +16,17 @@ const prisma = new PrismaClient();
 const SEED_USER_EMAIL = process.env.SEED_USER_EMAIL ?? 'franco@tulpasolutions.com';
 const SEED_USER_PASSWORD = process.env.SEED_USER_PASSWORD ?? 'wifix-dev-2026';
 const SEED_USER_NAME = process.env.SEED_USER_NAME ?? 'Franco Ceruso';
+const SEED_USER_ROLE: UserRole =
+  (process.env.SEED_USER_ROLE as UserRole | undefined) ?? UserRole.SUPERVISOR;
+
+// Usuarios de prueba de desarrollo (solo en NODE_ENV=development)
+const DEV_TECHNICIAN_EMAIL = 'tecnico@wifix.test';
+const DEV_TECHNICIAN_NAME = 'Técnico Demo';
+const DEV_TECHNICIAN_PASSWORD = 'wifix-tech-2026';
+
+const DEV_AGENT_EMAIL = 'agente@wifix.test';
+const DEV_AGENT_NAME = 'Agente Demo';
+const DEV_AGENT_PASSWORD = 'wifix-agent-2026';
 
 interface EquipmentModelSeed {
   name: string;
@@ -84,14 +97,47 @@ async function main(): Promise<void> {
   const passwordHash = await bcrypt.hash(SEED_USER_PASSWORD, 10);
   await prisma.user.upsert({
     where: { email: SEED_USER_EMAIL },
-    update: { name: SEED_USER_NAME, passwordHash, active: true },
+    update: { name: SEED_USER_NAME, passwordHash, role: SEED_USER_ROLE, active: true },
     create: {
       email: SEED_USER_EMAIL,
       name: SEED_USER_NAME,
       passwordHash,
+      role: SEED_USER_ROLE,
       active: true,
     },
   });
+
+  // Usuarios de prueba solo en entorno de desarrollo
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  if (nodeEnv === 'development') {
+    console.log('Sembrando usuarios de prueba de desarrollo...');
+
+    const techHash = await bcrypt.hash(DEV_TECHNICIAN_PASSWORD, 10);
+    await prisma.user.upsert({
+      where: { email: DEV_TECHNICIAN_EMAIL },
+      update: { name: DEV_TECHNICIAN_NAME, passwordHash: techHash, role: 'TECHNICIAN', active: true },
+      create: {
+        email: DEV_TECHNICIAN_EMAIL,
+        name: DEV_TECHNICIAN_NAME,
+        passwordHash: techHash,
+        role: 'TECHNICIAN',
+        active: true,
+      },
+    });
+
+    const agentHash = await bcrypt.hash(DEV_AGENT_PASSWORD, 10);
+    await prisma.user.upsert({
+      where: { email: DEV_AGENT_EMAIL },
+      update: { name: DEV_AGENT_NAME, passwordHash: agentHash, role: 'AGENT', active: true },
+      create: {
+        email: DEV_AGENT_EMAIL,
+        name: DEV_AGENT_NAME,
+        passwordHash: agentHash,
+        role: 'AGENT',
+        active: true,
+      },
+    });
+  }
 
   console.log('Sembrando catálogo de equipos...');
   for (const m of equipmentModels) {
@@ -177,6 +223,7 @@ async function main(): Promise<void> {
     networkServers: await prisma.networkServer.count(),
   };
   console.log('Datos poblados:', counts);
+  console.log('Usuarios por rol:', await prisma.user.groupBy({ by: ['role'], _count: { id: true } }));
 }
 
 main()

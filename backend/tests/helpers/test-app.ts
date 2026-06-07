@@ -27,7 +27,7 @@ export async function buildTestApp(): Promise<TestAppContext> {
   const app = await buildApp({ logger: false });
   await app.ready();
   const user = await ensureTestUser();
-  const token = await signAuthToken({ sub: user.id, email: user.email, name: user.name });
+  const token = await signAuthToken({ sub: user.id, email: user.email, name: user.name, role: 'TECHNICIAN' });
   return {
     app,
     authHeaders: { authorization: `Bearer ${token}` },

@@ -1,6 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import cors from '@fastify/cors';
-import websocketPlugin from '@fastify/websocket';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
 import { registerAuthenticate } from './middleware/authenticate.js';
@@ -18,22 +17,13 @@ import { registerAccountHistoryRoutes } from './modules/account-history/account-
 import { registerClientDataRoutes } from './modules/client-data/client-data.routes.js';
 import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
 import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
-import { registerAssistanceRoutes } from './modules/assistance/assistance.routes.js';
-import { registerAssistanceWs } from './modules/assistance/assistance.ws.js';
-import { registerBrokerTunnelWs } from './modules/assistance/broker/broker.ws.js';
-import { registerBrokerAgentWs } from './modules/assistance/broker/broker.agent-ws.js';
-import { registerBrokerHttpProxy } from './modules/assistance/broker/broker.http-proxy.js';
-import { startExpirySweep, stopExpirySweep } from './modules/assistance/broker/broker.expiry.js';
-import { registerBrokerRateLimit } from './modules/assistance/broker/broker.rate-limit.js';
 
 const API_PREFIX = '/herramientas/v1';
-const ASSISTANCE_PREFIX = '/asistencia/v1';
 
 const AUTH_EXCLUDED_PATHS: Array<string | RegExp> = [
   '/health',
   `${API_PREFIX}/health`,
   `${API_PREFIX}/auth/login`,
-  `${ASSISTANCE_PREFIX}/health`,
 ];
 
 export interface BuildAppOptions {
@@ -47,23 +37,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const loggerConfig: FastifyServerOptions['logger'] = logger
     ? {
         level: env.LOG_LEVEL,
-        // M-1: Redactar el parámetro sessionToken de las URLs loggeadas por pino.
-        // El agente conecta con ?sessionToken=<jwt>; pino loggea req.url completa.
-        // El serializer lo enmascara antes de escribir al destino de logs.
-        serializers: {
-          req(req) {
-            const url = typeof req.url === 'string'
-              ? req.url.replace(/([?&]sessionToken=)[^&]*/gi, '$1[REDACTED]')
-              : req.url;
-            return {
-              method: req.method,
-              url,
-              hostname: req.hostname,
-              remoteAddress: req.ip,
-              remotePort: req.socket?.remotePort,
-            };
-          },
-        },
         ...(env.NODE_ENV === 'development'
           ? {
               transport: {
@@ -92,9 +65,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? true : corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
-
-  // WebSocket plugin — debe registrarse antes de los plugins que lo usan
-  await app.register(websocketPlugin);
 
   registerErrorHandler(app);
 
@@ -132,35 +102,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     { prefix: API_PREFIX },
   );
 
-  // ---------------------------------------------------------------------------
-  // Módulo Asistencia Técnica — /asistencia/v1
-  // Registrado como segundo grupo de rutas, independiente de herramientas.
-  // ---------------------------------------------------------------------------
-  await app.register(
-    async (assistanceApi) => {
-      // Rate-limiting del broker: se registra primero para que los overrides
-      // por-ruta estén disponibles cuando se registran las rutas a continuación.
-      // `global: false` garantiza que no afecta a rutas fuera de este scope.
-      await registerBrokerRateLimit(assistanceApi);
-
-      await registerAssistanceRoutes(assistanceApi);
-      await registerAssistanceWs(assistanceApi);
-      // Broker WSS (Fase D): túnel del técnico y conexión del agente
-      await registerBrokerTunnelWs(assistanceApi);
-      await registerBrokerAgentWs(assistanceApi);
-      // Proxy HTTP del broker (Fase E): navegación del panel del router desde el portal
-      await registerBrokerHttpProxy(assistanceApi);
-    },
-    { prefix: ASSISTANCE_PREFIX },
-  );
-
-  // Iniciar barrido periódico de tokens expirados
-  startExpirySweep(60_000);
-  app.addHook('onClose', () => {
-    stopExpirySweep();
-  });
-
   return app;
 }
 
-export { API_PREFIX, ASSISTANCE_PREFIX };
+export { API_PREFIX };

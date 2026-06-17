@@ -38,94 +38,6 @@ const envSchema = z.object({
         .map((s) => s.trim())
         .filter((s) => s.length > 0),
     ),
-  // URL de Redis para los stores del broker (opcional).
-  // Si está definida, los stores de tokens y cookies de proxy usarán Redis
-  // (atómico, multi-instancia). Si no está definida, se usa la implementación
-  // en memoria (solo apta para instancia única).
-  // Formato: redis://[[usuario:]contraseña@]host[:puerto][/db]
-  // Ejemplo producción: redis://wifix:secreto@redis.internal:6379/0
-  REDIS_URL: z.string().url().optional(),
-  // Origen del portal del Call Center (usado en CSP frame-ancestors del proxy HTTP).
-  // En producción debe ser el origen HTTPS del portal (p.ej. https://portal.wifix.internal).
-  // En desarrollo apunta al servidor de desarrollo del portal (Vite, port 5174 por convención).
-  PORTAL_ORIGIN: z.string().default('http://localhost:5174'),
-  // --- Jitsi self-host (Fase D) ---
-  JITSI_DOMAIN: z.string().default('meet.wifix.internal'),
-  JITSI_APP_ID: z.string().default('wifix'),
-  JITSI_SUB: z.string().default('meet.wifix.internal'),
-  JITSI_APP_SECRET: z
-    .string()
-    .min(16, 'JITSI_APP_SECRET debe tener al menos 16 caracteres')
-    .default('dev-jitsi-secret-change-me-please-32chars'),
-  JITSI_JWT_TTL: z.coerce.number().int().positive().default(1800),
-  // --- Broker WSS (Fase D) ---
-  BROKER_TOKEN_SECRET: z
-    .string()
-    .min(16, 'BROKER_TOKEN_SECRET debe tener al menos 16 caracteres')
-    .default('dev-broker-secret-change-me-please-32chars'),
-  // TTL máximo absoluto del broker permitido si el cliente no especifica
-  BROKER_DEFAULT_TTL_SECONDS: z.coerce.number().int().min(60).max(1800).default(600),
-  // Habilitar grabación de sesiones remotas a MediaFile
-  BROKER_RECORDING_ENABLED: z
-    .string()
-    .transform((v) => v === 'true' || v === '1')
-    .default('false'),
-  // URL pública del endpoint WSS del broker que se entrega al agente (B-3).
-  // En producción debe apuntar al hostname público del servidor.
-  // En desarrollo apunta a localhost por defecto.
-  BROKER_PUBLIC_WS_URL: z
-    .string()
-    .url('BROKER_PUBLIC_WS_URL debe ser una URL válida (wss:// o ws://)')
-    .default('ws://localhost:8080/asistencia/v1/broker/connect'),
-  // ---------------------------------------------------------------------------
-  // Configuración por conector — Fase F (ADR-0005: retiro de Proxy Xtrim)
-  // Todas son opcionales con defaults vacíos seguros; el skeleton real lanza
-  // notImplemented hasta que se entreguen valores reales.
-  // ---------------------------------------------------------------------------
-
-  // --- Conector: ticketing (generación de tickets en la operadora) ---
-  TICKETING_BASE_URL: z.string().default(''),
-  TICKETING_API_KEY: z.string().default(''),
-  TICKETING_USERNAME: z.string().default(''),
-  TICKETING_PASSWORD: z.string().default(''),
-
-  // --- Conector: scheduling (agendamiento de visitas técnicas) ---
-  SCHEDULING_BASE_URL: z.string().default(''),
-  SCHEDULING_API_KEY: z.string().default(''),
-
-  // --- Conector: FSM (órdenes CreaFsmVistec) ---
-  FSM_BASE_URL: z.string().default(''),
-  FSM_API_KEY: z.string().default(''),
-  FSM_USERNAME: z.string().default(''),
-  FSM_PASSWORD: z.string().default(''),
-
-  // --- Conector: ISP Monitor (métricas de red y telemetría de planta) ---
-  ISPMONITOR_BASE_URL: z.string().default(''),
-  ISPMONITOR_API_KEY: z.string().default(''),
-
-  // --- Conector: Comarch / TYTAN (perfiles y estado de contratos) ---
-  COMARCH_BASE_URL: z.string().default(''),
-  COMARCH_USERNAME: z.string().default(''),
-  COMARCH_PASSWORD: z.string().default(''),
-
-  // --- Rate-limiting del broker (Fase D hardening) ---
-  // Máximo de requests de emisión de token (POST /remote-sessions) por agente por ventana.
-  BROKER_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
-  // Ventana de tiempo en milisegundos para el rate-limit del broker.
-  BROKER_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
-  // Máximo de conexiones WS (túnel/agente) por IP por ventana.
-  BROKER_WS_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
-  // Máx. requests al proxy HTTP del broker por IP por ventana (Fase E).
-  // Default: 120 / 60 000 ms (navegación del panel del router).
-  PROXY_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(120),
-  // [MEDIO-2] Controla el atributo Secure de la cookie de proxy.
-  // Default: true (la cookie solo viaja por HTTPS).
-  // Establecer a false ÚNICAMENTE en entornos de desarrollo local sobre HTTP.
-  // No usar false en staging ni producción.
-  COOKIE_SECURE: z
-    .string()
-    .transform((v) => v !== 'false' && v !== '0')
-    .default('true'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -147,8 +59,6 @@ if (!parsed.success) {
 // ---------------------------------------------------------------------------
 const SECRET_DEFAULTS = {
   JWT_SECRET: 'dev-secret-change-me-please-32-chars-min',
-  BROKER_TOKEN_SECRET: 'dev-broker-secret-change-me-please-32chars',
-  JITSI_APP_SECRET: 'dev-jitsi-secret-change-me-please-32chars',
 } as const;
 
 if (parsed.data.NODE_ENV === 'production') {

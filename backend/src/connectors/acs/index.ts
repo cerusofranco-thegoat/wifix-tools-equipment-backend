@@ -1,5 +1,4 @@
 // Conector hacia ACS (TR-069) — campos 19, 20, 21 (red local y WiFi).
-// Fase C: añade reboot, setChannel, factoryReset, reprovision, runDiagnostic.
 
 import { env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
@@ -41,79 +40,7 @@ export interface WifiConfigUpdate {
   bands: WifiBandUpdate[];
 }
 
-// ---------------------------------------------------------------------------
-// Tipos de resultado para acciones de Fase C
-// ---------------------------------------------------------------------------
-
-export interface RebootResult {
-  success: boolean;
-  scheduledAt: string;
-  estimatedDowntimeSeconds: number;
-}
-
-export interface SetChannelParams {
-  band: WifiBand;
-  channel: number;
-}
-
-export interface SetChannelResult {
-  success: boolean;
-  band: WifiBand;
-  channel: number;
-  appliedAt: string;
-}
-
-export interface FactoryResetResult {
-  success: boolean;
-  scheduledAt: string;
-  warningMessage: string;
-}
-
-export interface ReprovisionResult {
-  success: boolean;
-  scheduledAt: string;
-  message: string;
-}
-
-/**
- * Resultado de diagnóstico en formato TR-143 / herramientas de Wifix.
- * Reutiliza la estructura de PingTestDto y TracerouteDto del módulo herramientas:
- *   - ping: packetsSent, packetsReceived, packetLossPercent, minLatencyMs, avgLatencyMs, maxLatencyMs
- *   - traceroute: hops con hopNumber, host?, latencyMs?
- * El campo `kind` discrimina qué tipo de diagnóstico se corrió.
- */
-export interface DiagnosticHop {
-  hopNumber: number;
-  host?: string;
-  latencyMs?: number;
-}
-
-export interface DiagnosticResult {
-  kind: 'ping' | 'traceroute';
-  target: string;
-  measuredAt: string;
-  // Campos ping (TR-143 IPPing)
-  packetsSent?: number;
-  packetsReceived?: number;
-  packetLossPercent?: number;
-  minLatencyMs?: number;
-  avgLatencyMs?: number;
-  maxLatencyMs?: number;
-  // Campos traceroute (TR-143 TraceRoute)
-  hops?: DiagnosticHop[];
-}
-
-export interface RunDiagnosticParams {
-  target: string;
-  kind: 'ping' | 'traceroute';
-}
-
-// ---------------------------------------------------------------------------
-// Interfaz del conector ACS
-// ---------------------------------------------------------------------------
-
 export interface AcsConnector {
-  // Lectura de dispositivos y configuración (Fases anteriores)
   getLanDevices(accountNumber: string): Promise<LanDevice[]>;
   getWifiDevices(accountNumber: string): Promise<WifiDevice[]>;
   getWifiConfig(accountNumber: string): Promise<WifiConfig>;
@@ -121,32 +48,7 @@ export interface AcsConnector {
     accountNumber: string,
     input: WifiConfigUpdate,
   ): Promise<WifiConfig>;
-
-  // Acciones de equipo — Fase C
-  reboot(accountNumber: string): Promise<RebootResult>;
-  setChannel(accountNumber: string, params: SetChannelParams): Promise<SetChannelResult>;
-  factoryReset(accountNumber: string): Promise<FactoryResetResult>;
-  reprovision(accountNumber: string): Promise<ReprovisionResult>;
-  /**
-   * Ejecuta ping o traceroute según `params.kind` ('ping' | 'traceroute')
-   * y devuelve el resultado en formato TR-143, compatible con PingTestDto / TracerouteDto
-   * del módulo /herramientas/v1. No reimplementa el diagnóstico: reutiliza el formato
-   * de tipos definido en ping.mappers y traceroute.mappers.
-   */
-  runDiagnostic(accountNumber: string, params: RunDiagnosticParams): Promise<DiagnosticResult>;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers internos del mock
-// ---------------------------------------------------------------------------
-
-/**
- * Época de referencia fija para el mock ACS.
- * Usar Date.now() como base haría que leaseExpiresAt cambie entre llamadas
- * (aunque el offset seeded sea idéntico), rompiendo los tests de determinismo.
- * Con esta constante, mismo accountNumber → misma lista byte a byte.
- */
-const ACS_MOCK_EPOCH_MS = Date.parse('2026-01-01T00:00:00.000Z');
 
 const HOSTNAMES = [
   'iPhone-Maria', 'Android-Juan', 'LaptopHP', 'MacBook-Pro', 'TV-Samsung',
@@ -180,9 +82,13 @@ function buildWifiBands(accountNumber: string): WifiBandConfig[] {
 
 const wifiOverrides = new Map<string, WifiBandConfig[]>();
 
-// ---------------------------------------------------------------------------
-// Mock determinista
-// ---------------------------------------------------------------------------
+/**
+ * Época de referencia fija para el mock ACS.
+ * Usar Date.now() como base haría que leaseExpiresAt cambie entre llamadas
+ * (aunque el offset seeded sea idéntico), rompiendo los tests de determinismo.
+ * Con esta constante, mismo accountNumber → misma lista byte a byte.
+ */
+const ACS_MOCK_EPOCH_MS = Date.parse('2026-01-01T00:00:00.000Z');
 
 export const acsMock: AcsConnector = {
   async getLanDevices(accountNumber) {
@@ -242,131 +148,7 @@ export const acsMock: AcsConnector = {
     wifiOverrides.set(accountNumber, merged);
     return { accountNumber, bands: merged };
   },
-
-  // -------------------------------------------------------------------------
-  // Acciones de Fase C — mock determinista
-  // Semilla: "acs:<accion>:<accountNumber>" para que el mismo input
-  // produzca siempre el mismo resultado (determinismo).
-  // -------------------------------------------------------------------------
-
-  async reboot(accountNumber) {
-    const rng = seededRng(`acs:reboot:${accountNumber}`);
-    const downtime = rng.intBetween(30, 90);
-    return {
-      success: true,
-      scheduledAt: new Date().toISOString(),
-      estimatedDowntimeSeconds: downtime,
-    };
-  },
-
-  async setChannel(_accountNumber, params) {
-    // Resultado determinista: mismo band+channel → mismo output
-    return {
-      success: true,
-      band: params.band,
-      channel: params.channel,
-      appliedAt: new Date().toISOString(),
-    };
-  },
-
-  async factoryReset(accountNumber) {
-    const rng = seededRng(`acs:factory-reset:${accountNumber}`);
-    const messages = [
-      'El equipo volverá a su configuración de fábrica.',
-      'Se perderán todos los ajustes personalizados.',
-      'El dispositivo reiniciará con parámetros de fábrica.',
-    ];
-    return {
-      success: true,
-      scheduledAt: new Date().toISOString(),
-      warningMessage: rng.pick(messages),
-    };
-  },
-
-  async reprovision(accountNumber) {
-    const rng = seededRng(`acs:reprovision:${accountNumber}`);
-    const messages = [
-      'Reaprovisionamiento iniciado exitosamente.',
-      'El equipo recibirá su configuración desde el ACS.',
-      'Proceso de aprovisionamiento en cola.',
-    ];
-    return {
-      success: true,
-      scheduledAt: new Date().toISOString(),
-      message: rng.pick(messages),
-    };
-  },
-
-  async runDiagnostic(accountNumber, params) {
-    /**
-     * Resultado en formato TR-143, compatible con los tipos de
-     * ping.mappers (PingTestDto) y traceroute.mappers (TracerouteDto)
-     * del módulo /herramientas/v1. No reimplementa el diagnóstico:
-     * reutiliza el mismo esquema de campos.
-     *
-     * El campo `kind` determina el tipo de diagnóstico: 'ping' o 'traceroute'.
-     * Semilla: "acs:<kind>:<accountNumber>:<target>" para determinismo.
-     */
-    const { target, kind } = params;
-    const measuredAt = new Date().toISOString();
-
-    if (kind === 'traceroute') {
-      const rng = seededRng(`acs:traceroute:${accountNumber}:${target}`);
-      const hopCount = rng.intBetween(4, 10);
-      const hops: DiagnosticHop[] = [];
-      const hosts = [
-        '192.168.1.1',
-        '10.0.0.1',
-        '172.16.0.1',
-        '8.8.4.4',
-        '142.250.0.1',
-        '64.233.160.1',
-        '216.58.0.1',
-        '8.8.8.8',
-        '1.1.1.1',
-        '208.67.222.222',
-      ];
-      for (let i = 1; i <= hopCount; i++) {
-        hops.push({
-          hopNumber: i,
-          host: rng.bool(0.85) ? rng.pick(hosts) : undefined,
-          latencyMs: rng.bool(0.9) ? rng.floatBetween(1, 120, 1) : undefined,
-        });
-      }
-      return {
-        kind: 'traceroute',
-        target,
-        measuredAt,
-        hops,
-      };
-    }
-
-    // Ping — formato TR-143 IPPing
-    const rng = seededRng(`acs:ping:${accountNumber}:${target}`);
-    const packetsSent = 10;
-    const lossCount = rng.intBetween(0, 2);
-    const packetsReceived = packetsSent - lossCount;
-    const minLatencyMs = rng.floatBetween(1, 30, 1);
-    const avgLatencyMs = rng.floatBetween(minLatencyMs, minLatencyMs + 20, 1);
-    const maxLatencyMs = rng.floatBetween(avgLatencyMs, avgLatencyMs + 30, 1);
-
-    return {
-      kind: 'ping',
-      target,
-      measuredAt,
-      packetsSent,
-      packetsReceived,
-      packetLossPercent: parseFloat(((lossCount / packetsSent) * 100).toFixed(1)),
-      minLatencyMs,
-      avgLatencyMs,
-      maxLatencyMs,
-    };
-  },
 };
-
-// ---------------------------------------------------------------------------
-// Esqueleto real (stub — cuando se entreguen credenciales TR-069 se implementa)
-// ---------------------------------------------------------------------------
 
 export const acsReal: AcsConnector = {
   async getLanDevices(_accountNumber) {
@@ -380,21 +162,6 @@ export const acsReal: AcsConnector = {
   },
   async updateWifiConfig(_accountNumber, _input) {
     notImplemented('acs.updateWifiConfig');
-  },
-  async reboot(_accountNumber) {
-    notImplemented('acs.reboot');
-  },
-  async setChannel(_accountNumber, _params) {
-    notImplemented('acs.setChannel');
-  },
-  async factoryReset(_accountNumber) {
-    notImplemented('acs.factoryReset');
-  },
-  async reprovision(_accountNumber) {
-    notImplemented('acs.reprovision');
-  },
-  async runDiagnostic(_accountNumber, _params) {
-    notImplemented('acs.runDiagnostic');
   },
 };
 

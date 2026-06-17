@@ -9,17 +9,14 @@ function secretKey(): Uint8Array {
   return encoder.encode(env.JWT_SECRET);
 }
 
-export type UserRole = 'TECHNICIAN' | 'AGENT' | 'SUPERVISOR';
-
 export interface AuthTokenPayload {
   sub: string;
   email: string;
   name: string;
-  role: UserRole;
 }
 
 export async function signAuthToken(payload: AuthTokenPayload): Promise<string> {
-  return new SignJWT({ email: payload.email, name: payload.name, role: payload.role })
+  return new SignJWT({ email: payload.email, name: payload.name })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setIssuedAt()
@@ -33,9 +30,7 @@ export async function verifyAuthToken(token: string): Promise<AuthTokenPayload> 
     if (!payload.sub) throw ApiError.unauthorized('Token sin sujeto.');
     const email = typeof payload.email === 'string' ? payload.email : '';
     const name = typeof payload.name === 'string' ? payload.name : '';
-    const role: UserRole =
-      payload.role === 'AGENT' || payload.role === 'SUPERVISOR' ? payload.role : 'TECHNICIAN';
-    return { sub: payload.sub, email, name, role };
+    return { sub: payload.sub, email, name };
   } catch (err) {
     if (err instanceof ApiError) throw err;
     if (

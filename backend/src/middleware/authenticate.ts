@@ -1,12 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { ApiError } from './error-handler.js';
-import { verifyAuthToken, type UserRole } from '../auth/jwt.js';
+import { verifyAuthToken } from '../auth/jwt.js';
 
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
-  role: UserRole;
 }
 
 declare module 'fastify' {
@@ -44,7 +43,7 @@ export async function registerAuthenticate(
       throw ApiError.unauthorized('Falta el header Authorization Bearer.');
     }
     const payload = await verifyAuthToken(token);
-    request.authUser = { id: payload.sub, email: payload.email, name: payload.name, role: payload.role };
+    request.authUser = { id: payload.sub, email: payload.email, name: payload.name };
   });
 }
 
@@ -53,19 +52,4 @@ export function getAuthUser(request: FastifyRequest): AuthUser {
     throw ApiError.unauthorized('No autenticado.');
   }
   return request.authUser;
-}
-
-/**
- * Guard de rol (RBAC). Lanza ApiError.forbidden si el usuario autenticado no
- * tiene ninguno de los roles indicados. Debe llamarse dentro de un handler,
- * después de que el middleware de auth haya corrido.
- */
-export function requireRole(request: FastifyRequest, ...roles: UserRole[]): AuthUser {
-  const user = getAuthUser(request);
-  if (!roles.includes(user.role)) {
-    throw ApiError.forbidden(
-      `Esta operación requiere uno de los siguientes roles: ${roles.join(', ')}.`,
-    );
-  }
-  return user;
 }

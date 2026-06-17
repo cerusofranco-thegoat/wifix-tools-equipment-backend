@@ -13,23 +13,14 @@ datasource db {
 }
 
 // ===========================================================================
-// USUARIOS (Fase 2 — autenticación; rol añadido en Fase 0 de Asistencia)
+// USUARIOS (Fase 2 — autenticación)
 // ===========================================================================
-
-enum UserRole {
-  TECHNICIAN
-  AGENT
-  SUPERVISOR
-
-  @@map("user_role")
-}
 
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
   passwordHash String   @map("password_hash")
   name         String
-  role         UserRole @default(TECHNICIAN)
   active       Boolean  @default(true)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
@@ -145,8 +136,7 @@ model MediaFile {
   sizeBytes   Int      @map("size_bytes")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  retiredEquipment        RetiredEquipment[]
-  remoteSessionRecordings RemoteSession[]    @relation("RemoteSessionRecording")
+  retiredEquipment RetiredEquipment[]
 
   @@map("media_files")
 }
@@ -385,189 +375,4 @@ model RetiredEquipment {
   @@index([serialValue])
   @@index([retiredAt])
   @@map("retired_equipment")
-}
-
-// ===========================================================================
-// MÓDULO ASISTENCIA TÉCNICA (Fase 0)
-// Fusionado desde wifix_asistencia_tecnica.prisma
-// ===========================================================================
-
-enum AssistanceStatus {
-  REQUESTED
-  QUEUED
-  ASSIGNED
-  ACTIVE
-  ON_HOLD
-  RESOLVED
-  UNRESOLVED
-  CANCELLED
-  EXPIRED
-
-  @@map("assistance_status")
-}
-
-enum AssistanceEventType {
-  STATE_CHANGE
-  NOTE
-  ACTION
-  REMOTE_SESSION
-  CHAT
-  CONSENT
-
-  @@map("assistance_event_type")
-}
-
-enum RemoteActionType {
-  REBOOT
-  SET_WIFI
-  SET_CHANNEL
-  FACTORY_RESET
-  REPROVISION
-  RUN_DIAGNOSTIC
-
-  @@map("remote_action_type")
-}
-
-enum RemoteActionStatus {
-  PENDING
-  SUCCESS
-  FAILED
-
-  @@map("remote_action_status")
-}
-
-enum RemoteSessionChannel {
-  BROKER_TUNNEL
-  COBROWSE
-
-  @@map("remote_session_channel")
-}
-
-enum RemoteSessionStatus {
-  OPEN
-  CLOSED
-  EXPIRED
-
-  @@map("remote_session_status")
-}
-
-model AssistanceSession {
-  id             String           @id @default(uuid()) @db.Uuid
-  accountNumber  String           @map("account_number")
-  visitId        String?          @map("visit_id")
-  technicianId   String?          @map("technician_id")
-  agentId        String?          @map("agent_id")
-  status         AssistanceStatus @default(REQUESTED)
-  reason         String?
-  consentAt      DateTime?        @map("consent_at") @db.Timestamptz(6)
-  requestedAt    DateTime         @default(now()) @map("requested_at") @db.Timestamptz(6)
-  closedAt       DateTime?        @map("closed_at") @db.Timestamptz(6)
-  resolutionNote String?          @map("resolution_note")
-  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  events         AssistanceEvent[]
-  remoteActions  RemoteAction[]
-  remoteSessions RemoteSession[]
-
-  @@index([accountNumber])
-  @@index([status])
-  @@index([requestedAt])
-  @@index([agentId])
-  @@map("assistance_sessions")
-}
-
-model AssistanceEvent {
-  id        String              @id @default(uuid()) @db.Uuid
-  sessionId String              @map("session_id") @db.Uuid
-  type      AssistanceEventType
-  payload   Json?
-  actorId   String?             @map("actor_id")
-  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  session AssistanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([sessionId])
-  @@index([createdAt])
-  @@map("assistance_events")
-}
-
-model RemoteAction {
-  id            String             @id @default(uuid()) @db.Uuid
-  sessionId     String             @map("session_id") @db.Uuid
-  accountNumber String             @map("account_number")
-  action        RemoteActionType
-  status        RemoteActionStatus @default(PENDING)
-  request       Json?
-  result        Json?
-  performedBy   String?            @map("performed_by")
-  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  session AssistanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-
-  @@index([sessionId])
-  @@index([accountNumber])
-  @@index([status])
-  @@map("remote_actions")
-}
-
-model RemoteSession {
-  id          String               @id @default(uuid()) @db.Uuid
-  sessionId   String               @map("session_id") @db.Uuid
-  channel     RemoteSessionChannel
-  status      RemoteSessionStatus  @default(OPEN)
-  targetHost  String?              @map("target_host")
-  expiresAt   DateTime             @map("expires_at") @db.Timestamptz(6)
-  recordingId String?              @map("recording_id") @db.Uuid
-  startedAt   DateTime             @default(now()) @map("started_at") @db.Timestamptz(6)
-  endedAt     DateTime?            @map("ended_at") @db.Timestamptz(6)
-
-  session   AssistanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  recording MediaFile?        @relation("RemoteSessionRecording", fields: [recordingId], references: [id], onDelete: SetNull)
-
-  @@index([sessionId])
-  @@index([status])
-  @@map("remote_sessions")
-}
-
-// Auditoría de llamadas a sistemas externos (ADR-0005). Una fila por llamada.
-model ConnectorCallLog {
-  id            String   @id @default(uuid()) @db.Uuid
-  connector     String
-  operation     String
-  accountNumber String?  @map("account_number")
-  status        Int?
-  request       Json?
-  response      Json?
-  durationMs    Int?     @map("duration_ms")
-  actorId       String?  @map("actor_id")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  @@index([connector])
-  @@index([accountNumber])
-  @@index([createdAt])
-  @@map("connector_call_logs")
-}
-
-// Archivo del histórico del backend mirror de Wifi Monitor (ADR-0006).
-// Solo si existe volumen real; importación única.
-model LegacyScan {
-  id            String   @id @default(uuid()) @db.Uuid
-  legacyId      String?  @map("legacy_id")
-  scanCode      String?  @map("scan_code")
-  accountNumber String?  @map("account_number")
-  ssid          String?
-  bssid         String?
-  downloadMbps  Float?   @map("download_mbps")
-  uploadMbps    Float?   @map("upload_mbps")
-  signalDbm     Int?     @map("signal_dbm")
-  payload       Json
-  capturedAt    DateTime @map("captured_at") @db.Timestamptz(6)
-  importedAt    DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
-
-  @@unique([legacyId])
-  @@index([accountNumber])
-  @@index([capturedAt])
-  @@map("legacy_scans")
 }

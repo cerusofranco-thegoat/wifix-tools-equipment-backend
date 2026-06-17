@@ -4,11 +4,9 @@ import { ZodError } from 'zod';
 export type ApiErrorCode =
   | 'VALIDATION_ERROR'
   | 'UNAUTHORIZED'
-  | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CATALOG_ITEM_NOT_FOUND'
   | 'MEDIA_NOT_FOUND'
-  | 'CONFLICT'
   | 'CONNECTOR_ERROR'
   | 'INTERNAL_ERROR';
 
@@ -59,14 +57,6 @@ export class ApiError extends Error {
 
   static unauthorized(message = 'No autorizado.'): ApiError {
     return new ApiError('UNAUTHORIZED', 401, message);
-  }
-
-  static forbidden(message = 'No tiene permisos para realizar esta operación.'): ApiError {
-    return new ApiError('FORBIDDEN', 403, message);
-  }
-
-  static conflict(message = 'El recurso ya existe o la operación no es válida en el estado actual.'): ApiError {
-    return new ApiError('CONFLICT', 409, message);
   }
 
   static connectorError(message = 'Error consultando un sistema externo.'): ApiError {

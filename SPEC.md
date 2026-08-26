@@ -1,6 +1,6 @@
-# SPEC.md — App Wifix (módulo completo)
+# SPEC.md — App Wifix Certificate (módulo completo)
 
-**Proyecto:** App Wifix para técnicos de campo.
+**Proyecto:** App Wifix Certificate para técnicos de campo.
 **Responsable:** Franco — Tulpa Solutions S.A.S.
 **Contrato de API:** `openapi-herramientas-equipos.yaml` (fuente de verdad).
 **Repositorio del frontend:** `wifix-webapp`.

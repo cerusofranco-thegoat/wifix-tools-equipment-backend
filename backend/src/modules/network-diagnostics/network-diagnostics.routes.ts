@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { parseBody, parseParams } from '../../lib/validation.js';
+import { parseBody, parseParams, parseQuery } from '../../lib/validation.js';
 import { getAuthUser } from '../../middleware/authenticate.js';
 import {
   getAcsConnector,
@@ -15,6 +15,21 @@ const accountParamsSchema = z.object({
 
 const napParamsSchema = z.object({
   napCode: z.string().min(1, 'napCode es obligatorio.'),
+});
+
+/** Coordenada desde la que se buscan NAPs (GPS del técnico o de la tarea). */
+const coordsQuerySchema = z.object({
+  lat: z.coerce.number().gte(-90).lte(90),
+  lng: z.coerce.number().gte(-180).lte(180),
+});
+
+const terminalParamsSchema = z.object({
+  id: z.string().min(1, 'El serial GPON o la MAC del cablemódem es obligatorio.'),
+});
+
+const seriesParamsSchema = terminalParamsSchema.extend({
+  scope: z.enum(['terminal', 'network']),
+  metric: z.enum(['status', 'snr', 'codewords']),
 });
 
 const wifiBandUpdateSchema = z.object({
@@ -38,14 +53,35 @@ const wifiConfigUpdateSchema = z.object({
 });
 
 export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/accounts/:accountNumber/nearby-naps', async (request) => {
-    const { accountNumber } = parseParams(accountParamsSchema, request.params);
-    return getTecConnector().getNearbyNaps(accountNumber);
+  // --- Campo 6: NAPs cercanas a una coordenada ------------------------------
+  app.get('/naps/nearby', async (request) => {
+    const { lat, lng } = parseQuery(coordsQuerySchema, request.query);
+    return getTecConnector().getNearbyNaps({ latitude: lat, longitude: lng });
   });
 
+  // --- Campo 8: puertos ocupados por NAP ------------------------------------
   app.get('/naps/:napCode/ports', async (request) => {
     const { napCode } = parseParams(napParamsSchema, request.params);
     return getTecConnector().getNapPorts(napCode);
+  });
+
+  // --- Campos 9-13: ISP Monitor por serial GPON / MAC HFC -------------------
+  // Estado del equipo, de la red y evento asociado.
+  app.get('/terminals/:id', async (request) => {
+    const { id } = parseParams(terminalParamsSchema, request.params);
+    return getIspMonitorConnector().getTerminal(id);
+  });
+
+  // Panel completo: ficha + las 6 series de 24 h en una sola llamada.
+  app.get('/terminals/:id/diagnostics', async (request) => {
+    const { id } = parseParams(terminalParamsSchema, request.params);
+    return getIspMonitorConnector().getDiagnostics(id);
+  });
+
+  // Serie individual: /terminals/HWTC123/series/terminal/snr
+  app.get('/terminals/:id/series/:scope/:metric', async (request) => {
+    const { id, scope, metric } = parseParams(seriesParamsSchema, request.params);
+    return getIspMonitorConnector().getSeries(id, scope, metric);
   });
 
   app.get('/accounts/:accountNumber/network-metrics', async (request) => {

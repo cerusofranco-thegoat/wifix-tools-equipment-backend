@@ -1,4 +1,4 @@
-# PROGRESS — App Wifix (Fase 1 + Fase 2)
+# PROGRESS — App Wifix Certificate (Fase 1 + Fase 2)
 
 Registro de avance por fase del proyecto. Se actualiza al cerrar cada
 fase. Las casillas marcadas indican entregables verificados.
@@ -320,6 +320,86 @@ el backend; el flag se concentra en `api.js`.
 | 2 | Marcas reales de equipos (brand null en seed) | Pendiente — sigue esperando respuesta del socio. |
 | 3 | Servidores de speedtest/red reales | Pendiente — sembrados con ejemplos. |
 | 4 | Ejecución nativa de ping/traceroute/dBm | Pendiente — webapp sigue captando por ingreso manual; Capacitor o app nativa es decisión posterior. |
+
+## PARTE D — Wifix Certificate · APIs reales de operadora (2026-08-26)
+
+**Renombre.** La app pasa a llamarse **Wifix Certificate**: `<title>`,
+manifest PWA, `appName` de Capacitor, `app_name` de Android y los títulos de
+SPEC/PROGRESS/README. El wordmark del header muestra `WIFIX` con
+`Certificate` en el subtítulo. El `appId` (`com.tulpa.wifix`) **no** cambia:
+cambiarlo rompería la actualización del APK ya instalado.
+
+**Accesos conseguidos:** `tec-api.grupotvcable.com`, autenticación HTTP
+Digest (realm `tec.grupotvcable.com`, `qop="auth"`). Verificado en vivo.
+
+Implementado:
+
+- `src/connectors/http/digest.ts` — cliente Digest RFC 2617 con cache de
+  challenge por origen y renegociación si el nonce rota.
+- `src/connectors/http/tec-api.ts` — los 8 endpoints de operadora, con
+  normalización del id de terminal (MAC con `:` → hex plano; IIS rechaza
+  los `:` en la ruta) y 204/404 → `null`.
+- `src/connectors/ispmonitor/normalize.ts` — normalización tolerante de las
+  series de 24 h: detecta en runtime la clave temporal y las numéricas.
+- `tecReal` (campo 6) e `ispMonitorReal` (campos 9-12) sustituyen a los
+  `notImplemented(...)`. Modo por conector: `CONNECTOR_MODE_TEC` y
+  `CONNECTOR_MODE_ISPMONITOR` en `real`, el resto sigue en `mock`.
+- Rutas nuevas: `GET /naps/nearby?lat=&lng=`, `GET /terminals/{id}`,
+  `GET /terminals/{id}/diagnostics`, `GET /terminals/{id}/series/{scope}/{metric}`.
+  El contrato OpenAPI se actualizó en el mismo commit.
+- Frontend: el panel NAP consulta por coordenada real (GPS o manual) en vez
+  de por número de cuenta; panel nuevo **ISP Monitor** en Datos del Servicio,
+  con consulta por serial GPON / MAC (escaneable con ML Kit), badges de
+  estado equipo/red/evento, barra de disponibilidad 24 h y gráficos SVG de
+  SNR y FEC. Sin librerías de terceros.
+
+Verificado: `GET /naps/nearby` devuelve 10 NAPs reales del sector de
+Guayaquil consultado; validación de coordenadas y de `scope`/`metric`
+responde 400; sin token, 401. `npx tsc`, `eslint` y las 26 pruebas de
+conectores en verde; smoke de UI (`npm run smoke` en `wifix-webapp`) con 23
+checks en verde.
+
+### Calibración contra la API real (mismo día)
+
+Con el ONT ZTE activo `ZTEGD3F9BBE5` (Quito, nodo 9198) se verificaron los
+shapes y se ajustó el parseo:
+
+- La ficha del terminal es un objeto plano con `type`/`city`/`status`/`events`
+  más `terminals[]`, que es el **historial de equipos en ese puerto** por
+  período (LastHour/Day/Week/Month). Se muestra en la app: le dice al técnico
+  si el equipo anterior del domicilio venía cayéndose.
+- Las series de 24 h son **tuplas `[[epoch, valor], …]`** — 288 muestras cada 5
+  minutos. Se agregó ese caso al normalizador (antes solo cubría arrays de
+  objetos y de escalares) y se corrigió que no ordenaba cronológicamente.
+- `network/online` devuelve **cuántos equipos del nodo están en línea** (18),
+  no un 0/1. Se grafica como cantidad, no como barra de disponibilidad.
+- SNR y codewords son **DOCSIS**: en GPON responden 204. La app lo explica en
+  vez de dejar el hueco.
+- La API distingue **400 `Invalid serial number`** (formato inválido) de **204**
+  (formato válido, sin datos). El **D-SN** y el **EN** de la etiqueta de un ONT
+  ZTE caen en el 400: va el **GPON SN**. El escáner de la app ahora descarta
+  D-SN y EN y prioriza el GPON SN sobre la MAC, con una guía plegable de qué
+  código corresponde a cada equipo (hoja *FOTOS SN EQUIPOS* del Excel).
+- La barra de disponibilidad agrupa las 288 muestras en 48 celdas de 30 min;
+  un tramo se marca caído si **cualquier** muestra suya lo estuvo.
+
+Con el cablemódem HFC activo `384C90A2DB11` (Quito, nodo 168) se cerraron los
+campos 10 y 11:
+
+- SNR y codewords son **multicanal**: la respuesta es un array de canales
+  upstream (`ifIndex` + `network` + `desc` + `data`), cada uno con su serie.
+  Se agregó ese caso al normalizador (`channels[]`) y a `valueNamesFor`, que
+  ahora cuenta las columnas dentro de `data`.
+- En la app: SNR compara los dos canales en un solo gráfico (una línea por
+  canal, que es la comparación que hace el técnico) y FEC usa un gráfico por
+  canal, porque mezclar corregidos/sin corregir × N canales no se lee.
+- El estado del cablemódem trajo 122 muestras y no 288: la cantidad varía
+  según cuánto lleve el equipo en línea. El render no asume 288.
+
+**Faltantes con los accesos actuales:** el detalle puerto a puerto por NAP
+(campo 8, clientes A/S — vive en `tec.grupotvcable.com/Gpon/Coverage`, sin
+API) y el tráfico de internet del cliente (campo 13). Ambos avisados en la
+UI en vez de fallar.
 
 ## Paso siguiente: conectar APIs reales de la operadora
 

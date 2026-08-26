@@ -17,6 +17,12 @@ export {
   type NetworkMetrics,
   type Technology,
   type SignalLevels,
+  type TerminalSnapshot,
+  type TerminalHistoryEntry,
+  type Series24h,
+  type SeriesScope,
+  type SeriesMetric,
+  type TerminalDiagnostics,
 } from './ispmonitor/index.js';
 
 export {
@@ -31,6 +37,7 @@ export {
 
 export {
   getTecConnector,
+  type Coordinates,
   type NearbyNap,
   type NapPort,
   type NapPorts,

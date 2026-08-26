@@ -2,7 +2,7 @@
   "name": "wifix-tools-equipment-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Backend de la app Wifix — Herramientas, Equipos Retirados e integración de datos del cliente (Fase 2).",
+  "description": "Backend de la app Wifix Certificate — Herramientas, Equipos Retirados e integración de datos del cliente (Fase 2).",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {

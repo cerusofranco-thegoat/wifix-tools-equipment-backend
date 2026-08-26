@@ -26,6 +26,15 @@ export default [
         clearInterval: 'readonly',
         __dirname: 'readonly',
         __filename: 'readonly',
+        // Web APIs disponibles en Node >= 18 (usadas por los conectores HTTP).
+        fetch: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
       },
     },
     plugins: {

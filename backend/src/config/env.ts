@@ -15,7 +15,18 @@ const envSchema = z.object({
   SEED_USER_PASSWORD: z.string().min(6).default('wifix-dev-2026'),
   SEED_USER_NAME: z.string().default('Franco Ceruso'),
   // --- Conectores (Fase 2) ---
+  // Modo global por defecto para todos los conectores externos.
   CONNECTOR_MODE: z.enum(['mock', 'real']).default('mock'),
+  // Overrides por conector: hoy solo TEC e ISP Monitor tienen credenciales
+  // reales, el resto (Comarch, FSM, ACS, RMS) sigue en mock.
+  CONNECTOR_MODE_TEC: z.enum(['mock', 'real']).optional(),
+  CONNECTOR_MODE_ISPMONITOR: z.enum(['mock', 'real']).optional(),
+  // --- API de TEC / ISP Monitor (Grupo TVCable) ---
+  // Base de la API real de operadora. Autenticación HTTP Digest.
+  TEC_API_BASE_URL: z.string().url().default('https://tec-api.grupotvcable.com'),
+  TEC_API_USERNAME: z.string().default(''),
+  TEC_API_PASSWORD: z.string().default(''),
+  TEC_API_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   // --- Almacenamiento ---
   STORAGE_ENDPOINT: z.string().url().default('http://localhost:9000'),
   STORAGE_REGION: z.string().default('us-east-1'),
@@ -61,6 +72,23 @@ const SECRET_DEFAULTS = {
   JWT_SECRET: 'dev-secret-change-me-please-32-chars-min',
 } as const;
 
+const tecLikeIsReal =
+  (parsed.data.CONNECTOR_MODE_TEC ?? parsed.data.CONNECTOR_MODE) === 'real' ||
+  (parsed.data.CONNECTOR_MODE_ISPMONITOR ?? parsed.data.CONNECTOR_MODE) === 'real';
+
+if (tecLikeIsReal) {
+  const missing: string[] = [];
+  if (!parsed.data.TEC_API_USERNAME) missing.push('TEC_API_USERNAME');
+  if (!parsed.data.TEC_API_PASSWORD) missing.push('TEC_API_PASSWORD');
+  if (missing.length > 0) {
+    console.error(
+      `[CONFIG] CONNECTOR_MODE=real requiere credenciales de la API de operadora.`,
+    );
+    console.error(`Faltan estas variables de entorno: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+}
+
 if (parsed.data.NODE_ENV === 'production') {
   const insecure: string[] = [];
   for (const [key, defaultValue] of Object.entries(SECRET_DEFAULTS)) {
@@ -82,3 +110,10 @@ if (parsed.data.NODE_ENV === 'production') {
 
 export const env = parsed.data;
 export type Env = typeof env;
+
+/** Modo efectivo de un conector: su override si existe, si no el global. */
+export function connectorMode(connector: 'tec' | 'ispmonitor'): 'mock' | 'real' {
+  const override =
+    connector === 'tec' ? env.CONNECTOR_MODE_TEC : env.CONNECTOR_MODE_ISPMONITOR;
+  return override ?? env.CONNECTOR_MODE;
+}

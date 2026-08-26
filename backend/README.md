@@ -1,6 +1,6 @@
-# Wifix — Backend de la app (Fase 2)
+# Wifix Certificate — Backend de la app (Fase 2)
 
-Backend de la app Wifix completa. Persiste los datos que la app genera
+Backend de la app Wifix Certificate completa. Persiste los datos que la app genera
 (Herramientas y Equipos Retirados, campos 22-27) e **integra** los datos
 de los sistemas de la operadora (campos 1-21) mediante una capa de
 conectores que en esta etapa funciona con **datos simulados (mock)**.
@@ -86,19 +86,109 @@ conector define una **interfaz** y dos implementaciones:
   semillado por `accountNumber` o `napCode`). Las escrituras (`PUT
   client-profile`, `PUT wifi-config`) guardan un override en memoria del
   proceso para que GET → PUT → GET sean coherentes durante una sesión.
-- **Real** — esqueleto con `TODO` que lanza `CONNECTOR_ERROR` (502) hasta
-  que entreguen credenciales y URLs.
+- **Real** — implementación contra la API del operador. `tec` e `ispmonitor`
+  ya están implementados; el resto sigue siendo esqueleto que lanza
+  `CONNECTOR_ERROR` (502) hasta que entreguen credenciales y URLs.
 
-`CONNECTOR_MODE=mock|real` selecciona la implementación global.
+`CONNECTOR_MODE=mock|real` fija el modo global; `CONNECTOR_MODE_TEC` y
+`CONNECTOR_MODE_ISPMONITOR` lo sobreescriben por conector, que es lo que
+permite tener TEC e ISP Monitor en real y el resto en mock.
 
-| Conector | Sistema real | Campos |
-|----------|--------------|--------|
-| `comarch` | TYTAN / Comarch CM | 1, 2, 3, 4, 5, 7 |
-| `fsm` | FSM | 15, 16 |
-| `ispmonitor` | ISP Monitor | 9, 10, 11, 12, 13 |
-| `acs` | ACS (TR-069) | 19, 20, 21 |
-| `tec` | TEC / registro GPON | 6, 8 |
-| `rms` | RMS | 14 |
+| Conector | Sistema real | Campos | Estado |
+|----------|--------------|--------|--------|
+| `comarch` | TYTAN / Comarch CM | 1, 2, 3, 4, 5, 7 | mock |
+| `fsm` | FSM | 15, 16 | mock |
+| `ispmonitor` | ISP Monitor (tec-api) | 9, 10, 11, 12 | **real** |
+| `acs` | ACS (TR-069) | 19, 20, 21 | mock |
+| `tec` | TEC / registro GPON | 6, 8 (parcial) | **real** |
+| `rms` | RMS | 14 | mock |
+
+### API de operadora (TEC / ISP Monitor)
+
+`src/connectors/http/` implementa el acceso a `tec-api.grupotvcable.com`:
+
+- `digest.ts` — autenticación HTTP Digest (RFC 2617, `qop="auth"`). El
+  challenge se cachea por origen, así que solo la primera petición paga la
+  vuelta extra del 401; si el servidor rota el nonce se renegocia solo.
+- `tec-api.ts` — un método por endpoint, más `normalizeTerminalId()`
+  (normaliza MAC con separadores a hex plano: IIS rechaza los `:` en la ruta).
+  Un 204/404 del upstream se traduce a `null` — es la respuesta normal para
+  un id que no existe, no un error.
+- `ispmonitor/normalize.ts` — normalización tolerante de las series de 24 h.
+  La API no publica esquema, así que se detectan en runtime la clave temporal
+  (`date`/`fecha`/`timestamp`/`/Date(ms)/`…) y las claves numéricas. Si el
+  formato no se reconoce, `recognized: false` y el payload original viaja en
+  `raw`.
+
+| Endpoint upstream | Uso |
+|-------------------|-----|
+| `GET /api/tec/naps/{lat},{lng}` | NAPs cercanas (campo 6) |
+| `GET /api/isp/terminals/{id}` | Estado equipo/red + evento |
+| `GET /api/isp/status/{id}` | Estado del terminal, 24 h |
+| `GET /api/isp/network/online/{id}` | Estado de la red, 24 h |
+| `GET /api/isp/cablemodem/snr/{id}` | SNR del terminal, 24 h (campo 10) |
+| `GET /api/isp/network/snr/{id}` | SNR de la red, 24 h |
+| `GET /api/isp/cablemodem/codewords/{id}` | FEC del terminal, 24 h (campo 11) |
+| `GET /api/isp/network/codewords/{id}` | FEC de la red, 24 h |
+
+### Shapes verificados contra la API real (2026-08-26)
+
+`GET /api/isp/terminals/{id}` devuelve un objeto plano:
+
+```json
+{ "type": "GPON", "city": "Quito", "id": "ZTEGD3F9BBE5", "device": 9919,
+  "ifIndex": 285282307, "index": 11, "networks": [9198], "status": "up",
+  "drop": null, "events": null,
+  "terminals": [ { "Type": "LastMonth", "IDs": ["ZTEGD0BB8294"],
+                   "Status": ["down"], "Drop": "", "Events": "" } ] }
+```
+
+Las series de 24 h son **tuplas `[[epochSegundos, valor], …]`**, 288 muestras
+(una cada 5 minutos), sin nombres de columna. El conector se los pone:
+
+| Endpoint | Clave | Significado |
+|----------|-------|-------------|
+| `status/{id}` | `online` | 1 en línea, 0 caído |
+| `network/online/{id}` | `terminalsOnline` | cuántos equipos del nodo están en línea — **no** es un 0/1 |
+| `*/snr/{id}` | `snr` o `snrDown`/`snrUp` | según cuántas columnas traiga |
+| `*/codewords/{id}` | `errors` o `corrected`/`uncorrected` | ídem |
+
+Las métricas DOCSIS llegan además **desglosadas por canal upstream**: la
+respuesta es un array de canales, cada uno con su propia serie en `data`.
+
+```json
+[ { "ifIndex": 5000018, "network": "2G-2 v",
+    "desc": "Logical Upstream Channel 0/1.1/0",
+    "data": [[1787772828, 35.6], [1787773128, 35.6]] }, … ]
+```
+
+`normalizeSeries` los expone en `channels[]`; `keys`/`points` reflejan el
+primer canal para consumidores que no los manejen.
+
+Códigos de respuesta del upstream:
+
+- **400 `{"Message":"Invalid serial number"}`** — el id no tiene forma de serial
+  GPON (4 letras + 8 caracteres) ni de MAC (12 hex). El backend lo traduce a
+  `VALIDATION_ERROR` (400), no a error de conector. El **D-SN** y el **EN**
+  impresos en la etiqueta de un ONT ZTE caen acá: hay que usar el **GPON SN**.
+- **204** — formato válido pero el equipo no está en ISP Monitor (sin
+  aprovisionar). Se traduce a `found: false`, no a error.
+
+SNR y codewords son métricas **DOCSIS**: en equipos GPON la operadora responde
+204 y la serie viene vacía. Un ONT de fibra tampoco se encuentra por su MAC
+(verificado): para fibra va el GPON SN, la MAC es para cablemódems HFC.
+
+Para sondear la API a mano:
+
+```bash
+npx tsx scripts/probe-tec-api.ts naps -2.1685829163 -79.9189910889
+npx tsx scripts/probe-tec-api.ts all <SERIAL_O_MAC>
+```
+
+**Faltantes conocidos con los accesos actuales:** el detalle puerto a puerto
+por NAP (campo 8 — clientes A/S, vive en `tec.grupotvcable.com/Gpon/Coverage`)
+y el tráfico de internet del cliente (campo 13). `getNapPorts` real devuelve
+`detailAvailable: false` con una nota, en vez de fallar.
 
 ## Endpoints
 
@@ -122,8 +212,11 @@ conector define una **interfaz** y dos implementaciones:
 | Historial | `/herramientas/v1/accounts/{accountNumber}/tool-history` | GET |
 | Datos del Cliente | `/herramientas/v1/accounts/{n}/client-profile` | GET · PUT |
 | | `/herramientas/v1/accounts/{n}/contract-status` | GET |
-| Diagnóstico de Red | `/herramientas/v1/accounts/{n}/nearby-naps` | GET |
+| Diagnóstico de Red | `/herramientas/v1/naps/nearby?lat=&lng=` | GET |
 | | `/herramientas/v1/naps/{napCode}/ports` | GET |
+| | `/herramientas/v1/terminals/{id}` | GET |
+| | `/herramientas/v1/terminals/{id}/diagnostics` | GET |
+| | `/herramientas/v1/terminals/{id}/series/{scope}/{metric}` | GET |
 | | `/herramientas/v1/accounts/{n}/network-metrics` | GET |
 | | `/herramientas/v1/accounts/{n}/node-events` | GET |
 | | `/herramientas/v1/accounts/{n}/lan-devices` | GET |
@@ -216,7 +309,11 @@ el proceso aborta con un mensaje claro. Las relevantes:
 
 - `JWT_SECRET`, `JWT_EXPIRES_IN` — emisión y vigencia del token.
 - `SEED_USER_EMAIL`, `SEED_USER_PASSWORD`, `SEED_USER_NAME` — usuario inicial.
-- `CONNECTOR_MODE` — `mock` o `real`.
+- `CONNECTOR_MODE` — `mock` o `real` (modo global de los conectores).
+- `CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR` — override por conector.
+- `TEC_API_BASE_URL`, `TEC_API_USERNAME`, `TEC_API_PASSWORD`,
+  `TEC_API_TIMEOUT_MS` — API de operadora (Digest). Obligatorias si alguno
+  de esos dos conectores está en `real`; el arranque aborta si faltan.
 - `DATABASE_URL` — Postgres (puerto 5433 con el `docker-compose.yml` actual).
 - `STORAGE_*` — MinIO/S3.
 
@@ -240,11 +337,15 @@ npm test
 
 Para activar el modo real:
 
-1. Cambiar `CONNECTOR_MODE=real` en `.env`.
+1. Cambiar `CONNECTOR_MODE=real` en `.env`, o solo el conector que
+   corresponda (`CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`).
 2. Implementar cada `*Real` en `src/connectors/<system>/index.ts` reemplazando
    los `notImplemented(...)` por llamadas HTTP a la API del sistema.
 3. Agregar las URLs y credenciales por sistema como variables de entorno
    nuevas (una por conector).
+
+`tec` e `ispmonitor` ya siguen este patrón: sirven de referencia para los
+que faltan.
 
 Los módulos de routes y los tests **no requieren cambios** — el cambio se
 concentra en la capa de conectores.

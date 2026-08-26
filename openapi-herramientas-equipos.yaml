@@ -860,25 +860,47 @@ paths:
   # DIAGNÓSTICO DE RED (campos 6, 8-14, 19-21)
   # ====================================================================
 
-  /accounts/{accountNumber}/nearby-naps:
+  /naps/nearby:
     get:
       tags: [Diagnóstico de Red]
-      summary: NAPs cercanas
+      summary: NAPs cercanas a una coordenada
       description: >
-        NAPs cercanas con distancia en metros y puertos ocupados
-        (campo 6). Origen real: TEC / registro GPON.
+        NAPs cercanas con coordenada, distancia en metros y puertos
+        ocupados/libres (campo 6). La consulta es por coordenada (GPS del
+        técnico o de la tarea), no por número de cuenta, igual que la
+        pestaña "GPON" de FSM. Origen real: TEC
+        (`GET /api/tec/naps/{lat},{lng}`, autenticación Digest).
       operationId: getNearbyNaps
       parameters:
-        - $ref: '#/components/parameters/AccountNumberPath'
+        - name: lat
+          in: query
+          required: true
+          description: Latitud desde la que se busca.
+          schema:
+            type: number
+            format: double
+            minimum: -90
+            maximum: 90
+        - name: lng
+          in: query
+          required: true
+          description: Longitud desde la que se busca.
+          schema:
+            type: number
+            format: double
+            minimum: -180
+            maximum: 180
       responses:
         '200':
-          description: OK
+          description: OK. Lista ordenada por distancia ascendente (vacía si no hay NAPs en el sector).
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/NearbyNap'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -909,6 +931,102 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /terminals/{id}:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Estado del equipo, de la red y evento asociado
+      description: >
+        Ficha puntual del equipo del cliente: estado del terminal, estado de
+        la red y evento (daño) asociado. `id` es el serial GPON (fibra) o la
+        MAC del cablemódem (HFC); las MAC se aceptan con o sin separadores.
+        Origen real: ISP Monitor (`GET /api/isp/terminals/{id}`).
+      operationId: getTerminal
+      parameters:
+        - $ref: '#/components/parameters/TerminalIdPath'
+      responses:
+        '200':
+          description: >
+            OK. Si el identificador no existe en ISP Monitor, `found` es false
+            (la API de operadora responde 204 en ese caso).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalSnapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /terminals/{id}/diagnostics:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Panel completo de ISP Monitor (campos 9-12)
+      description: >
+        Ficha del equipo más las seis series de las últimas 24 horas
+        (estado, señal a ruido y errores FEC, cada una para el terminal y
+        para la red) en una sola llamada. Los siete endpoints upstream se
+        consultan en paralelo: si alguno falla, el resto igual se devuelve y
+        el fallo se reporta en `errors`.
+      operationId: getTerminalDiagnostics
+      parameters:
+        - $ref: '#/components/parameters/TerminalIdPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerminalDiagnostics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /terminals/{id}/series/{scope}/{metric}:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Serie de 24 horas de una métrica
+      description: >
+        Serie individual de las últimas 24 horas. Combinaciones y endpoint
+        upstream correspondiente:
+        `terminal/status` → `/api/isp/status/{id}`;
+        `network/status` → `/api/isp/network/online/{id}`;
+        `terminal/snr` → `/api/isp/cablemodem/snr/{id}`;
+        `network/snr` → `/api/isp/network/snr/{id}`;
+        `terminal/codewords` → `/api/isp/cablemodem/codewords/{id}`;
+        `network/codewords` → `/api/isp/network/codewords/{id}`.
+      operationId: getTerminalSeries
+      parameters:
+        - $ref: '#/components/parameters/TerminalIdPath'
+        - name: scope
+          in: path
+          required: true
+          description: Ámbito de la serie — el equipo del cliente o la red/nodo.
+          schema:
+            type: string
+            enum: [terminal, network]
+        - name: metric
+          in: path
+          required: true
+          description: >
+            Métrica: `status` (disponibilidad, campo 12), `snr` (señal a
+            ruido, campo 10) o `codewords` (FEC corregidos y sin corregir,
+            campo 11).
+          schema:
+            type: string
+            enum: [status, snr, codewords]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Series24h'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /accounts/{accountNumber}/network-metrics:
     get:
@@ -1124,6 +1242,17 @@ components:
       description: Número de cuenta del cliente.
       schema:
         type: string
+    TerminalIdPath:
+      name: id
+      in: path
+      required: true
+      description: >
+        Serial GPON (fibra) o MAC del cablemódem (HFC). Las MAC se aceptan
+        con o sin separadores; el backend las normaliza a hexadecimal plano
+        en mayúsculas porque IIS rechaza los ":" en la ruta.
+      schema:
+        type: string
+        example: ZTEGC1234567
     AccountNumberFilter:
       name: accountNumber
       in: query
@@ -2012,16 +2141,31 @@ components:
 
     NearbyNap:
       type: object
+      description: NAP cercana devuelta por TEC (campo 6).
       properties:
         napCode:
           type: string
+          example: PL2KD9
+        latitude:
+          type: number
+          format: double
+          nullable: true
+          description: Coordenada de la NAP; null si la operadora no la devuelve.
+        longitude:
+          type: number
+          format: double
+          nullable: true
         distanceMeters:
           type: number
           format: double
+          description: Distancia calculada por la operadora desde la coordenada consultada.
         occupiedPorts:
           type: integer
         totalPorts:
           type: integer
+        freePorts:
+          type: integer
+          description: totalPorts - occupiedPorts, nunca negativo.
 
     NapPort:
       type: object
@@ -2045,8 +2189,275 @@ components:
           type: string
         ports:
           type: array
+          description: Vacío cuando `detailAvailable` es false.
           items:
             $ref: '#/components/schemas/NapPort'
+        detailAvailable:
+          type: boolean
+          description: >
+            false cuando la API de operadora no expone el detalle puerto a
+            puerto (hoy solo publica el conteo ocupados/total en el listado
+            de NAPs; el detalle vive en tec.grupotvcable.com/Gpon/Coverage,
+            que aún no está publicado como API).
+        occupiedPorts:
+          type: integer
+        totalPorts:
+          type: integer
+        note:
+          type: string
+          description: Explicación para mostrar al técnico cuando no hay detalle.
+
+    FlatField:
+      type: object
+      description: Campo suelto de la ficha del terminal, tal como lo nombra ISP Monitor.
+      properties:
+        key:
+          type: string
+        path:
+          type: string
+          description: Ruta completa cuando el campo venía anidado (`evento.descripcion`).
+        value:
+          nullable: true
+          oneOf:
+            - type: string
+            - type: number
+            - type: boolean
+
+    TerminalHistoryEntry:
+      type: object
+      description: >
+        Equipos que pasaron por ese puerto en un período. Sale de `terminals[]`
+        de la API y le sirve al técnico para ver si el equipo anterior del
+        domicilio venía cayéndose.
+      properties:
+        period:
+          type: string
+          description: LastHour | LastDay | LastWeek | LastMonth, tal como lo nombra la operadora.
+          example: LastMonth
+        ids:
+          type: array
+          items:
+            type: string
+          example: [ZTEGD0BB8294, ZTEGD3F9BBE5]
+        statuses:
+          type: array
+          description: Estado de cada equipo de `ids`, en el mismo orden (`up` / `down`).
+          items:
+            type: string
+          example: [down, up]
+        drop:
+          type: string
+          nullable: true
+        events:
+          type: string
+          nullable: true
+
+    TerminalSnapshot:
+      type: object
+      description: >
+        Estado puntual del equipo y evento asociado. Shape verificado contra la
+        API real el 2026-08-26 con un ONT ZTE activo.
+      properties:
+        id:
+          type: string
+          example: ZTEGD3F9BBE5
+        found:
+          type: boolean
+          description: false cuando ISP Monitor no tiene datos para ese identificador (204).
+        online:
+          type: boolean
+          nullable: true
+          description: Estado del equipo del cliente; sale del campo `status` de la API (`up` / `down`).
+        technology:
+          type: string
+          nullable: true
+          enum: [GPON, HFC]
+        city:
+          type: string
+          nullable: true
+          example: Quito
+        networkIds:
+          type: array
+          description: Nodos/redes a los que cuelga el equipo.
+          items:
+            type: integer
+          example: [9198]
+        event:
+          type: object
+          nullable: true
+          description: >
+            Evento (daño) asociado. `active` es false cuando el campo `events`
+            de la API viene vacío o null.
+          properties:
+            active:
+              type: boolean
+            description:
+              type: string
+              nullable: true
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/TerminalHistoryEntry'
+        fields:
+          type: array
+          description: >
+            Resto de la ficha aplanada (device, ifIndex, index, drop…), sin
+            repetir lo que ya tiene campo propio.
+          items:
+            $ref: '#/components/schemas/FlatField'
+        raw:
+          description: Payload original de la API de operadora.
+          nullable: true
+        fetchedAt:
+          type: string
+          format: date-time
+
+    SeriesPoint:
+      type: object
+      properties:
+        t:
+          type: string
+          nullable: true
+          description: >
+            Instante de la muestra en ISO-8601. Si la operadora manda un
+            formato no parseable se devuelve el texto original; null si la
+            serie no trae marca de tiempo.
+        values:
+          type: object
+          description: Métricas numéricas de la muestra, por nombre de clave.
+          additionalProperties:
+            type: number
+        meta:
+          type: object
+          description: Campos no numéricos de la muestra (estado, descripción…).
+          additionalProperties:
+            type: string
+
+    SeriesChannel:
+      type: object
+      description: >
+        Canal de una métrica desglosada. Los endpoints DOCSIS de SNR y
+        codewords devuelven una entrada por canal upstream del cablemódem,
+        cada una con su propia serie.
+      properties:
+        label:
+          type: string
+          description: Nombre del canal (`desc` de la operadora).
+          example: Logical Upstream Channel 0/1.1/0
+        network:
+          type: string
+          nullable: true
+          example: 2G-2 v
+        ifIndex:
+          type: integer
+          nullable: true
+          example: 5000018
+        keys:
+          type: array
+          items:
+            type: string
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeriesPoint'
+
+    Series24h:
+      type: object
+      description: >
+        Serie de las últimas 24 horas ya normalizada. La operadora la devuelve
+        como tuplas `[[epochSegundos, valor], …]` — 288 muestras, una cada 5
+        minutos — sin nombrar las columnas; el backend les pone nombre según la
+        métrica y el ámbito:
+        `terminal/status` → `online` (1 = en línea, 0 = caído);
+        `network/status` → `terminalsOnline` (cuántos equipos del nodo están en
+        línea, **no** un 0/1);
+        `snr` → `snr` o `snrDown`/`snrUp` según cuántas columnas traiga;
+        `codewords` → `errors` o `corrected`/`uncorrected`.
+        Las métricas DOCSIS llegan además desglosadas por canal upstream: la
+        respuesta es un array de canales, cada uno con su `data` — ver
+        `channels`.
+        Las series de SNR y codewords son DOCSIS: en equipos GPON la operadora
+        responde 204 y `points` viene vacío.
+        Si el formato no se reconoce, `recognized` es false y el consumidor
+        puede caer a `raw`.
+      properties:
+        id:
+          type: string
+        scope:
+          type: string
+          enum: [terminal, network]
+        metric:
+          type: string
+          enum: [status, snr, codewords]
+        keys:
+          type: array
+          description: Nombres de las series numéricas presentes (leyenda del gráfico).
+          items:
+            type: string
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/SeriesPoint'
+        channels:
+          type: array
+          description: >
+            Canales cuando la métrica viene desglosada (SNR y codewords DOCSIS
+            traen una serie por canal upstream). Vacío si la métrica es de un
+            solo canal; en ese caso `keys`/`points` son la serie. Cuando hay
+            canales, `keys` y `points` reflejan el primero, para consumidores
+            que no los manejen.
+          items:
+            $ref: '#/components/schemas/SeriesChannel'
+        recognized:
+          type: boolean
+        raw:
+          description: Payload original de la API de operadora.
+          nullable: true
+        fetchedAt:
+          type: string
+          format: date-time
+
+    ScopedSeries:
+      type: object
+      description: La misma métrica para el equipo del cliente y para la red.
+      properties:
+        terminal:
+          allOf:
+            - $ref: '#/components/schemas/Series24h'
+          nullable: true
+        network:
+          allOf:
+            - $ref: '#/components/schemas/Series24h'
+          nullable: true
+
+    TerminalDiagnostics:
+      type: object
+      description: Ficha del equipo más las seis series de 24 horas (campos 9-12).
+      properties:
+        id:
+          type: string
+        terminal:
+          $ref: '#/components/schemas/TerminalSnapshot'
+        status:
+          $ref: '#/components/schemas/ScopedSeries'
+        snr:
+          $ref: '#/components/schemas/ScopedSeries'
+        codewords:
+          $ref: '#/components/schemas/ScopedSeries'
+        errors:
+          type: array
+          description: Endpoints upstream que fallaron; el resto del payload sigue siendo válido.
+          items:
+            type: object
+            properties:
+              endpoint:
+                type: string
+                example: network/snr
+              message:
+                type: string
+        fetchedAt:
+          type: string
+          format: date-time
 
     SignalLevels:
       type: object

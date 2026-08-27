@@ -12,11 +12,16 @@
 //
 // `{id}` es el serial GPON o la MAC del cablemódem HFC.
 // Autenticación: HTTP Digest (ver ./digest.ts).
+//
+// Todo pasa por `cachedFetch` + semáforo (ver ./throttle.ts): la operadora
+// pidió no consultar de más y no existe ambiente de pruebas, cada llamada
+// golpea producción.
 // ---------------------------------------------------------------------------
 
 import { env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import { digestFetch } from './digest.js';
+import { cachedFetch, createLimiter } from './throttle.js';
 
 export type Json = unknown;
 
@@ -48,12 +53,29 @@ function baseUrl(): string {
   return env.TEC_API_BASE_URL.replace(/\/+$/, '');
 }
 
+/** Semáforo global: nunca más de N peticiones en vuelo hacia la operadora. */
+let limiter: ReturnType<typeof createLimiter> | null = null;
+function gate<T>(task: () => Promise<T>): Promise<T> {
+  limiter ??= createLimiter(env.TEC_API_MAX_CONCURRENCY);
+  return limiter(task);
+}
+
 /**
- * Ejecuta un GET autenticado contra la API de operadora.
- * Devuelve `null` cuando el upstream responde 204/404 (no hay datos para ese id),
- * que es el caso normal de un serial que no existe o un equipo sin histórico.
+ * Ejecuta un GET autenticado contra la API de operadora, con dedupe, cache
+ * corto y semáforo de concurrencia.
+ *
+ * `ttlMs` permite acortar o desactivar (0) el cache por endpoint. El default
+ * sale de `TEC_API_CACHE_TTL_MS`: los datos de la operadora son series de 24 h
+ * que se refrescan cada 5 minutos, así que repetir la consulta a los segundos
+ * devuelve exactamente lo mismo.
  */
-export async function tecApiGet<T = Json>(path: string): Promise<T | null> {
+export function tecApiGet<T = Json>(path: string, ttlMs?: number): Promise<T | null> {
+  const ttl = ttlMs ?? env.TEC_API_CACHE_TTL_MS;
+  return cachedFetch(`GET ${path}`, ttl, () => gate(() => tecApiFetch<T>(path)));
+}
+
+/** El GET propiamente dicho, sin cache ni cola. */
+async function tecApiFetch<T = Json>(path: string): Promise<T | null> {
   const url = `${baseUrl()}${path}`;
   let res: Response;
   try {

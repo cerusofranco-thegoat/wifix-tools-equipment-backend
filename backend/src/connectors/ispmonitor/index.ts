@@ -75,7 +75,17 @@ export interface TerminalHistoryEntry {
   events: string | null;
 }
 
-/** Estado puntual del equipo: enlace, nodo y evento asociado. */
+/**
+ * Caída de red detectada por el monitoreo de la operadora (campo `drop`).
+ * Es el único campo "extra" de la ficha que la operadora confirmó relevante
+ * (2026-08-27); `device`, `ifIndex` e `index` son internos del monitoreo.
+ */
+export interface TerminalDrop {
+  detected: boolean;
+  description: string | null;
+}
+
+/** Estado puntual del equipo: enlace, red de acceso y evento asociado. */
 export interface TerminalSnapshot {
   id: string;
   /** false cuando la API respondió 204 (ese id no existe o no tiene datos). */
@@ -85,13 +95,19 @@ export interface TerminalSnapshot {
   technology: Technology | null;
   /** Ciudad donde está el equipo. */
   city: string | null;
-  /** Nodos/redes a las que cuelga el equipo. */
+  /**
+   * Identificadores de la red de acceso a la que cuelga el equipo. No es un
+   * "nodo": en HFC es una tarjeta de CMTS (puede cubrir un ramal, un nodo o una
+   * combinación) y en GPON es un puerto de OLT (un hilo de fibra).
+   */
   networkIds: number[];
-  /** Evento (daño) asociado al equipo o al nodo, si lo hay. */
+  /** Evento (daño) asociado al equipo o a su red de acceso, si lo hay. */
   event: { active: boolean; description: string | null } | null;
+  /** Caída de red detectada por el monitoreo. */
+  drop: TerminalDrop;
   /** Historial de equipos en ese puerto por período. */
   history: TerminalHistoryEntry[];
-  /** Resto de la ficha aplanada (device, ifIndex, index, drop…). */
+  /** Resto de la ficha aplanada, sin los campos internos del monitoreo. */
   fields: FlatField[];
   raw: unknown;
   fetchedAt: string;
@@ -112,6 +128,14 @@ export interface TerminalDiagnostics {
   codewords: { terminal: Series24h | null; network: Series24h | null };
   /** Endpoints que fallaron; el resto del payload sigue siendo válido. */
   errors: Array<{ endpoint: string; message: string }>;
+  /**
+   * Endpoints que deliberadamente NO se consultaron y por qué. La operadora
+   * pidió no consultar de más: si el equipo es GPON, SNR y codewords (DOCSIS)
+   * responden 204 siempre, así que ni se piden.
+   */
+  skipped: Array<{ endpoint: string; reason: string }>;
+  /** Ventana de las series, siempre las últimas 24 h al momento de consultar. */
+  window: { hours: 24; until: string };
   fetchedAt: string;
 }
 
@@ -206,7 +230,9 @@ function mockTerminal(id: string): TerminalSnapshot {
     index: rng.intBetween(1, 16),
     networks: [rng.intBetween(9000, 9999)],
     status: online ? 'up' : 'down',
-    drop: null,
+    // `drop`: el monitoreo marcó una caída de red. Es el único campo extra de
+    // la ficha que la operadora confirmó relevante.
+    drop: !online || rng.bool(0.1) ? 'Caída detectada por el monitoreo' : null,
     events: hasEvent ? eventText : null,
     terminals: [
       { Type: 'LastHour', IDs: [id], Status: [online ? 'up' : 'down'], Drop: '', Events: '' },
@@ -252,23 +278,29 @@ export const ispMonitorMock: IspMonitorConnector = {
 
   async getDiagnostics(id) {
     const normalized = normalizeTerminalId(id);
+    const terminal = mockTerminal(normalized);
+    // El mock respeta el mismo plan que el real: en GPON no hay DOCSIS, así
+    // que el panel se ejercita igual con y sin credenciales.
+    const plan = planSeriesFetches(terminal.technology);
+    const bucket: Record<SeriesMetric, { terminal: Series24h | null; network: Series24h | null }> = {
+      status: { terminal: null, network: null },
+      snr: { terminal: null, network: null },
+      codewords: { terminal: null, network: null },
+    };
+    for (const { scope, metric } of plan.fetch) {
+      bucket[metric][scope] = mockSeries(normalized, scope, metric);
+    }
+    const fetchedAt = new Date().toISOString();
     return {
       id: normalized,
-      terminal: mockTerminal(normalized),
-      status: {
-        terminal: mockSeries(normalized, 'terminal', 'status'),
-        network: mockSeries(normalized, 'network', 'status'),
-      },
-      snr: {
-        terminal: mockSeries(normalized, 'terminal', 'snr'),
-        network: mockSeries(normalized, 'network', 'snr'),
-      },
-      codewords: {
-        terminal: mockSeries(normalized, 'terminal', 'codewords'),
-        network: mockSeries(normalized, 'network', 'codewords'),
-      },
+      terminal,
+      status: bucket.status,
+      snr: bucket.snr,
+      codewords: bucket.codewords,
       errors: [],
-      fetchedAt: new Date().toISOString(),
+      skipped: plan.skipped,
+      window: { hours: 24, until: fetchedAt },
+      fetchedAt,
     };
   },
 };
@@ -297,11 +329,21 @@ const ALIASES = {
   city: ['city', 'ciudad'],
   networks: ['networks', 'network', 'nodo', 'nodos'],
   events: ['events', 'event', 'evento', 'eventos'],
+  drop: ['drop', 'caida', 'caída'],
   history: ['terminals', 'historial'],
 } as const;
 
 /** Claves que la ficha ya expone como campo propio y no se repiten en `fields`. */
-const SURFACED_KEYS = new Set(['id', 'type', 'city', 'status', 'events', 'networks', 'terminals']);
+const SURFACED_KEYS = new Set([
+  'id', 'type', 'city', 'status', 'events', 'networks', 'terminals', 'drop',
+]);
+
+/**
+ * Campos internos del monitoreo de la operadora. Confirmado con ellos
+ * (2026-08-27): de la ficha "solo `drop` es relevante", así que estos no se le
+ * muestran al técnico. Siguen disponibles en `raw` para depurar.
+ */
+const INTERNAL_KEYS = new Set(['device', 'ifindex', 'index']);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -367,6 +409,7 @@ function buildSnapshot(id: string, raw: unknown): TerminalSnapshot {
     city: null,
     networkIds: [],
     event: null,
+    drop: { detected: false, description: null },
     history: [],
     fields: [],
     raw: null,
@@ -394,11 +437,20 @@ function buildSnapshot(id: string, raw: unknown): TerminalSnapshot {
     .map(mapHistoryEntry)
     .filter((e): e is TerminalHistoryEntry => e !== null);
 
-  // `fields` recoge lo que no tiene tratamiento propio (device, ifIndex,
-  // index, drop…), sin el historial para no llenar la ficha de ruido.
+  // La operadora informa la caída de red detectada por el monitoreo en `drop`.
+  const dropValue = pickKey(body, ALIASES.drop);
+  const dropText =
+    dropValue === null || dropValue === undefined || String(dropValue).trim() === ''
+      ? null
+      : String(dropValue).trim();
+
+  // `fields` recoge lo que no tiene tratamiento propio, sin el historial ni los
+  // campos internos del monitoreo, para no llenar la ficha de ruido.
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
-    if (!SURFACED_KEYS.has(k.toLowerCase())) rest[k] = v;
+    const key = k.toLowerCase();
+    if (SURFACED_KEYS.has(key) || INTERNAL_KEYS.has(key)) continue;
+    rest[k] = v;
   }
 
   const cityValue = pickKey(body, ALIASES.city);
@@ -411,6 +463,7 @@ function buildSnapshot(id: string, raw: unknown): TerminalSnapshot {
     city: cityValue === null || cityValue === undefined ? null : String(cityValue),
     networkIds,
     event: { active: eventDescription !== null, description: eventDescription },
+    drop: { detected: dropText !== null, description: dropText },
     history,
     fields: flattenFields(rest),
     raw: body,
@@ -471,6 +524,60 @@ function endpointLabel(scope: SeriesScope, metric: SeriesMetric): string {
   return `${scope}/${metric}`;
 }
 
+/** Serie a consultar en el panel. */
+export interface SeriesRequest {
+  scope: SeriesScope;
+  metric: SeriesMetric;
+}
+
+/** Las cuatro series DOCSIS: solo existen en HFC. */
+const DOCSIS_SERIES: SeriesRequest[] = [
+  { scope: 'terminal', metric: 'snr' },
+  { scope: 'network', metric: 'snr' },
+  { scope: 'terminal', metric: 'codewords' },
+  { scope: 'network', metric: 'codewords' },
+];
+
+/**
+ * Decide qué series pedir para un equipo.
+ *
+ * La operadora fue explícita (2026-08-27): no hay tope de peticiones, pero
+ * "bajo ninguna circunstancia se recomienda abusar de las consultas, es decir
+ * consultar todos los datos sin definir cuándo hacen falta". SNR y codewords
+ * son métricas DOCSIS: en GPON el upstream responde 204 siempre, así que en
+ * fibra ni se piden y el panel baja de 7 llamadas a 3.
+ *
+ * Con la tecnología sin determinar sí se consultan: no se puede descartar HFC.
+ */
+export function planSeriesFetches(technology: Technology | null): {
+  fetch: SeriesRequest[];
+  skipped: Array<{ endpoint: string; reason: string }>;
+} {
+  const fetch: SeriesRequest[] = [
+    { scope: 'terminal', metric: 'status' },
+    { scope: 'network', metric: 'status' },
+  ];
+  if (technology === 'GPON') {
+    return {
+      fetch,
+      skipped: DOCSIS_SERIES.map((s) => ({
+        endpoint: endpointLabel(s.scope, s.metric),
+        reason: 'Métrica DOCSIS: la operadora solo la publica para HFC. Este equipo es GPON.',
+      })),
+    };
+  }
+  return { fetch: [...fetch, ...DOCSIS_SERIES], skipped: [] };
+}
+
+/** Todas las series marcadas como no consultadas, con un motivo común. */
+function skipAll(reason: string): Array<{ endpoint: string; reason: string }> {
+  return [
+    { scope: 'terminal', metric: 'status' } as SeriesRequest,
+    { scope: 'network', metric: 'status' } as SeriesRequest,
+    ...DOCSIS_SERIES,
+  ].map((s) => ({ endpoint: endpointLabel(s.scope, s.metric), reason }));
+}
+
 export const ispMonitorReal: IspMonitorConnector = {
   async getTerminal(id) {
     const normalized = normalizeTerminalId(id);
@@ -493,39 +600,65 @@ export const ispMonitorReal: IspMonitorConnector = {
     const normalized = normalizeTerminalId(id);
     const errors: Array<{ endpoint: string; message: string }> = [];
 
-    const scopes: SeriesScope[] = ['terminal', 'network'];
-    const metrics: SeriesMetric[] = ['status', 'snr', 'codewords'];
-
-    // Las 7 llamadas van en paralelo: un fallo parcial no tumba el panel.
-    const [terminalResult, ...seriesResults] = await Promise.all([
-      fetchTerminal(normalized).then(
-        (raw) => ({ ok: true as const, raw }),
-        (err: unknown) => ({ ok: false as const, err }),
-      ),
-      ...scopes.flatMap((scope) =>
-        metrics.map((metric) =>
-          SERIES_FETCHERS[scope][metric](normalized).then(
-            (raw) => ({ ok: true as const, scope, metric, raw }),
-            (err: unknown) => ({ ok: false as const, scope, metric, err }),
-          ),
-        ),
-      ),
-    ]);
-
-    if (!terminalResult.ok) {
-      const message = terminalResult.err instanceof Error ? terminalResult.err.message : String(terminalResult.err);
-      errors.push({ endpoint: 'terminals', message });
-    }
-    const terminal = buildSnapshot(normalized, terminalResult.ok ? terminalResult.raw : null);
-
-    const fetchedAt = new Date().toISOString();
     const bucket: Record<SeriesMetric, { terminal: Series24h | null; network: Series24h | null }> = {
       status: { terminal: null, network: null },
       snr: { terminal: null, network: null },
       codewords: { terminal: null, network: null },
     };
 
-    for (const result of seriesResults) {
+    // Paso 1: la ficha, sola. De ella sale la tecnología, y la tecnología
+    // decide qué series tiene sentido pedir (ver planSeriesFetches).
+    let raw: unknown = null;
+    try {
+      raw = await fetchTerminal(normalized);
+    } catch (err) {
+      errors.push({
+        endpoint: 'terminals',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const terminal = buildSnapshot(normalized, raw);
+
+    const finish = (
+      skipped: Array<{ endpoint: string; reason: string }>,
+    ): TerminalDiagnostics => {
+      const fetchedAt = new Date().toISOString();
+      return {
+        id: normalized,
+        terminal,
+        status: bucket.status,
+        snr: bucket.snr,
+        codewords: bucket.codewords,
+        errors,
+        skipped,
+        window: { hours: 24, until: fetchedAt },
+        fetchedAt,
+      };
+    };
+
+    if (errors.length > 0) {
+      return finish(skipAll('No se pudo leer la ficha del equipo; no se consultaron las series.'));
+    }
+    // Un id que la operadora no conoce no tiene series: 6 llamadas menos por
+    // cada serial mal tipeado.
+    if (!terminal.found) {
+      return finish(skipAll('ISP Monitor no tiene datos para este identificador.'));
+    }
+
+    // Paso 2: solo las series que aplican, en paralelo. Un fallo parcial no
+    // tumba el panel.
+    const plan = planSeriesFetches(terminal.technology);
+    const results = await Promise.all(
+      plan.fetch.map(({ scope, metric }) =>
+        SERIES_FETCHERS[scope][metric](normalized).then(
+          (data) => ({ ok: true as const, scope, metric, raw: data }),
+          (err: unknown) => ({ ok: false as const, scope, metric, err }),
+        ),
+      ),
+    );
+
+    const fetchedAt = new Date().toISOString();
+    for (const result of results) {
       if (!result.ok) {
         errors.push({
           endpoint: endpointLabel(result.scope, result.metric),
@@ -542,15 +675,7 @@ export const ispMonitorReal: IspMonitorConnector = {
       };
     }
 
-    return {
-      id: normalized,
-      terminal,
-      status: bucket.status,
-      snr: bucket.snr,
-      codewords: bucket.codewords,
-      errors,
-      fetchedAt,
-    };
+    return finish(plan.skipped);
   },
 
   /**

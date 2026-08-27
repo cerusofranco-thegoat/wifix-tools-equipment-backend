@@ -361,7 +361,7 @@ checks en verde.
 
 ### Calibración contra la API real (mismo día)
 
-Con el ONT ZTE activo `ZTEGD3F9BBE5` (Quito, nodo 9198) se verificaron los
+Con el ONT ZTE activo `ZTEGD3F9BBE5` (Quito, red de acceso 9198) se verificaron los
 shapes y se ajustó el parseo:
 
 - La ficha del terminal es un objeto plano con `type`/`city`/`status`/`events`
@@ -371,7 +371,7 @@ shapes y se ajustó el parseo:
 - Las series de 24 h son **tuplas `[[epoch, valor], …]`** — 288 muestras cada 5
   minutos. Se agregó ese caso al normalizador (antes solo cubría arrays de
   objetos y de escalares) y se corrigió que no ordenaba cronológicamente.
-- `network/online` devuelve **cuántos equipos del nodo están en línea** (18),
+- `network/online` devuelve **cuántos equipos de la misma red de acceso están en línea** (18),
   no un 0/1. Se grafica como cantidad, no como barra de disponibilidad.
 - SNR y codewords son **DOCSIS**: en GPON responden 204. La app lo explica en
   vez de dejar el hueco.
@@ -383,7 +383,7 @@ shapes y se ajustó el parseo:
 - La barra de disponibilidad agrupa las 288 muestras en 48 celdas de 30 min;
   un tramo se marca caído si **cualquier** muestra suya lo estuvo.
 
-Con el cablemódem HFC activo `384C90A2DB11` (Quito, nodo 168) se cerraron los
+Con el cablemódem HFC activo `384C90A2DB11` (Quito, red de acceso 168) se cerraron los
 campos 10 y 11:
 
 - SNR y codewords son **multicanal**: la respuesta es un array de canales
@@ -395,6 +395,29 @@ campos 10 y 11:
   canal, porque mezclar corregidos/sin corregir × N canales no se lee.
 - El estado del cablemódem trajo 122 muestras y no 288: la cantidad varía
   según cuánto lleve el equipo en línea. El render no asume 288.
+
+### Respuestas de la operadora y ajustes (2026-08-27)
+
+La operadora contestó las siete dudas abiertas y confirmó que **los endpoints
+entregados son los disponibles**. Lo que cambió en la app:
+
+| Respuesta | Ajuste |
+|-----------|--------|
+| El **nonce del Digest cambia día a día**, no por petición. | Se mantiene el cache de challenge; cuando rota, el 401 ya trae el challenge nuevo y se re-firma con él (2 vueltas en vez de 3). Varias peticiones en frío comparten una sola negociación. |
+| **No hay tope de peticiones**, pero pidieron no consultar de más: nada de "consultar todos los datos sin definir cuándo hacen falta". | `/diagnostics` pide primero la ficha y, según la tecnología, solo las series que aplican: **3 llamadas upstream en GPON** (antes 7) y **1** si el identificador no existe. Además, dedupe de peticiones en vuelo, cache de 60 s y semáforo de 4 peticiones simultáneas. |
+| De la ficha, **solo `drop` es relevante**: dice si el monitoreo detectó una caída de red. `device`, `ifIndex` e `index` son internos. | `drop` pasa a campo propio y se muestra como alerta en la ficha; los otros tres desaparecen de la pantalla (siguen en `raw` para depurar). |
+| **No existe el concepto de nodo.** Los datos salen de tarjetas de CMTS (HFC) o de puertos de OLT (GPON). Tampoco publican el total de la red. | En toda la app "nodo" pasa a **red de acceso**, con el nombre correcto según la tecnología (*Puerto de OLT (hilo de fibra)* / *Tarjeta de CMTS (ramal o nodo)*). El gráfico de red muestra la **cantidad** de equipos en línea y aclara que no es un porcentaje: sin el total, no se puede calcular. |
+| Las series son **siempre las últimas 24 h al momento de la consulta**. | Se devuelve `window: { hours: 24, until }` y se dice en pantalla. El % de disponibilidad pasa a ponderarse **por tiempo** y no por muestra, porque la cantidad de muestras varía (122–292) y un promedio por muestra sesgaba el número. |
+| **No disponen de información** sobre decos, decos HD y MTA. | La guía de códigos de la app deja de prometerlo: se puede probar con su SN/HOST-SN, pero "sin datos" no es un error de la app. |
+| **Sistema en producción**, no hay ambiente de pruebas. | Nada automatizado contra la API real: las pruebas usan los payloads reales como fixtures y `probe-tec-api.ts` sigue siendo manual y de a un equipo. |
+
+**Pendiente con la operadora:** identificadores de equipos (aunque sean de
+cuentas de prueba) con evento activo en la red, con caídas en las últimas 24 h,
+y un cablemódem con FEC sin corregir > 0, para validar los casos de alerta.
+
+Verificado: `npx tsc`, `eslint` y **59 pruebas de conectores** en verde
+(9 nuevas de dedupe/cache/semáforo y de rotación del nonce, 6 del plan de
+consultas); smoke de UI con todos los checks en verde.
 
 **Faltantes con los accesos actuales:** el detalle puerto a puerto por NAP
 (campo 8, clientes A/S — vive en `tec.grupotvcable.com/Gpon/Coverage`, sin

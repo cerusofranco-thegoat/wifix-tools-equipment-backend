@@ -963,11 +963,22 @@ paths:
       tags: [Diagnóstico de Red]
       summary: Panel completo de ISP Monitor (campos 9-12)
       description: >
-        Ficha del equipo más las seis series de las últimas 24 horas
-        (estado, señal a ruido y errores FEC, cada una para el terminal y
-        para la red) en una sola llamada. Los siete endpoints upstream se
-        consultan en paralelo: si alguno falla, el resto igual se devuelve y
-        el fallo se reporta en `errors`.
+        Ficha del equipo más las series de las últimas 24 horas (estado, señal
+        a ruido y errores FEC, cada una para el terminal y para la red) en una
+        sola llamada.
+
+        Solo se consulta lo que aplica: primero la ficha y, según la tecnología
+        que devuelva, las series. En GPON las cuatro series DOCSIS no se piden
+        (la operadora responde 204) y en un identificador inexistente no se pide
+        ninguna, así que el panel cuesta 3 llamadas upstream en fibra y 7 en
+        HFC. Lo omitido se reporta en `skipped`.
+
+        Las series que sí aplican se consultan en paralelo, con un tope global
+        de concurrencia y un cache corto (`TEC_API_MAX_CONCURRENCY`,
+        `TEC_API_CACHE_TTL_MS`): la operadora no impone un límite de peticiones
+        pero pidió no abusar, y todas las consultas van contra producción. Si
+        alguna falla, el resto igual se devuelve y el fallo se reporta en
+        `errors`.
       operationId: getTerminalDiagnostics
       parameters:
         - $ref: '#/components/parameters/TerminalIdPath'
@@ -2278,7 +2289,11 @@ components:
           example: Quito
         networkIds:
           type: array
-          description: Nodos/redes a los que cuelga el equipo.
+          description: >
+            Identificadores de la red de acceso a la que cuelga el equipo. NO es
+            un nodo: la operadora aclaró (2026-08-27) que estos datos se toman
+            de una tarjeta de CMTS (HFC — puede cubrir un ramal, un nodo o una
+            combinación) o de un puerto de OLT (GPON — un hilo de fibra).
           items:
             type: integer
           example: [9198]
@@ -2294,6 +2309,19 @@ components:
             description:
               type: string
               nullable: true
+        drop:
+          type: object
+          description: >
+            Caída de red detectada por el sistema de monitoreo de la operadora
+            (campo `drop` de la API). Es el único campo "extra" de la ficha que
+            la operadora confirmó relevante (2026-08-27); `device`, `ifIndex` e
+            `index` son internos del monitoreo y no se exponen en `fields`.
+          properties:
+            detected:
+              type: boolean
+            description:
+              type: string
+              nullable: true
         history:
           type: array
           items:
@@ -2301,8 +2329,9 @@ components:
         fields:
           type: array
           description: >
-            Resto de la ficha aplanada (device, ifIndex, index, drop…), sin
-            repetir lo que ya tiene campo propio.
+            Resto de la ficha aplanada, sin repetir lo que ya tiene campo propio
+            ni los campos internos del monitoreo (`device`, `ifIndex`, `index`),
+            que siguen disponibles en `raw`.
           items:
             $ref: '#/components/schemas/FlatField'
         raw:
@@ -2369,15 +2398,21 @@ components:
         minutos — sin nombrar las columnas; el backend les pone nombre según la
         métrica y el ámbito:
         `terminal/status` → `online` (1 = en línea, 0 = caído);
-        `network/status` → `terminalsOnline` (cuántos equipos del nodo están en
-        línea, **no** un 0/1);
+        `network/status` → `terminalsOnline` (cuántos equipos de la misma red de
+        acceso están en línea, **no** un 0/1; la operadora no publica el total de
+        la red, así que no se puede derivar un porcentaje);
         `snr` → `snr` o `snrDown`/`snrUp` según cuántas columnas traiga;
         `codewords` → `errors` o `corrected`/`uncorrected`.
         Las métricas DOCSIS llegan además desglosadas por canal upstream: la
         respuesta es un array de canales, cada uno con su `data` — ver
         `channels`.
+        La ventana es siempre de 24 horas contadas desde el instante de la
+        consulta; la cantidad de muestras varía según el equipo (se observaron
+        entre 122 y 292), así que los promedios deben ponderarse por tiempo, no
+        por muestra.
         Las series de SNR y codewords son DOCSIS: en equipos GPON la operadora
-        responde 204 y `points` viene vacío.
+        responde 204, por lo que `/diagnostics` directamente no las consulta
+        (ver `skipped`).
         Si el formato no se reconoce, `recognized` es false y el consumidor
         puede caer a `raw`.
       properties:
@@ -2432,7 +2467,9 @@ components:
 
     TerminalDiagnostics:
       type: object
-      description: Ficha del equipo más las seis series de 24 horas (campos 9-12).
+      description: >
+        Ficha del equipo más las series de 24 horas que apliquen (campos 9-12).
+        No siempre son seis: ver `skipped`.
       properties:
         id:
           type: string
@@ -2455,6 +2492,32 @@ components:
                 example: network/snr
               message:
                 type: string
+        skipped:
+          type: array
+          description: >
+            Endpoints que deliberadamente NO se consultaron, y por qué. La
+            operadora pidió no consultar datos "sin definir cuándo hacen falta"
+            y no existe ambiente de pruebas: en GPON las cuatro series DOCSIS
+            (SNR y codewords, terminal y red) no se piden, y si el identificador
+            no existe no se pide ninguna serie.
+          items:
+            type: object
+            properties:
+              endpoint:
+                type: string
+                example: terminal/snr
+              reason:
+                type: string
+        window:
+          type: object
+          description: Ventana que cubren las series, siempre 24 h hacia atrás desde `until`.
+          properties:
+            hours:
+              type: integer
+              enum: [24]
+            until:
+              type: string
+              format: date-time
         fetchedAt:
           type: string
           format: date-time

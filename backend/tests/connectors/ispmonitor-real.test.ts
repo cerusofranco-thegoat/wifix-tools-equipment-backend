@@ -8,6 +8,7 @@ import {
   ispMonitorMock,
   valueNamesFor,
   mapHistoryEntry,
+  planSeriesFetches,
 } from '../../src/connectors/ispmonitor/index.js';
 
 const TERMINAL_PAYLOAD = {
@@ -185,11 +186,25 @@ describe('Ficha del terminal con la respuesta real', () => {
     expect(snapshot.city).toBeTypeOf('string');
     expect(snapshot.networkIds.length).toBeGreaterThan(0);
     expect(snapshot.history.length).toBeGreaterThan(0);
-    // `networks` es el id del nodo, no un estado: no debe colarse como campo.
+    // `networks` es el id de la red de acceso, no un estado: no debe colarse.
     expect(snapshot.fields.map((f) => f.key)).not.toContain('networks');
     // Los campos ya representados aparte tampoco se repiten.
     expect(snapshot.fields.map((f) => f.key)).not.toContain('status');
-    expect(snapshot.fields.map((f) => f.key)).toContain('device');
+  });
+
+  // La operadora confirmó (2026-08-27) que de la ficha "solo `drop` es
+  // relevante": informa si el monitoreo detectó una caída de red.
+  it('expone `drop` aparte y esconde los campos internos del monitoreo', async () => {
+    const snapshot = await ispMonitorMock.getTerminal('ZTEGD3F9BBE5');
+    expect(snapshot.drop).toHaveProperty('detected');
+    expect(snapshot.drop.detected).toBe(snapshot.drop.description !== null);
+
+    const keys = snapshot.fields.map((f) => f.key.toLowerCase());
+    for (const internal of ['device', 'ifindex', 'index', 'drop']) {
+      expect(keys).not.toContain(internal);
+    }
+    // Siguen disponibles en `raw` para depurar.
+    expect(snapshot.raw).toHaveProperty('device');
   });
 
   it('una MAC de 12 hex se detecta como HFC', async () => {
@@ -203,5 +218,53 @@ describe('Ficha del terminal con la respuesta real', () => {
     expect(typeof ispMonitorReal.getSeries).toBe('function');
     expect(typeof ispMonitorReal.getDiagnostics).toBe('function');
     expect(typeof ispMonitorReal.getNetworkMetrics).toBe('function');
+  });
+});
+
+// La operadora pidió no consultar de más y no hay ambiente de pruebas: cada
+// llamada golpea producción. El panel solo pide lo que aplica al equipo.
+describe('planSeriesFetches — qué series se consultan', () => {
+  const label = (r: { scope: string; metric: string }): string => `${r.scope}/${r.metric}`;
+
+  it('en GPON no pide DOCSIS: 2 series en vez de 6', () => {
+    const plan = planSeriesFetches('GPON');
+    expect(plan.fetch.map(label)).toEqual(['terminal/status', 'network/status']);
+    expect(plan.skipped.map((s) => s.endpoint).sort()).toEqual([
+      'network/codewords',
+      'network/snr',
+      'terminal/codewords',
+      'terminal/snr',
+    ]);
+    expect(plan.skipped.every((s) => s.reason.includes('DOCSIS'))).toBe(true);
+  });
+
+  it('en HFC pide las seis series', () => {
+    const plan = planSeriesFetches('HFC');
+    expect(plan.fetch).toHaveLength(6);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it('sin tecnología determinada no descarta DOCSIS', () => {
+    expect(planSeriesFetches(null).fetch).toHaveLength(6);
+  });
+});
+
+describe('getDiagnostics (mock) — plan y ventana', () => {
+  it('un equipo GPON informa las series que no se consultaron', async () => {
+    const data = await ispMonitorMock.getDiagnostics('ZTEGD3F9BBE5');
+    expect(data.terminal.technology).toBe('GPON');
+    expect(data.status.terminal).not.toBeNull();
+    expect(data.snr.terminal).toBeNull();
+    expect(data.codewords.network).toBeNull();
+    expect(data.skipped).toHaveLength(4);
+    expect(data.window).toEqual({ hours: 24, until: data.fetchedAt });
+  });
+
+  it('un cablemódem HFC sí trae las series DOCSIS', async () => {
+    const data = await ispMonitorMock.getDiagnostics('B40421E15ADC');
+    expect(data.terminal.technology).toBe('HFC');
+    expect(data.snr.terminal).not.toBeNull();
+    expect(data.codewords.terminal).not.toBeNull();
+    expect(data.skipped).toEqual([]);
   });
 });

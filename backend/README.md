@@ -109,7 +109,13 @@ permite tener TEC e ISP Monitor en real y el resto en mock.
 
 - `digest.ts` — autenticación HTTP Digest (RFC 2617, `qop="auth"`). El
   challenge se cachea por origen, así que solo la primera petición paga la
-  vuelta extra del 401; si el servidor rota el nonce se renegocia solo.
+  vuelta extra del 401. La operadora confirmó que **el nonce cambia día a
+  día**, no por petición: cuando rota, el 401 ya trae el challenge nuevo y se
+  re-firma con él sin gastar otra vuelta. Si varias peticiones arrancan en
+  frío a la vez, comparten una sola negociación.
+- `throttle.ts` — dedupe de peticiones idénticas en vuelo, cache con TTL corto
+  (`TEC_API_CACHE_TTL_MS`, 60 s por defecto) y semáforo de concurrencia
+  (`TEC_API_MAX_CONCURRENCY`, 4). Ver *Cuidado del upstream*.
 - `tec-api.ts` — un método por endpoint, más `normalizeTerminalId()`
   (normaliza MAC con separadores a hex plano: IIS rechaza los `:` en la ruta).
   Un 204/404 del upstream se traduce a `null` — es la respuesta normal para
@@ -149,7 +155,7 @@ Las series de 24 h son **tuplas `[[epochSegundos, valor], …]`**, 288 muestras
 | Endpoint | Clave | Significado |
 |----------|-------|-------------|
 | `status/{id}` | `online` | 1 en línea, 0 caído |
-| `network/online/{id}` | `terminalsOnline` | cuántos equipos del nodo están en línea — **no** es un 0/1 |
+| `network/online/{id}` | `terminalsOnline` | cuántos equipos de la misma red de acceso están en línea — **no** es un 0/1 |
 | `*/snr/{id}` | `snr` o `snrDown`/`snrUp` | según cuántas columnas traiga |
 | `*/codewords/{id}` | `errors` o `corrected`/`uncorrected` | ídem |
 
@@ -175,8 +181,49 @@ Códigos de respuesta del upstream:
   aprovisionar). Se traduce a `found: false`, no a error.
 
 SNR y codewords son métricas **DOCSIS**: en equipos GPON la operadora responde
-204 y la serie viene vacía. Un ONT de fibra tampoco se encuentra por su MAC
-(verificado): para fibra va el GPON SN, la MAC es para cablemódems HFC.
+204 y la serie viene vacía, así que `/diagnostics` directamente no las
+consulta. Un ONT de fibra tampoco se encuentra por su MAC (verificado): para
+fibra va el GPON SN, la MAC es para cablemódems HFC.
+
+### Respuestas de la operadora (2026-08-27)
+
+Contestaron las siete dudas abiertas. Lo que cambia en el código:
+
+| Pregunta | Respuesta | Efecto |
+|----------|-----------|--------|
+| ¿El nonce del Digest es fijo? | **Cambia día a día.** | El cache de challenge se mantiene; al rotar, se adopta el challenge del propio 401 sin renegociar aparte. |
+| ¿Hay tope de peticiones? | **No hay límite, pero "el sistema no tiene recursos infinitos": no consultar todos los datos sin definir cuándo hacen falta".** | Dedupe + cache corto + semáforo, y `/diagnostics` pide solo lo que aplica. |
+| ¿Qué son `drop`, `device`, `ifIndex`, `index`? | **Solo `drop` es relevante:** informa si el monitoreo detectó una caída de red. | `drop` pasa a campo propio del snapshot; los otros tres salen de `fields` (siguen en `raw`). |
+| `network/online` devolvió 18 / 12: ¿son equipos del nodo? ¿Cómo saco el %? | **No existe el concepto de nodo.** Los datos salen de tarjetas de CMTS (HFC — un ramal, un nodo o una combinación) o de puertos de OLT (GPON — un hilo de fibra). | Se habla de **red de acceso**, no de nodo, y se muestra la **cantidad** de equipos en línea: sin el total de la red, un porcentaje no se puede calcular. |
+| ¿La ventana de las series es siempre 24 h? | **Sí, las últimas 24 h al momento de la consulta.** | `TerminalDiagnostics.window`; el % de disponibilidad se pondera por tiempo, porque la cantidad de muestras varía (122–292). |
+| ¿Decos, decos HD y MTA usan los mismos endpoints? | **No disponen de esa información.** | La guía de la app deja de prometerlo; se puede probar, pero "sin datos" no es un bug. |
+| ¿Hay ambiente de pruebas? | **Sistema en producción.** | No se corren pruebas de carga ni se automatiza nada contra la API real. |
+
+**Pendiente con la operadora:** identificadores de equipos (aunque sean de
+cuentas de prueba) con evento activo en la red, con caídas en las últimas
+24 h, y un cablemódem con FEC sin corregir > 0, para validar los casos de
+alerta de la app.
+
+### Cuidado del upstream
+
+No hay ambiente de pruebas: **toda consulta golpea producción**. Tres piezas
+sostienen el pedido de la operadora de no consultar de más:
+
+1. **Consultar solo lo que aplica.** `/terminals/{id}/diagnostics` pide primero
+   la ficha y, según la tecnología que devuelva, las series: en GPON las cuatro
+   series DOCSIS no se piden (3 llamadas upstream en vez de 7) y con un id que
+   la operadora no conoce no se pide ninguna (1 en vez de 7). Lo omitido viaja
+   en `skipped`, con el motivo, para que la app lo explique en pantalla.
+2. **Dedupe y cache corto** (`throttle.ts`): dos consultas simultáneas del mismo
+   equipo son una sola petición, y repetir la consulta dentro de
+   `TEC_API_CACHE_TTL_MS` (60 s) no vuelve a salir a la red. Las series se
+   refrescan cada 5 minutos: repetir antes devuelve lo mismo. Los errores no se
+   cachean.
+3. **Semáforo de concurrencia** (`TEC_API_MAX_CONCURRENCY`, 4): con varios
+   técnicos en campo, las peticiones hacen cola en vez de salir en ráfaga.
+
+`scripts/probe-tec-api.ts` es manual y de a un equipo: no lo pongas en un
+bucle ni en CI.
 
 Para sondear la API a mano:
 
@@ -314,6 +361,8 @@ el proceso aborta con un mensaje claro. Las relevantes:
 - `TEC_API_BASE_URL`, `TEC_API_USERNAME`, `TEC_API_PASSWORD`,
   `TEC_API_TIMEOUT_MS` — API de operadora (Digest). Obligatorias si alguno
   de esos dos conectores está en `real`; el arranque aborta si faltan.
+- `TEC_API_MAX_CONCURRENCY` (4), `TEC_API_CACHE_TTL_MS` (60000) — cuidado del
+  upstream: peticiones simultáneas máximas y vigencia del cache de respuestas.
 - `DATABASE_URL` — Postgres (puerto 5433 con el `docker-compose.yml` actual).
 - `STORAGE_*` — MinIO/S3.
 

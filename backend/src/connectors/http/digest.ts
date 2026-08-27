@@ -5,10 +5,15 @@
 // Digest: la primera petición responde 401 con la cabecera `WWW-Authenticate`
 // y hay que repetirla firmando la respuesta con MD5.
 //
-// El challenge se cachea por origen: el servidor usa un nonce estático, así que
-// tras la primera llamada las siguientes van firmadas de entrada (una sola
-// vuelta). Si el servidor rota el nonce y devuelve 401, se descarta el cache y
-// se reintenta una vez.
+// El challenge se cachea por origen: la operadora confirmó (2026-08-27) que el
+// nonce cambia día a día, no en cada petición, así que tras la primera llamada
+// las siguientes van firmadas de entrada (una sola vuelta). Cuando el nonce
+// rota, el propio 401 trae el challenge nuevo en `WWW-Authenticate`: se adopta
+// y se re-firma sin gastar una vuelta extra de negociación.
+//
+// La negociación en frío se comparte por origen: si varias peticiones arrancan
+// a la vez, solo una pide el challenge y las demás esperan su resultado, en vez
+// de disparar N 401 contra un sistema en producción.
 // ---------------------------------------------------------------------------
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -30,6 +35,9 @@ interface Challenge {
 
 /** Cache de challenges por origen (`https://host:port`). */
 const challengeCache = new Map<string, Challenge>();
+
+/** Negociación en curso por origen, para no pedir el challenge N veces. */
+const pendingNegotiations = new Map<string, Promise<Challenge | null>>();
 
 function md5(input: string): string {
   return createHash('md5').update(input, 'utf8').digest('hex');
@@ -138,31 +146,65 @@ export async function digestFetch(
     return buildDigestHeader(creds, challenge, method, requestUri, randomBytes(8).toString('hex'));
   }
 
+  /** Adopta el challenge que viene en un 401 y lo deja cacheado. */
+  function adopt(res: Response): Challenge | null {
+    const header = res.headers.get('www-authenticate');
+    const advertised = header ? parseDigestChallenge(header) : null;
+    if (!advertised) return null;
+    const fresh: Challenge = { ...advertised, nc: 0 };
+    challengeCache.set(origin, fresh);
+    return fresh;
+  }
+
   // 1) Si ya conocemos el challenge de este origen, firmamos de entrada.
   const cached = challengeCache.get(origin);
   if (cached) {
     const res = await send(signWith(cached));
     if (res.status !== 401) return res;
-    // Nonce caducado o rotado: descartamos el cache y renegociamos.
-    challengeCache.delete(origin);
+    // Nonce rotado (cambia a diario): el 401 ya trae el challenge nuevo.
+    if (challengeCache.get(origin) === cached) challengeCache.delete(origin);
+    const renewed = adopt(res);
+    if (!renewed) return res; // 401 real (credenciales), que lo maneje el llamador.
+    return send(signWith(renewed));
   }
 
-  // 2) Negociación: petición sin credenciales para obtener el challenge.
-  const unauth = cached ? await send() : await send();
-  if (unauth.status !== 401) return unauth;
-
-  const header = unauth.headers.get('www-authenticate');
-  const parsedChallenge = header ? parseDigestChallenge(header) : null;
-  if (!parsedChallenge) {
-    return unauth; // No es Digest (o el servidor no envió challenge): que decida el llamador.
+  // 2) Si otra petición ya está negociando este origen, esperamos su challenge
+  //    en vez de mandar otro 401.
+  const inFlight = pendingNegotiations.get(origin);
+  if (inFlight) {
+    const shared = await inFlight;
+    if (shared) return send(signWith(shared));
   }
-  const challenge: Challenge = { ...parsedChallenge, nc: 0 };
-  challengeCache.set(origin, challenge);
 
-  return send(signWith(challenge));
+  // 3) Negociación: petición sin credenciales para obtener el challenge.
+  let settle: (challenge: Challenge | null) => void = () => {};
+  const negotiation = new Promise<Challenge | null>((resolve) => {
+    settle = resolve;
+  });
+  pendingNegotiations.set(origin, negotiation);
+
+  try {
+    const unauth = await send();
+    if (unauth.status !== 401) {
+      settle(null);
+      return unauth;
+    }
+    const challenge = adopt(unauth);
+    settle(challenge);
+    if (!challenge) {
+      return unauth; // No es Digest (o el servidor no envió challenge).
+    }
+    return send(signWith(challenge));
+  } catch (err) {
+    settle(null);
+    throw err;
+  } finally {
+    pendingNegotiations.delete(origin);
+  }
 }
 
 /** Vacía el cache de challenges (útil en pruebas). */
 export function resetDigestCache(): void {
   challengeCache.clear();
+  pendingNegotiations.clear();
 }

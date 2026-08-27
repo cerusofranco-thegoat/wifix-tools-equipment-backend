@@ -27,6 +27,10 @@ const envSchema = z.object({
   TEC_API_USERNAME: z.string().default(''),
   TEC_API_PASSWORD: z.string().default(''),
   TEC_API_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  // La operadora no impone un tope de peticiones, pero pidió no abusar y todo
+  // va contra producción: se limita la concurrencia y se cachea corto.
+  TEC_API_MAX_CONCURRENCY: z.coerce.number().int().positive().max(32).default(4),
+  TEC_API_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
   // --- Almacenamiento ---
   STORAGE_ENDPOINT: z.string().url().default('http://localhost:9000'),
   STORAGE_REGION: z.string().default('us-east-1'),

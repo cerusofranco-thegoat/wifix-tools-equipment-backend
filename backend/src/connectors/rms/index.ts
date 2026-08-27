@@ -1,4 +1,11 @@
-// Conector hacia RMS — campo 14 (eventos/daños del nodo).
+// Conector hacia RMS — campo 14 (eventos/daños de la red de acceso).
+//
+// El tipo, el endpoint y el método conservan el nombre `NodeEvent` /
+// `node-events` / `getNodeEvents`: es el contrato ya publicado en el OpenAPI y
+// el término del Excel original. Lo que cambia es el texto que lee el técnico:
+// la operadora aclaró (2026-08-27) que "nodo" no es un concepto de su red — los
+// datos salen de tarjetas de CMTS o de puertos de OLT. RMS sigue en mock, así
+// que cuando haya credenciales habrá que confirmar qué agrupa realmente.
 
 import { env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
@@ -22,7 +29,7 @@ const EVENT_TYPES = [
   'Fluctuación de voltaje',
   'Pérdida de fibra',
   'Corte programado',
-  'Mantenimiento de nodo',
+  'Mantenimiento de red',
   'Daño físico',
   'Pico de tráfico',
 ];
@@ -32,7 +39,7 @@ const DESCRIPTIONS = [
   'Se detectó atenuación en troncal — cuadrilla en sitio.',
   'Corte por trabajo planificado de la empresa eléctrica.',
   'Reemplazo de splitter y limpieza de conectores.',
-  'Reset general del nodo y validación post-mantenimiento.',
+  'Reset general de la red y validación post-mantenimiento.',
   'Equipo fuera de servicio — diagnóstico en curso.',
 ];
 

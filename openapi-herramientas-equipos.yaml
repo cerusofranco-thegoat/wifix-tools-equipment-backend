@@ -1065,10 +1065,17 @@ paths:
   /accounts/{accountNumber}/node-events:
     get:
       tags: [Diagnóstico de Red]
-      summary: Daños (eventos) en el nodo
+      summary: Daños (eventos) en la red de acceso
       description: >
-        Eventos o daños del nodo que da servicio a la cuenta (campo 14).
-        Origen real: RMS.
+        Eventos o daños de la red que da servicio a la cuenta (campo 14).
+        Origen real: RMS — todavía en mock.
+
+        La ruta, el `operationId` y el esquema conservan el término "node" del
+        Excel original y del contrato ya publicado. En pantalla se dice "red de
+        acceso": la operadora aclaró (2026-08-27) que "nodo" no es un concepto
+        de su red — sus datos salen de tarjetas de CMTS o de puertos de OLT.
+        Cuando haya credenciales de RMS habrá que confirmar qué agrupa
+        realmente este endpoint.
       operationId: getNodeEvents
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
@@ -2573,6 +2580,10 @@ components:
 
     NodeEvent:
       type: object
+      description: >
+        Evento o daño de la red de acceso que da servicio a la cuenta
+        (campo 14). El nombre del esquema conserva el término del contrato
+        publicado; ver la nota en `/accounts/{accountNumber}/node-events`.
       properties:
         type:
           type: string

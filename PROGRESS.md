@@ -317,9 +317,13 @@ el backend; el flag se concentra en `api.js`.
 | # | Tema | Estado |
 |---|------|--------|
 | 1 | Origen de `technicianId` | ✅ **Resuelto** — deriva de `user.id` del JWT en cada POST transaccional. |
-| 2 | Marcas reales de equipos (brand null en seed) | Pendiente — sigue esperando respuesta del socio. |
-| 3 | Servidores de speedtest/red reales | Pendiente — sembrados con ejemplos. |
-| 4 | Ejecución nativa de ping/traceroute/dBm | Pendiente — webapp sigue captando por ingreso manual; Capacitor o app nativa es decisión posterior. |
+| 2 | Marcas reales de equipos (brand null en seed) | Pendiente — **decisión de Franco** (ver nota). |
+| 3 | Servidores de speedtest/red reales | Pendiente — sembrados con ejemplos; **decisión de Franco**. |
+| 4 | Ejecución nativa de ping/traceroute/dBm | ✅ **Resuelto** — webapp envuelta en Capacitor 6, con plugin nativo de ping/traceroute/WiFi. |
+
+> **Nota (2026-08-27):** los puntos 2 y 3 ya no esperan al socio externo, que
+> salió del desarrollo. Los define Franco cuando quiera cerrarlos; ninguno
+> bloquea al resto de la app.
 
 ## PARTE D — Wifix Certificate · APIs reales de operadora (2026-08-26)
 

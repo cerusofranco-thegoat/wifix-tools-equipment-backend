@@ -21,6 +21,7 @@ const envSchema = z.object({
   // reales, el resto (Comarch, FSM, ACS, RMS) sigue en mock.
   CONNECTOR_MODE_TEC: z.enum(['mock', 'real']).optional(),
   CONNECTOR_MODE_ISPMONITOR: z.enum(['mock', 'real']).optional(),
+  CONNECTOR_MODE_FSM: z.enum(['mock', 'real']).optional(),
   // --- API de TEC / ISP Monitor (Grupo TVCable) ---
   // Base de la API real de operadora. Autenticación HTTP Digest.
   TEC_API_BASE_URL: z.string().url().default('https://tec-api.grupotvcable.com'),
@@ -31,6 +32,62 @@ const envSchema = z.object({
   // va contra producción: se limita la concurrencia y se cachea corto.
   TEC_API_MAX_CONCURRENCY: z.coerce.number().int().positive().max(32).default(4),
   TEC_API_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
+  // --- FSM (fsm-data-ms, Grupo TVCable) ---
+  // Microservicio de órdenes, tareas, NAPs GPON y estado de cuenta.
+  // Autenticación Bearer por marca (realm de Keycloak). Ver connectors/http/fsm-token.ts.
+  FSM_API_BASE_URL: z
+    .string()
+    .url()
+    .default('https://apix.grupotvcable.com/rest/fsm-data-api/v1.0'),
+  FSM_API_CHANNEL: z.string().default('FSM'),
+  FSM_API_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  // Semáforo propio, separado del de TEC: son dos hosts distintos.
+  FSM_API_MAX_CONCURRENCY: z.coerce.number().int().positive().max(32).default(4),
+  FSM_API_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
+  // El estado de una cuenta no cambia minuto a minuto: cache más largo.
+  FSM_STATUS_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(300000),
+  // Tope de cuentas por lote en POST /accounts/status-batch.
+  FSM_STATUS_BATCH_LIMIT: z.coerce.number().int().positive().max(50).default(12),
+  // Órdenes finalizadas más recientes que se abren para leer sus notas (campo 15).
+  FSM_ORDERS_MAX_FANOUT: z.coerce.number().int().positive().max(10).default(5),
+  // Heurístico provisional para clasificar una tarea como INSATISFACTORIA.
+  FSM_UNSATISFACTORY_KEYWORDS: z
+    .string()
+    .default('insatisfactoria,no conforme,rechazada,reincidencia,reprogramada')
+    .transform((val) =>
+      val
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  // Marcas / realms. La marca por defecto se usa si la petición no manda X-Wifix-Brand.
+  FSM_BRANDS: z
+    .string()
+    .default('telenews,seteinfo')
+    .transform((val) =>
+      val
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.length > 0),
+    ),
+  FSM_DEFAULT_BRAND: z
+    .string()
+    .default('telenews')
+    .transform((val) => val.trim().toLowerCase()),
+  FSM_BRAND_STRATEGY: z.enum(['fixed', 'probe']).default('fixed'),
+  // Token estático (24 h, pegado a mano). Vacío = la marca no está disponible.
+  FSM_API_TOKEN_TELENEWS: z.string().default(''),
+  FSM_API_TOKEN_SETEINFO: z.string().default(''),
+  // Gancho client_credentials: si están los tres, tienen prioridad sobre el estático.
+  FSM_TOKEN_SKEW_MS: z.coerce.number().int().nonnegative().default(60000),
+  FSM_TOKEN_URL_TELENEWS: z.string().default(''),
+  FSM_CLIENT_ID_TELENEWS: z.string().default(''),
+  FSM_CLIENT_SECRET_TELENEWS: z.string().default(''),
+  FSM_TOKEN_URL_SETEINFO: z.string().default(''),
+  FSM_CLIENT_ID_SETEINFO: z.string().default(''),
+  FSM_CLIENT_SECRET_SETEINFO: z.string().default(''),
+  // Fuente primaria de NAPs para el campo 6 (ver ADR-04). Hoy: tec.
+  NAPS_PRIMARY_SOURCE: z.enum(['fsm', 'tec']).default('tec'),
   // --- Almacenamiento ---
   STORAGE_ENDPOINT: z.string().url().default('http://localhost:9000'),
   STORAGE_REGION: z.string().default('us-east-1'),
@@ -93,6 +150,31 @@ if (tecLikeIsReal) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// FSM: a diferencia de TEC, la falta de token NO aborta el arranque.
+// Las credenciales Digest de TEC son permanentes; el token FSM vence cada 24 h
+// y un backend que se niega a arrancar porque un token de un tercero caducó de
+// madrugada tumbaría también Herramientas y Equipos Retirados (Fase 1), que
+// viven en la BD propia y no dependen de FSM. Solo se avisa.
+// ---------------------------------------------------------------------------
+if ((parsed.data.CONNECTOR_MODE_FSM ?? parsed.data.CONNECTOR_MODE) === 'real') {
+  const sinAcceso = parsed.data.FSM_BRANDS.filter((brand) => {
+    const suffix = brand.toUpperCase();
+    const staticToken = process.env[`FSM_API_TOKEN_${suffix}`] ?? '';
+    const tokenUrl = process.env[`FSM_TOKEN_URL_${suffix}`] ?? '';
+    const clientId = process.env[`FSM_CLIENT_ID_${suffix}`] ?? '';
+    const clientSecret = process.env[`FSM_CLIENT_SECRET_${suffix}`] ?? '';
+    return !staticToken && !(tokenUrl && clientId && clientSecret);
+  });
+  if (sinAcceso.length > 0) {
+    console.warn(
+      `[CONFIG] CONNECTOR_MODE_FSM=real pero estas marcas no tienen acceso configurado: ` +
+        `${sinAcceso.join(', ')}. El servidor arranca igual: las rutas de FSM devolverán ` +
+        `503 UPSTREAM_AUTH_ERROR (reason MISSING) y el resto de la app funciona con normalidad.`,
+    );
+  }
+}
+
 if (parsed.data.NODE_ENV === 'production') {
   const insecure: string[] = [];
   for (const [key, defaultValue] of Object.entries(SECRET_DEFAULTS)) {
@@ -116,8 +198,12 @@ export const env = parsed.data;
 export type Env = typeof env;
 
 /** Modo efectivo de un conector: su override si existe, si no el global. */
-export function connectorMode(connector: 'tec' | 'ispmonitor'): 'mock' | 'real' {
+export function connectorMode(connector: 'tec' | 'ispmonitor' | 'fsm'): 'mock' | 'real' {
   const override =
-    connector === 'tec' ? env.CONNECTOR_MODE_TEC : env.CONNECTOR_MODE_ISPMONITOR;
+    connector === 'tec'
+      ? env.CONNECTOR_MODE_TEC
+      : connector === 'ispmonitor'
+        ? env.CONNECTOR_MODE_ISPMONITOR
+        : env.CONNECTOR_MODE_FSM;
   return override ?? env.CONNECTOR_MODE;
 }

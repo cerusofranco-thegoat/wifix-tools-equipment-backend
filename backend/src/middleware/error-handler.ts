@@ -8,6 +8,7 @@ export type ApiErrorCode =
   | 'CATALOG_ITEM_NOT_FOUND'
   | 'MEDIA_NOT_FOUND'
   | 'CONNECTOR_ERROR'
+  | 'UPSTREAM_AUTH_ERROR'
   | 'INTERNAL_ERROR';
 
 export interface ApiErrorDetail {
@@ -19,24 +20,49 @@ export interface ApiErrorBody {
   code: ApiErrorCode;
   message: string;
   details?: ApiErrorDetail[];
+  /** Contexto adicional legible por máquina (integración, marca, motivo…). */
+  meta?: Record<string, unknown>;
+}
+
+/** Por qué no se pudo autenticar contra la API de un tercero. */
+export type UpstreamAuthReason = 'MISSING' | 'EXPIRED' | 'REJECTED';
+
+export interface UpstreamAuthOptions {
+  brand: string;
+  reason: UpstreamAuthReason;
+  expiresAt?: Date | null;
+  /** Detalle de diagnóstico (nunca un secreto). */
+  detail?: string;
+}
+
+/** dd/MM/yyyy HH:mm en UTC, para los mensajes al técnico. */
+function formatExpiry(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return (
+    `${pad(date.getUTCDate())}/${pad(date.getUTCMonth() + 1)}/${date.getUTCFullYear()} ` +
+    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+  );
 }
 
 export class ApiError extends Error {
   public readonly code: ApiErrorCode;
   public readonly statusCode: number;
   public readonly details?: ApiErrorDetail[];
+  public readonly meta?: Record<string, unknown>;
 
   constructor(
     code: ApiErrorCode,
     statusCode: number,
     message: string,
     details?: ApiErrorDetail[],
+    meta?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.statusCode = statusCode;
     this.details = details;
+    this.meta = meta;
   }
 
   static validation(message: string, details?: ApiErrorDetail[]): ApiError {
@@ -62,6 +88,38 @@ export class ApiError extends Error {
   static connectorError(message = 'Error consultando un sistema externo.'): ApiError {
     return new ApiError('CONNECTOR_ERROR', 502, message);
   }
+
+  /**
+   * El token de una integración de terceros (hoy FSM) falta, venció o fue
+   * rechazado. Es **503, nunca 401**: la webapp borra la sesión del técnico
+   * ante cualquier 401 (`wifix-webapp/api.js`), y un token caducado de la
+   * operadora no puede sacar al técnico al login en medio de una visita.
+   */
+  static upstreamAuth(opts: UpstreamAuthOptions): ApiError {
+    const { brand, reason, expiresAt, detail } = opts;
+    const message =
+      reason === 'MISSING'
+        ? `El acceso a FSM (marca ${brand}) no está configurado en el servidor. ` +
+          `Los datos de la operadora no se pueden consultar; el resto de la app ` +
+          `funciona con normalidad.`
+        : reason === 'EXPIRED'
+          ? `El token de FSM (marca ${brand}) venció el ` +
+            `${expiresAt ? formatExpiry(expiresAt) : 'sin fecha conocida'}. ` +
+            `Pide la renovación al contacto de la operadora.`
+          : `FSM rechazó el token de la marca ${brand} (401). ` +
+            `Puede estar revocado o pertenecer a otro realm.`;
+
+    const meta: Record<string, unknown> = {
+      integration: 'FSM',
+      brand,
+      reason,
+      tokenExpiresAt: expiresAt ? expiresAt.toISOString() : null,
+      retryable: false,
+    };
+    if (detail) meta.detail = detail;
+
+    return new ApiError('UPSTREAM_AUTH_ERROR', 503, message, undefined, meta);
+  }
 }
 
 export function registerErrorHandler(app: FastifyInstance): void {
@@ -71,6 +129,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
         code: error.code,
         message: error.message,
         ...(error.details ? { details: error.details } : {}),
+        ...(error.meta ? { meta: error.meta } : {}),
       };
       return reply.code(error.statusCode).send(body);
     }

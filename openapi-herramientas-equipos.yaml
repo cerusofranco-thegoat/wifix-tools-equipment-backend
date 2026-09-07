@@ -65,9 +65,16 @@ tags:
   - name: Datos del Cliente
     description: Perfil, status y actualización de datos del cliente (campos 1-5, 7).
   - name: Diagnóstico de Red
-    description: NAPs, métricas de red, eventos del nodo y red local (campos 6, 8-14, 19-21).
+    description: >
+      NAPs, métricas de red, eventos de la red de acceso y red local
+      (campos 6, 8-14, 19-21).
   - name: Tareas y Visitas
-    description: Tareas insatisfactorias y visitas anteriores (campos 15-16).
+    description: >
+      Tareas insatisfactorias, visitas anteriores, órdenes y notas de cierre
+      (campos 15-16).
+  - name: Integraciones
+    description: >
+      Diagnóstico de la integración con FSM (`fsm-data-ms`) y consultas en lote.
 
 security:
   - bearerAuth: []
@@ -794,8 +801,15 @@ paths:
       summary: Perfil del cliente
       description: >
         Nombres, dirección, teléfonos, plan y velocidad contratada
-        (campos 1, 2, 3, 5). Origen real: Comarch/TYTAN e ISP Monitor.
+        (campos 1, 2, 3, 5). **Respuesta compuesta** (ADR-07): la identidad sale
+        de FSM `POST /account/process` (1 llamada upstream) y el plan/velocidad
+        siguen viniendo del mock de Comarch, porque `fsm-data-ms` no los expone.
+        El bloque `sources` dice, campo por campo, de dónde salió cada dato.
+        Lo editado con el PUT manda sobre FSM y se marca como `MOCK`.
       operationId: getClientProfile
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK
@@ -806,13 +820,25 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: >-
+            La cuenta no existe en FSM (`/account/process` devolvió una lista
+            de órdenes vacía).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
     put:
       tags: [Datos del Cliente]
       summary: Actualizar datos del cliente
       description: >
-        Módulo de actualización de datos (campo 4). Origen real:
-        Comarch/TYTAN.
+        Módulo de actualización de datos (campo 4). **No cambia con la
+        integración FSM**: `fsm-data-ms` es de solo lectura, así que la edición
+        se guarda en Comarch y el cambio NO viaja a la operadora. Devuelve el
+        mismo shape que el GET, con `sources` en `MOCK` para lo editado.
       operationId: updateClientProfile
       requestBody:
         required: true
@@ -839,11 +865,19 @@ paths:
       tags: [Datos del Cliente]
       summary: Status del cliente por contrato/cuenta
       description: >
-        Nombre del cliente y status de cada cuenta: activa, suspendida o
-        terminada (campo 7). Origen real: Comarch/TYTAN.
+        Nombre del cliente y status de la cuenta (campo 7). Origen: FSM
+        `POST /account/status` (código A/S/T/O/P) + `POST /account/process`
+        (nombre y última orden). **2 llamadas upstream**, ambas cacheadas
+        (status 5 min, process 60 s).
+
+
+        FSM no devuelve "otras cuentas del mismo contrato": `accounts` trae
+        exactamente un elemento hasta que exista ese endpoint.
       operationId: getContractStatus
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK
@@ -855,6 +889,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
 
   # ====================================================================
   # DIAGNÓSTICO DE RED (campos 6, 8-14, 19-21)
@@ -868,8 +906,19 @@ paths:
         NAPs cercanas con coordenada, distancia en metros y puertos
         ocupados/libres (campo 6). La consulta es por coordenada (GPS del
         técnico o de la tarea), no por número de cuenta, igual que la
-        pestaña "GPON" de FSM. Origen real: TEC
-        (`GET /api/tec/naps/{lat},{lng}`, autenticación Digest).
+        pestaña "GPON" de FSM. **1 llamada upstream.**
+
+
+        La fuente la decide `NAPS_PRIMARY_SOURCE` (ADR-04): FSM
+        `GET /naps/nearest` o TEC `GET /api/tec/naps/{lat},{lng}` (Digest).
+        Con FSM primario, si el token de la operadora falla se cae a TEC y se
+        responde 200 con `source:"TEC"` y el aviso en el header
+        `X-Wifix-Degraded`. Cualquier otro fallo de FSM se propaga como 502.
+
+
+        ⚠ La respuesta es un **array desnudo**: por eso el bloque `degraded`
+        viaja en el header `X-Wifix-Degraded` (JSON URL-encoded) y no en el
+        cuerpo.
       operationId: getNearbyNaps
       parameters:
         - name: lat
@@ -890,9 +939,37 @@ paths:
             format: double
             minimum: -180
             maximum: 180
+        - name: meters
+          in: query
+          required: false
+          description: Radio de búsqueda en metros. Se ignora si la fuente efectiva es TEC.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2000
+            default: 100
+        - name: maxRows
+          in: query
+          required: false
+          description: Cantidad máxima de NAPs. Se ignora si la fuente efectiva es TEC.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 5
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK. Lista ordenada por distancia ascendente (vacía si no hay NAPs en el sector).
+          headers:
+            X-Wifix-Degraded:
+              description: >
+                Presente solo si la respuesta se sirvió con una fuente
+                alternativa o incompleta. Contiene el JSON del bloque
+                `Degraded` URL-encoded. El cliente nunca debe asumir que existe.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -903,23 +980,52 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
 
-  /naps/{napCode}/ports:
+  /naps/{napRef}/ports:
     get:
       tags: [Diagnóstico de Red]
-      summary: Puertos ocupados por NAP
+      summary: Puertos ocupados por NAP (campo 8, paso 1)
       description: >
-        Clientes por puerto de la NAP, con su status A (activo) o S
-        (suspendido) (campo 8). El napCode se obtiene de la foto del
-        código de la NAP, decodificada en la app. Origen real: TEC.
+        Rejilla de puertos de la NAP con la cuenta y el equipo GPON de cada
+        puerto ocupado (campo 8). **1 sola llamada upstream**
+        (`GET /naps/accounts`): los estados A/S/T/O/P NO se consultan acá.
+        Cada puerto ocupado viene con `clientStatus: null` y
+        `statusPending: true`; el técnico los resuelve después, de forma
+        explícita, con `POST /accounts/status-batch` (ADR-05).
+
+
+        **Ruteo del path param**: si `napRef` es numérico (`/^\d+$/`) se toma
+        como `napId` de FSM; cualquier otro valor se toma como código de NAP y
+        va por el camino TEC heredado, que sigue devolviendo
+        `detailAvailable:false`. El frontend envía `nap.napId ?? nap.napCode`.
       operationId: getNapPorts
       parameters:
-        - name: napCode
+        - name: napRef
           in: path
           required: true
-          description: Código de la NAP.
+          description: >
+            Id numérico de la NAP en FSM, o código de NAP (camino TEC).
           schema:
             type: string
+            example: '11547'
+        - name: withStatus
+          in: query
+          required: false
+          description: >
+            Resuelve además hasta `batchLimit` estados en la misma llamada.
+            Existe SOLO para `probe-fsm-api.ts` y soporte: **la webapp tiene
+            prohibido enviarlo**, porque dispara hasta 12 consultas extra a
+            producción por cada tap.
+          schema:
+            type: string
+            enum: ['0', '1']
+            default: '0'
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK
@@ -927,10 +1033,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NapPorts'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
 
   /terminals/{id}:
     get:
@@ -1189,44 +1301,243 @@ paths:
       tags: [Tareas y Visitas]
       summary: Observaciones de cierre de tareas insatisfactorias
       description: >
-        Tareas insatisfactorias previas con fecha/hora, motivo y
-        observación de cierre (campo 15). Origen real: FSM.
+        Tareas insatisfactorias previas con fecha/hora, motivo y observación de
+        cierre (campo 15). Origen: FSM `POST /account/process` +
+        `POST /workorder/tasks` sobre como mucho `limit` órdenes **finalizadas
+        más recientes**. **1 + ≤5 llamadas upstream**, concurrencia 4.
+
+
+        ⚠ Cambio de forma: antes era un array desnudo, ahora es un objeto con
+        `items`, `scanned`, `totalOrders` y `truncated`, para que la UI pueda
+        decir "se revisaron las 5 órdenes más recientes de 12" en vez de mentir
+        por omisión.
+
+
+        `result` es un **valor inferido** por `classifyTaskResult()`, no un dato
+        de la operadora: la documentación de FSM no enumera los valores de
+        `status` ni expone un campo satisfactoria/insatisfactoria.
       operationId: getUnsatisfactoryTasks
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
+        - name: limit
+          in: query
+          required: false
+          description: Órdenes finalizadas más recientes cuyas notas se leen.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ClosedTask'
+                $ref: '#/components/schemas/UnsatisfactoryTasks'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
 
   /accounts/{accountNumber}/previous-visits:
     get:
       tags: [Tareas y Visitas]
       summary: Motivos y observaciones de visitas anteriores
       description: >
-        Visitas anteriores con fecha/hora, motivo y observación de cierre
-        (campo 16). Origen real: FSM.
+        Visitas anteriores con fecha/hora y motivo (campo 16). Origen: FSM
+        `POST /account/process` con `estado:"Todas"`. **1 sola llamada
+        upstream, sin notas**: `closingNotes` viene vacío y `notesLoaded` en
+        `false`. Las notas se piden por visita con
+        `GET /workorders/tasks?workOrder=` al expandirla (ADR-06).
+
+
+        ⚠ Cambio de forma: antes era un array desnudo, ahora es un objeto con
+        `items` y `totalOrders`.
       operationId: getPreviousVisits
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
+      responses:
+        '200':
+          description: >-
+            OK. Una cuenta sin órdenes devuelve la lista `items` vacía.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviousVisits'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
+
+  /accounts/{accountNumber}/orders:
+    get:
+      tags: [Tareas y Visitas]
+      summary: Órdenes de trabajo de la cuenta
+      description: >
+        Órdenes crudas normalizadas de FSM `POST /account/process`
+        (base de los campos 1-3, 15 y 16; también sirve de diagnóstico).
+        **1 llamada upstream.** No devuelve 404: una cuenta sin órdenes es un
+        `orders: []` legítimo.
+      operationId: getAccountOrders
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+        - name: estado
+          in: query
+          required: false
+          description: >
+            `Todas`: finalizadas y no finalizadas. `Pendientes`: solo las que
+            aún no finalizan (`finish_date is null`).
+          schema:
+            type: string
+            enum: [Todas, Pendientes]
+            default: Todas
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ClosedTask'
+                $ref: '#/components/schemas/AccountOrders'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
+
+  /workorders/tasks:
+    get:
+      tags: [Tareas y Visitas]
+      summary: Tareas y notas de una orden de trabajo
+      description: >
+        Notas de cierre de una orden concreta (campos 15 y 16), desde FSM
+        `POST /workorder/tasks`. **1 llamada upstream**, disparada al expandir
+        una visita.
+
+
+        ⚠ `workOrder` va por **query, no por path**: el valor es
+        `ORDER/424900/2026` y las barras rompen el ruteo aunque se codifiquen
+        como `%2F` (Fastify y varios proxies las normalizan).
+      operationId: getWorkOrderTasks
+      parameters:
+        - name: workOrder
+          in: query
+          required: true
+          description: Número de orden, tal cual lo devuelve `/account/process`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 120
+            example: ORDER/424900/2026
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderTasks'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
+
+  # ====================================================================
+  # INTEGRACIONES (FSM)
+  # ====================================================================
+
+  /integrations/fsm/health:
+    get:
+      tags: [Integraciones]
+      summary: Estado de la integración con FSM
+      description: >
+        Qué marcas tienen acceso configurado, de qué tipo, cuándo vence su token
+        y cuánto le queda. **CERO llamadas a la operadora**: el estado se calcula
+        decodificando el `exp` del JWT. Es lo que permite a la UI pintar el
+        banner correcto sin gastar una consulta a producción.
+
+
+        Nunca falla con 5xx por culpa de FSM: si no hay nada configurado,
+        responde 200 con todas las marcas en `available:false`.
+        El header `X-Wifix-Brand` se ignora: informa de todas las marcas.
+      operationId: getFsmHealth
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FsmHealth'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/status-batch:
+    post:
+      tags: [Integraciones]
+      summary: Estado de varias cuentas en lote (campo 8, paso 2)
+      description: >
+        Resuelve el estado A/S/T/O/P de hasta `FSM_STATUS_BATCH_LIMIT` (12)
+        cuentas: es el paso 2 del campo 8, el que llena los `clientStatus` de
+        `GET /naps/{napRef}/ports`. Internamente hace una llamada a
+        `POST /account/status` por cuenta única, con concurrencia 4 y cache de
+        5 minutos.
+
+
+        **Se dispara SOLO por acción explícita del técnico** ("Consultar estado
+        de N clientes"), nunca de forma automática ni en segundo plano: cada
+        consulta golpea producción (ADR-05).
+
+
+        Un fallo aislado no tumba el lote: esa cuenta vuelve con `status: null`
+        y su `error`. Un fallo de token sí es global (503).
+      operationId: postAccountsStatusBatch
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusBatchRequest'
+      responses:
+        '200':
+          description: OK. Siempre 200 si la petición fue válida, aunque algunas cuentas fallen.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
 
 # ======================================================================
 # COMPONENTES
@@ -1271,6 +1582,29 @@ components:
       schema:
         type: string
         example: ZTEGC1234567
+    BrandHeader:
+      name: X-Wifix-Brand
+      in: header
+      required: false
+      description: >
+        Marca comercial (realm de FSM) con la que se consulta la operadora.
+        Si falta, el backend usa `FSM_DEFAULT_BRAND`. Internamente nunca se
+        habla de "realm": los nombres `realm-ecommerce-callcenter-*` quedan
+        encerrados en el backend y el técnico no los ve (ADR-01).
+      schema:
+        type: string
+        enum: [telenews, seteinfo]
+        example: telenews
+    BrandQuery:
+      name: brand
+      in: query
+      required: false
+      description: >
+        Override de `X-Wifix-Brand` por query. Pensado para el script de sondeo
+        y soporte; la webapp usa el header.
+      schema:
+        type: string
+        enum: [telenews, seteinfo]
     AccountNumberFilter:
       name: accountNumber
       in: query
@@ -1355,6 +1689,31 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    ConnectorError:
+      description: >
+        Un sistema externo falló (5xx, timeout o JSON inválido). No es un
+        problema de credenciales.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UpstreamAuthUnavailable:
+      description: >
+        El acceso a FSM no está disponible: token ausente, vencido o rechazado.
+
+
+        **Es 503 a propósito, nunca 401.** La webapp cierra la sesión del
+        técnico ante cualquier 401 (`api.js`), y un token caducado de un tercero
+        no puede sacarlo al login en medio de una visita ni tumbarle Herramientas
+        y Equipos Retirados, que no dependen de FSM.
+
+
+        El cliente debe pintar un banner no bloqueante en el panel afectado y
+        **no** cerrar sesión, no limpiar el token de Wifix y no recargar la app.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UpstreamAuthError'
 
   # --------------------------------------------------------------------
   # ESQUEMAS
@@ -1385,6 +1744,67 @@ components:
                 type: string
               issue:
                 type: string
+        meta:
+          type: object
+          additionalProperties: true
+          description: >
+            Contexto adicional legible por máquina (integración, marca, motivo).
+            Opcional y aditivo: el cliente nunca debe asumir que existe.
+
+    UpstreamAuthError:
+      type: object
+      description: >
+        Error de autenticación contra una API de terceros (hoy FSM). Siempre
+        HTTP 503.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [UPSTREAM_AUTH_ERROR]
+        message:
+          type: string
+          description: Texto en español, listo para mostrar al técnico.
+          example: >-
+            El token de FSM (marca telenews) venció el 05/09/2026 21:59. Pide la
+            renovación al contacto de la operadora.
+        meta:
+          type: object
+          properties:
+            integration:
+              type: string
+              example: FSM
+            brand:
+              type: string
+              enum: [telenews, seteinfo]
+            reason:
+              type: string
+              enum: [MISSING, EXPIRED, REJECTED]
+              description: >
+                `MISSING`: no hay acceso configurado en el servidor.
+                `EXPIRED`: el token venció (detectado SIN salir a la red).
+                `REJECTED`: la operadora lo rechazó (revocado o de otro realm).
+            tokenExpiresAt:
+              type: string
+              format: date-time
+              nullable: true
+            retryable:
+              type: boolean
+              example: false
+
+    Degraded:
+      type: object
+      description: >
+        Aviso de que una respuesta 200 se sirvió con una fuente alternativa o
+        incompleta. **No es un error.** Ausente cuando todo salió bien; el
+        cliente nunca debe asumir que existe.
+      required: [reason, message]
+      properties:
+        reason:
+          type: string
+          enum: [FSM_AUTH, FSM_UNAVAILABLE, SOURCE_FALLBACK, TRUNCATED]
+        message:
+          type: string
+          description: Texto en español, listo para mostrar.
 
     PageInfo:
       type: object
@@ -2120,6 +2540,42 @@ components:
           type: number
           format: double
           description: Velocidad de subida contratada (campo 5).
+        email:
+          type: string
+          nullable: true
+          description: Correo del cliente según FSM. Puede ser null.
+        latitude:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            Coordenada del domicilio según la orden más reciente. Es la entrada
+            del campo 6: evita que el técnico tenga que capturar GPS cuando la
+            orden ya trae la coordenada.
+        longitude:
+          type: number
+          format: double
+          nullable: true
+        sources:
+          type: object
+          description: >
+            De dónde salió cada campo. `FSM` = dato real de la operadora,
+            `MOCK` = simulado (o editado a mano con el PUT), `COMARCH` = TYTAN.
+            La UI marca visualmente lo que no es `FSM`. Aditivo: quien lo ignore
+            sigue funcionando.
+          additionalProperties:
+            type: string
+            enum: [FSM, MOCK, COMARCH]
+          example:
+            fullName: FSM
+            address: FSM
+            phones: FSM
+            email: FSM
+            latitude: FSM
+            longitude: FSM
+            planName: MOCK
+            contractedDownloadMbps: MOCK
+            contractedUploadMbps: MOCK
 
     ClientProfileUpdate:
       type: object
@@ -2136,13 +2592,28 @@ components:
 
     AccountStatus:
       type: string
-      enum: [ACTIVA, SUSPENDIDA, TERMINADA]
+      description: >
+        Estado de la cuenta en el modelo interno. FSM publica cinco códigos
+        (A/S/T/O/P); todo lo demás cae en DESCONOCIDA.
+      enum: [ACTIVA, SUSPENDIDA, TERMINADA, ORDENADA, PENDIENTE, DESCONOCIDA]
+
+    AccountStatusCode:
+      type: string
+      nullable: true
+      description: >
+        Código crudo de la operadora: A (activo), S (suspendido), T (terminado),
+        O (ordenado), P (pendiente). `null` si no vino o no se reconoció.
+      enum: [A, S, T, O, P, null]
 
     ContractStatus:
       type: object
+      description: >
+        FSM no devuelve "otras cuentas del mismo contrato": `accounts` trae
+        exactamente un elemento hasta que exista ese endpoint.
       properties:
         clientName:
           type: string
+          description: Nombre del cliente según la orden más reciente. `""` si FSM no lo trajo.
         accounts:
           type: array
           items:
@@ -2152,18 +2623,52 @@ components:
                 type: string
               contractId:
                 type: string
+                nullable: true
+                description: >
+                  ⚠ Ahora puede ser `null`: FSM no expone contrato, solo órdenes
+                  de trabajo.
               status:
                 $ref: '#/components/schemas/AccountStatus'
+              statusCode:
+                $ref: '#/components/schemas/AccountStatusCode'
+              statusDescription:
+                type: string
+                nullable: true
+                description: Texto literal de la operadora ("Activo", "Suspendido"…).
+              lastWorkOrder:
+                type: string
+                nullable: true
+                description: Orden de trabajo más reciente de `/account/process`.
+                example: ORDER/424900/2026
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+          description: Marca efectivamente usada en la consulta.
 
     # ---- Diagnóstico de red (campos 6, 8-14, 19-21) ------------------
 
     NearbyNap:
       type: object
-      description: NAP cercana devuelta por TEC (campo 6).
+      description: NAP cercana (campo 6). La fuente la indica `source`.
       properties:
+        napId:
+          type: integer
+          nullable: true
+          description: >
+            Id numérico de la NAP en FSM. Es la entrada de
+            `GET /naps/{napRef}/ports`. `null` cuando la fuente es TEC.
+          example: 11547
         napCode:
           type: string
           example: PL2KD9
+        networkName:
+          type: string
+          nullable: true
+          description: >
+            Red de acceso (OLT/puerto) de la que cuelga la NAP. Nunca se rotula
+            como "nodo": la operadora confirmó que ese concepto no existe.
+            `null` cuando la fuente es TEC.
+          example: OLT-GYE-03/1/2
         latitude:
           type: number
           format: double
@@ -2184,6 +2689,10 @@ components:
         freePorts:
           type: integer
           description: totalPorts - occupiedPorts, nunca negativo.
+        source:
+          type: string
+          enum: [FSM, TEC]
+          description: De dónde salió la fila (ver `NAPS_PRIMARY_SOURCE`, ADR-04).
 
     NapPort:
       type: object
@@ -2194,36 +2703,167 @@ components:
           type: boolean
         clientAccountNumber:
           type: string
-          description: Cuenta del cliente en el puerto, si está ocupado.
-        clientStatus:
+          nullable: true
+          description: Cuenta del cliente en el puerto; `null` si está libre.
+        equipmentId:
           type: string
-          description: A (activo) o S (suspendido).
-          enum: [A, S]
+          nullable: true
+          description: Serial/ID GPON del equipo conectado. `null` si no vino.
+          example: ZTEGD52E1A9B
+        clientStatus:
+          $ref: '#/components/schemas/AccountStatusCode'
+        statusPending:
+          type: boolean
+          description: >
+            `true` en los puertos ocupados cuyo estado todavía no se consultó.
+            Se resuelven con `POST /accounts/status-batch` (paso 2).
 
     NapPorts:
       type: object
       properties:
+        napRef:
+          type: string
+          description: Valor tal como llegó en la ruta (id numérico o código de NAP).
+        napId:
+          type: integer
+          nullable: true
         napCode:
           type: string
+          nullable: true
         ports:
           type: array
-          description: Vacío cuando `detailAvailable` es false.
+          description: Vacío cuando `detailAvailable` es false (camino TEC).
           items:
             $ref: '#/components/schemas/NapPort'
         detailAvailable:
           type: boolean
           description: >
-            false cuando la API de operadora no expone el detalle puerto a
-            puerto (hoy solo publica el conteo ocupados/total en el listado
-            de NAPs; el detalle vive en tec.grupotvcable.com/Gpon/Coverage,
-            que aún no está publicado como API).
+            false por el camino TEC: esa API solo publica el conteo
+            ocupados/total en el listado de NAPs (el detalle vive en
+            tec.grupotvcable.com/Gpon/Coverage, que aún no es API). Con FSM y un
+            `napId` numérico es true.
         occupiedPorts:
           type: integer
         totalPorts:
           type: integer
+          description: >
+            Se toma del `ports` de `/naps/nearest` memorizado. Si no se puede
+            determinar, se devuelven solo los puertos conocidos y viene
+            `degraded.reason: TRUNCATED`.
         note:
           type: string
           description: Explicación para mostrar al técnico cuando no hay detalle.
+        statusFanOut:
+          type: object
+          description: Cuántos estados quedan por resolver y con qué tope (paso 2).
+          properties:
+            supported:
+              type: boolean
+              description: false por el camino TEC.
+            pendingAccounts:
+              type: integer
+            batchLimit:
+              type: integer
+              example: 12
+        source:
+          type: string
+          enum: [FSM, TEC]
+        degraded:
+          $ref: '#/components/schemas/Degraded'
+
+    StatusBatchRequest:
+      type: object
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          description: >
+            Cuentas a consultar. Los duplicados se deduplican en silencio.
+            Más de `batchLimit` (12) es un 400.
+          minItems: 1
+          maxItems: 12
+          items:
+            type: string
+            minLength: 1
+          example: ['35070291', '71398253', '40012345']
+
+    StatusBatchResponse:
+      type: object
+      properties:
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        items:
+          type: array
+          description: >
+            Conserva el orden de entrada, con exactamente un elemento por cuenta
+            única.
+          items:
+            type: object
+            properties:
+              accountNumber:
+                type: string
+              status:
+                allOf:
+                  - $ref: '#/components/schemas/AccountStatus'
+                nullable: true
+              statusCode:
+                $ref: '#/components/schemas/AccountStatusCode'
+              statusDescription:
+                type: string
+                nullable: true
+              error:
+                type: string
+                nullable: true
+                description: Motivo del fallo de ESA cuenta. Un fallo aislado no tumba el lote.
+        requested:
+          type: integer
+          description: Cuentas únicas efectivamente consultadas.
+        resolved:
+          type: integer
+        failed:
+          type: integer
+
+    FsmHealth:
+      type: object
+      description: Estado de la integración FSM. No implica ninguna llamada a la operadora.
+      properties:
+        mode:
+          type: string
+          enum: [mock, real]
+          description: Valor efectivo de `connectorMode('fsm')`.
+        defaultBrand:
+          type: string
+          example: telenews
+        napsPrimarySource:
+          type: string
+          enum: [fsm, tec]
+        brands:
+          type: array
+          items:
+            type: object
+            properties:
+              brand:
+                type: string
+                enum: [telenews, seteinfo]
+              available:
+                type: boolean
+              reason:
+                type: string
+                nullable: true
+                enum: [MISSING, EXPIRED, REJECTED, null]
+              tokenSource:
+                type: string
+                nullable: true
+                enum: [STATIC, CLIENT_CREDENTIALS, null]
+              expiresAt:
+                type: string
+                format: date-time
+                nullable: true
+              expiresInSeconds:
+                type: integer
+                nullable: true
+                description: Negativo si el token ya venció.
 
     FlatField:
       type: object
@@ -2674,18 +3314,212 @@ components:
       properties:
         taskId:
           type: string
+          description: >
+            Id de la tarea. En `previous-visits` se usa el `workOrder` mientras
+            no haya tareas cargadas: es lo que el técnico ve.
           example: TASK/294328/2026
+        workOrder:
+          type: string
+          nullable: true
+          description: Orden a la que pertenece. Se usa para pedir sus notas.
+          example: ORDER/424900/2026
         occurredAt:
           type: string
           format: date-time
         reason:
           type: string
-          description: Motivo.
+          description: Motivo. `""` si la operadora no lo trajo.
         closingNotes:
           type: string
-          description: Observación de cierre.
+          description: >
+            Observación de cierre: concatenación de las notas de la tarea
+            separadas por " · ". `""` mientras `notesLoaded` sea false.
         technician:
           type: string
+          nullable: true
+          description: >
+            ⚠ **Siempre `null` con FSM**: `/workorder/tasks` no devuelve el
+            técnico que cerró la tarea. Queda como punto abierto con la
+            operadora; la UI muestra "—".
         result:
           type: string
           enum: [SATISFACTORIA, INSATISFACTORIA, PENDIENTE]
+          description: >
+            Valor **inferido** por el backend, no un dato de la operadora:
+            `PENDIENTE` si la tarea no terminó, `INSATISFACTORIA` si el `status`
+            o las notas contienen una palabra de `FSM_UNSATISFACTORY_KEYWORDS`,
+            `SATISFACTORIA` en cualquier otro caso. Heurístico provisional a
+            recalibrar con datos reales.
+        notesLoaded:
+          type: boolean
+          description: >
+            false cuando las notas todavía no se cargaron (respuesta de
+            `previous-visits`). El cliente lo usa para saber que hay que llamar
+            a `GET /workorders/tasks?workOrder=`.
+
+    PreviousVisits:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClosedTask'
+        totalOrders:
+          type: integer
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        degraded:
+          $ref: '#/components/schemas/Degraded'
+
+    UnsatisfactoryTasks:
+      type: object
+      properties:
+        items:
+          type: array
+          description: Solo tareas cuyo `result` es INSATISFACTORIA.
+          items:
+            $ref: '#/components/schemas/ClosedTask'
+        scanned:
+          type: integer
+          description: Órdenes finalizadas cuyas notas se leyeron.
+        totalOrders:
+          type: integer
+          description: Órdenes totales de la cuenta.
+        truncated:
+          type: boolean
+          description: true cuando `totalOrders > scanned`.
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        degraded:
+          $ref: '#/components/schemas/Degraded'
+
+    AccountOrders:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        client:
+          type: object
+          nullable: true
+          description: Datos del cliente según la orden más reciente. `null` si no hay órdenes.
+          properties:
+            names:
+              type: string
+              nullable: true
+            phoneNumber:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+            address:
+              type: string
+              nullable: true
+            latitude:
+              type: number
+              format: double
+              nullable: true
+            longitude:
+              type: number
+              format: double
+              nullable: true
+        orders:
+          type: array
+          description: Ordenadas por `createdAt` descendente. Puede ser `[]`.
+          items:
+            type: object
+            properties:
+              workOrder:
+                type: string
+                example: ORDER/424900/2026
+              task:
+                type: string
+                nullable: true
+              state:
+                type: string
+                nullable: true
+              externalProcess:
+                type: string
+                nullable: true
+              cpartyId:
+                type: string
+                nullable: true
+              createdAt:
+                type: string
+                format: date-time
+                nullable: true
+              endedAt:
+                type: string
+                format: date-time
+                nullable: true
+              finished:
+                type: boolean
+                description: Equivale a `endedAt != null` (`finish_date is not null`).
+              note:
+                type: string
+                nullable: true
+              latitude:
+                type: number
+                format: double
+                nullable: true
+              longitude:
+                type: number
+                format: double
+                nullable: true
+              address:
+                type: string
+                nullable: true
+
+    WorkOrderTasks:
+      type: object
+      properties:
+        workOrder:
+          type: string
+          example: ORDER/424900/2026
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              taskId:
+                type: string
+                example: TASK/294328/2026
+              status:
+                type: string
+                nullable: true
+                description: Literal de la operadora, sin traducir.
+              businessKey:
+                type: string
+                nullable: true
+              createdAt:
+                type: string
+                format: date-time
+                nullable: true
+              finishedAt:
+                type: string
+                format: date-time
+                nullable: true
+              result:
+                type: string
+                enum: [SATISFACTORIA, INSATISFACTORIA, PENDIENTE]
+                description: Valor inferido por el backend (ver `ClosedTask.result`).
+              notes:
+                type: array
+                description: Ordenadas por `createdAt` ascendente. Puede ser `[]`.
+                items:
+                  type: object
+                  properties:
+                    createdAt:
+                      type: string
+                      format: date-time
+                      nullable: true
+                    content:
+                      type: string

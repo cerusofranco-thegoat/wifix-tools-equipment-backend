@@ -82,13 +82,18 @@ describe('mapNapRow — respuesta real de /api/tec/naps', () => {
   it('mapea la fila que devuelve la operadora', () => {
     const row = { nap: 'PL2KD9', lat: -2.168419, lng: -79.918913, distance: 20.0, ports: 8, used: 4 };
     expect(mapNapRow(row)).toEqual({
+      // TEC no expone id numérico ni red de acceso: ambos van en null y
+      // `source` deja explícito de dónde salió la fila.
+      napId: null,
       napCode: 'PL2KD9',
+      networkName: null,
       latitude: -2.168419,
       longitude: -79.918913,
       distanceMeters: 20,
       occupiedPorts: 4,
       totalPorts: 8,
       freePorts: 4,
+      source: 'TEC',
     });
   });
 

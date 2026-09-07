@@ -4,7 +4,7 @@
 
 import { env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
-import { seededRng, notImplemented } from '../_shared.js';
+import { seededRng, notImplemented, type AccountStatusName } from '../_shared.js';
 
 export interface ClientProfile {
   accountNumber: string;
@@ -22,11 +22,16 @@ export interface ClientProfileUpdate {
   phones?: string[];
 }
 
-export type AccountStatus = 'ACTIVA' | 'SUSPENDIDA' | 'TERMINADA';
+/**
+ * FSM publica cinco estados (A/S/T/O/P) más el desconocido; el mock de Comarch
+ * solo usa los tres históricos, pero el tipo es el mismo para toda la app.
+ */
+export type AccountStatus = AccountStatusName;
 
 export interface ContractAccount {
   accountNumber: string;
-  contractId: string;
+  /** FSM no expone contrato, solo órdenes de trabajo: puede ser null. */
+  contractId: string | null;
   status: AccountStatus;
 }
 
@@ -97,6 +102,17 @@ function buildProfile(accountNumber: string): ClientProfile {
 // pero sí refleja el cambio durante el ciclo de vida del proceso para que
 // el frontend vea coherencia GET → PUT → GET. Se borra al reiniciar.
 const profileOverrides = new Map<string, ClientProfileUpdate>();
+
+/**
+ * Campos que el técnico editó a mano en esta cuenta, si los hay. Lo usa la ruta
+ * compuesta de `client-profile` para que lo editado mande sobre el dato de FSM
+ * y se marque como `MOCK` en `sources`.
+ */
+export function getClientProfileOverrides(
+  accountNumber: string,
+): ClientProfileUpdate | undefined {
+  return profileOverrides.get(accountNumber);
+}
 
 const STATUS_VALUES: AccountStatus[] = ['ACTIVA', 'SUSPENDIDA', 'TERMINADA'];
 

@@ -85,21 +85,31 @@ describe('Datos del Cliente', () => {
 });
 
 describe('Diagnóstico de Red', () => {
-  it('GET nearby-naps devuelve lista ordenada por distancia', async () => {
+  it('GET /naps/nearby devuelve lista ordenada por distancia', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: `${PREFIX}/accounts/WX-INT-NAP-1/nearby-naps`,
+      url: `${PREFIX}/naps/nearby?lat=-2.247946&lng=-79.904161`,
       headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
-    const naps = res.json() as Array<{ napCode: string; distanceMeters: number }>;
-    expect(naps.length).toBeGreaterThanOrEqual(1);
+    const naps = res.json() as Array<{
+      napCode: string;
+      distanceMeters: number;
+      napId: number | null;
+      source: string;
+    }>;
     for (let i = 0; i < naps.length - 1; i++) {
       expect(naps[i]!.distanceMeters).toBeLessThanOrEqual(naps[i + 1]!.distanceMeters);
     }
+    // Campos nuevos del contrato FSM, presentes también por el camino TEC.
+    for (const nap of naps) {
+      expect(nap).toHaveProperty('napId');
+      expect(nap).toHaveProperty('networkName');
+      expect(['FSM', 'TEC']).toContain(nap.source);
+    }
   });
 
-  it('GET naps/{napCode}/ports devuelve los puertos de la NAP', async () => {
+  it('GET naps/{napRef}/ports devuelve la rejilla con statusFanOut', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/naps/NAP-05-03-2/ports`,
@@ -107,9 +117,17 @@ describe('Diagnóstico de Red', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
+    expect(body.napRef).toBe('NAP-05-03-2');
     expect(body.napCode).toBe('NAP-05-03-2');
     expect(Array.isArray(body.ports)).toBe(true);
-    expect(body.ports.length).toBeGreaterThan(0);
+    expect(body.statusFanOut).toHaveProperty('supported');
+    expect(['FSM', 'TEC']).toContain(body.source);
+    // Con detalle disponible (mock de TEC) tiene que haber puertos; sin él, [].
+    if (body.detailAvailable) {
+      expect(body.ports.length).toBeGreaterThan(0);
+    } else {
+      expect(body.ports).toEqual([]);
+    }
   });
 
   it('GET network-metrics incluye signalLevels y campos GPON/HFC condicionales', async () => {
@@ -197,25 +215,44 @@ describe('Diagnóstico de Red', () => {
 });
 
 describe('Tareas y Visitas', () => {
-  it('GET unsatisfactory-tasks puede devolver 0 o más con result=INSATISFACTORIA', async () => {
+  it('GET unsatisfactory-tasks devuelve el objeto envolvente con solo INSATISFACTORIA', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/WX-INT-TASK/unsatisfactory-tasks`,
       headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
-    const items = res.json() as Array<{ result: string }>;
-    expect(items.every((t) => t.result === 'INSATISFACTORIA')).toBe(true);
+    const body = res.json() as {
+      items: Array<{ result: string }>;
+      scanned: number;
+      totalOrders: number;
+      truncated: boolean;
+      brand: string;
+    };
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body.items.every((t) => t.result === 'INSATISFACTORIA')).toBe(true);
+    expect(typeof body.scanned).toBe('number');
+    expect(typeof body.totalOrders).toBe('number');
+    expect(typeof body.truncated).toBe('boolean');
+    expect(body.brand).toBe('telenews');
   });
 
-  it('GET previous-visits devuelve al menos 1 visita', async () => {
+  it('GET previous-visits devuelve { items, totalOrders, brand } con al menos 1 visita', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/WX-INT-VIS/previous-visits`,
       headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
-    const items = res.json();
-    expect(items.length).toBeGreaterThanOrEqual(1);
+    const body = res.json() as {
+      items: Array<{ technician: string | null; notesLoaded: boolean }>;
+      totalOrders: number;
+      brand: string;
+    };
+    expect(body.items.length).toBeGreaterThanOrEqual(1);
+    expect(body.totalOrders).toBe(body.items.length);
+    // FSM no expone el técnico: siempre null (⚠2 del contrato).
+    expect(body.items.every((v) => v.technician === null)).toBe(true);
+    expect(body.items.every((v) => v.notesLoaded === false)).toBe(true);
   });
 });

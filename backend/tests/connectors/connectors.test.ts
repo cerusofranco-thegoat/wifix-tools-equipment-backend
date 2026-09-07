@@ -38,8 +38,11 @@ describe('Mocks deterministas — misma clave devuelve los mismos datos', () => 
   });
 
   it('fsm.getPreviousVisits siempre devuelve al menos 1 visita ordenada por fecha', async () => {
-    const visits = await fsmMock.getPreviousVisits('WX-FSM-001');
+    const result = await fsmMock.getPreviousVisits('WX-FSM-001', { brand: 'telenews' });
+    const visits = result.items;
     expect(visits.length).toBeGreaterThanOrEqual(1);
+    expect(result.totalOrders).toBe(visits.length);
+    expect(result.brand).toBe('telenews');
     for (let i = 0; i < visits.length - 1; i++) {
       expect(
         visits[i]!.occurredAt.localeCompare(visits[i + 1]!.occurredAt),

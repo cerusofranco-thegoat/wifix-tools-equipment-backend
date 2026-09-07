@@ -1,26 +1,41 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { parseBody, parseParams, parseQuery } from '../../lib/validation.js';
+import { brandFromRequest } from '../../lib/brand.js';
 import { getAuthUser } from '../../middleware/authenticate.js';
 import {
   getAcsConnector,
   getIspMonitorConnector,
   getRmsConnector,
-  getTecConnector,
+  getNearbyNaps,
+  getNapPortsByRef,
 } from '../../connectors/index.js';
 
 const accountParamsSchema = z.object({
   accountNumber: z.string().min(1, 'accountNumber es obligatorio.'),
 });
 
+/**
+ * `napRef`: id numérico de FSM (`/^\d+$/`) o código de NAP (camino TEC).
+ * El frontend envía `nap.napId ?? nap.napCode`.
+ */
 const napParamsSchema = z.object({
-  napCode: z.string().min(1, 'napCode es obligatorio.'),
+  napRef: z.string().min(1, 'napRef es obligatorio.'),
+});
+
+const napPortsQuerySchema = z.object({
+  brand: z.string().optional(),
+  // Escape hatch para probe-fsm-api.ts y soporte: la webapp NO lo envía nunca.
+  withStatus: z.enum(['0', '1']).optional(),
 });
 
 /** Coordenada desde la que se buscan NAPs (GPS del técnico o de la tarea). */
 const coordsQuerySchema = z.object({
   lat: z.coerce.number().gte(-90).lte(90),
   lng: z.coerce.number().gte(-180).lte(180),
+  meters: z.coerce.number().int().gte(1).lte(2000).optional(),
+  maxRows: z.coerce.number().int().gte(1).lte(25).optional(),
+  brand: z.string().optional(),
 });
 
 const terminalParamsSchema = z.object({
@@ -54,15 +69,35 @@ const wifiConfigUpdateSchema = z.object({
 
 export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Promise<void> {
   // --- Campo 6: NAPs cercanas a una coordenada ------------------------------
-  app.get('/naps/nearby', async (request) => {
-    const { lat, lng } = parseQuery(coordsQuerySchema, request.query);
-    return getTecConnector().getNearbyNaps({ latitude: lat, longitude: lng });
+  app.get('/naps/nearby', async (request, reply) => {
+    const { lat, lng, meters, maxRows, brand } = parseQuery(coordsQuerySchema, request.query);
+    const result = await getNearbyNaps(
+      { latitude: lat, longitude: lng },
+      {
+        brand: brandFromRequest(request, brand),
+        meters: meters ?? 100,
+        maxRows: maxRows ?? 5,
+        rangeRequested: meters !== undefined || maxRows !== undefined,
+      },
+    );
+    // La respuesta es un array desnudo (contrato histórico): el aviso de
+    // degradación viaja en un header, no en el cuerpo.
+    if (result.degraded) {
+      reply.header('X-Wifix-Degraded', encodeURIComponent(JSON.stringify(result.degraded)));
+    }
+    return result.naps;
   });
 
-  // --- Campo 8: puertos ocupados por NAP ------------------------------------
-  app.get('/naps/:napCode/ports', async (request) => {
-    const { napCode } = parseParams(napParamsSchema, request.params);
-    return getTecConnector().getNapPorts(napCode);
+  // --- Campo 8 (paso 1): puertos ocupados por NAP ----------------------------
+  // UNA sola llamada upstream: los estados A/S/T/O/P se piden aparte con
+  // POST /accounts/status-batch, y solo por acción explícita del técnico.
+  app.get('/naps/:napRef/ports', async (request) => {
+    const { napRef } = parseParams(napParamsSchema, request.params);
+    const { brand, withStatus } = parseQuery(napPortsQuerySchema, request.query);
+    return getNapPortsByRef(napRef, {
+      brand: brandFromRequest(request, brand),
+      withStatus: withStatus === '1',
+    });
   });
 
   // --- Campos 9-13: ISP Monitor por serial GPON / MAC HFC -------------------

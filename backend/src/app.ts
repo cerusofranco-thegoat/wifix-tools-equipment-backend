@@ -17,6 +17,7 @@ import { registerAccountHistoryRoutes } from './modules/account-history/account-
 import { registerClientDataRoutes } from './modules/client-data/client-data.routes.js';
 import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
 import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
+import { registerIntegrationsRoutes } from './modules/integrations/integrations.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -64,6 +65,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(cors, {
     origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? true : corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    // `X-Wifix-Brand` lleva la marca/realm de FSM (ver ADR-01). El plugin
+    // refleja Access-Control-Request-Headers por defecto, pero no dependemos
+    // de ese comportamiento: se declara explícitamente.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Wifix-Brand'],
+    // El aviso de degradación viaja en un header y el navegador no lo expone
+    // salvo que se liste acá.
+    exposedHeaders: ['X-Wifix-Degraded'],
   });
 
   registerErrorHandler(app);
@@ -98,6 +106,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerClientDataRoutes(api);
       await registerNetworkDiagnosticsRoutes(api);
       await registerTasksVisitsRoutes(api);
+      await registerIntegrationsRoutes(api);
     },
     { prefix: API_PREFIX },
   );

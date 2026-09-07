@@ -96,12 +96,16 @@ permite tener TEC e ISP Monitor en real y el resto en mock.
 
 | Conector | Sistema real | Campos | Estado |
 |----------|--------------|--------|--------|
-| `comarch` | TYTAN / Comarch CM | 1, 2, 3, 4, 5, 7 | mock |
-| `fsm` | FSM | 15, 16 | mock |
+| `comarch` | TYTAN / Comarch CM | 4, 5 (plan/velocidad) | mock |
+| `fsm` | FSM (`fsm-data-ms`) | 1, 2, 3, 6, 7, 8, 15, 16 | **real, sin token** |
 | `ispmonitor` | ISP Monitor (tec-api) | 9, 10, 11, 12 | **real** |
 | `acs` | ACS (TR-069) | 19, 20, 21 | mock |
-| `tec` | TEC / registro GPON | 6, 8 (parcial) | **real** |
+| `tec` | TEC / registro GPON | 6, 8 (respaldo) | **real** |
 | `rms` | RMS | 14 | mock |
+
+`CONNECTOR_MODE_FSM` controla FSM aparte. Se despliega en `mock` hasta que haya
+un token vigente de la operadora: en `mock` todas las rutas devuelven los shapes
+completos del contrato, así que el frontend se construye y se prueba sin token.
 
 ### API de operadora (TEC / ISP Monitor)
 
@@ -232,10 +236,145 @@ npx tsx scripts/probe-tec-api.ts naps -2.1685829163 -79.9189910889
 npx tsx scripts/probe-tec-api.ts all <SERIAL_O_MAC>
 ```
 
-**Faltantes conocidos con los accesos actuales:** el detalle puerto a puerto
-por NAP (campo 8 — clientes A/S, vive en `tec.grupotvcable.com/Gpon/Coverage`)
-y el tráfico de internet del cliente (campo 13). `getNapPorts` real devuelve
-`detailAvailable: false` con una nota, en vez de fallar.
+**Faltantes conocidos con los accesos actuales:** el tráfico de internet del
+cliente (campo 13). El detalle puerto a puerto por NAP (campo 8) ya no depende
+de TEC: lo resuelve FSM (`/naps/accounts`); por el camino TEC `getNapPorts`
+sigue devolviendo `detailAvailable: false` con una nota, en vez de fallar.
+
+## Conector FSM (`fsm-data-ms`)
+
+`https://apix.grupotvcable.com/rest/fsm-data-api/v1.0` — órdenes de trabajo,
+tareas, notas, NAPs GPON y estado de cuenta. Habilita los campos 1-3, 6, 7, 8,
+15 y 16.
+
+| Endpoint upstream | Uso | Ruta interna |
+|-------------------|-----|--------------|
+| `POST /account/process` | órdenes + identidad del cliente | `client-profile`, `contract-status`, `orders`, `previous-visits`, `unsatisfactory-tasks` |
+| `POST /workorder/tasks` | tareas y notas de una orden | `workorders/tasks`, `unsatisfactory-tasks` |
+| `POST /account/status` | estado A/S/T/O/P de una cuenta | `contract-status`, `accounts/status-batch` |
+| `GET /naps/nearest` | NAPs cercanas (campo 6) | `naps/nearby` |
+| `GET /naps/accounts` | cuentas/equipos de una NAP (campo 8) | `naps/{napRef}/ports` |
+
+Capas: `routes` → `connectors/fsm/index.ts` (modelo interno, mock \| real) →
+`connectors/http/fsm-api.ts` (HTTP + caudal) → `connectors/http/fsm-token.ts`
+(Bearer). **Ninguna ruta importa `http/fsm-api.ts` directamente.**
+`connectors/fsm/normalize.ts` aísla todo el mapeo crudo → interno.
+
+### Marca (realm), no "realm"
+
+Hay dos realms de Keycloak, uno por marca comercial. Internamente se habla de
+**`brand`** (`telenews` \| `seteinfo`) y los nombres `realm-ecommerce-callcenter-*`
+quedan encerrados en `fsm-token.ts`: el técnico nunca los ve. La marca viaja en
+el header **`X-Wifix-Brand`**, con override por query `?brand=`; si falta se usa
+`FSM_DEFAULT_BRAND`.
+
+### El token vence cada 24 h — y eso NO puede tumbar la app
+
+- **Un 401 de FSM jamás sale como 401 del backend.** La webapp borra la sesión
+  del técnico ante cualquier 401: un token caducado de un tercero lo sacaría al
+  login en medio de una visita y encima le quitaría Herramientas y Equipos
+  Retirados, que no dependen de FSM. Se traduce a **503 `UPSTREAM_AUTH_ERROR`**
+  con `meta.reason` ∈ `MISSING` \| `EXPIRED` \| `REJECTED`.
+- **Chequeo previo sin red:** `fsm-token.ts` decodifica el `exp` del JWT
+  (base64, sin verificar firma) y corta antes de salir a la red si ya venció.
+- **El servidor arranca igual sin token** (solo `console.warn`), a diferencia de
+  TEC, cuyas credenciales Digest sí son obligatorias.
+- Los tokens **nunca** se loguean: en logs solo `brand`, `azp` y `exp`.
+
+Prioridad de resolución: `client_credentials`
+(`FSM_TOKEN_URL_*` + `FSM_CLIENT_ID_*` + `FSM_CLIENT_SECRET_*`, con
+single-flight y refresh en `exp − FSM_TOKEN_SKEW_MS`) → token estático
+`FSM_API_TOKEN_<MARCA>` → `MISSING`.
+
+⚠ El emisor del token de ejemplo es `192.168.59.181:8080` (IP privada): si ese
+Keycloak solo vive en la LAN de la operadora, `client_credentials` no funcionará
+desde el servidor y **la rotación manual es el camino real**, no el de respaldo.
+
+**Rotación manual del token (procedimiento):**
+
+1. Pedir el Bearer nuevo al contacto de la operadora (dura 24 h).
+2. Pegarlo en `FSM_API_TOKEN_TELENEWS` (o `..._SETEINFO`) del `.env` del
+   servidor. No se comparte por canales sin cifrar y no se commitea.
+3. Reiniciar el servicio (el token se lee del entorno al arrancar).
+4. Verificar **sin gastar una consulta a producción**:
+   `npx tsx scripts/probe-fsm-api.ts token` o `GET /integrations/fsm/health`,
+   que informan `expiresAt` y `expiresInSeconds` de cada marca.
+
+### Cuidado del upstream en FSM
+
+Mismas tres piezas que TEC, con **semáforo propio** (`FSM_API_MAX_CONCURRENCY`,
+4) porque es otro host, y con dos reglas extra:
+
+- **Prefijo de cache obligatorio `FSM:{brand}:`.** El cache de `throttle.ts` es
+  un `Map` global compartido con TEC: sin el prefijo de marca, una cuenta
+  consultada en `telenews` devolvería el resultado cacheado a `seteinfo`. Es
+  una fuga entre realms, no un detalle de estilo. Hay un test que lo verifica.
+- **El fan-out del campo 8 es explícito y en lote.** `GET /naps/{napRef}/ports`
+  hace **1 sola llamada** y devuelve los puertos con `clientStatus: null` y
+  `statusPending: true`; los estados los pide el técnico a mano con
+  `POST /accounts/status-batch` (≤12 cuentas, concurrencia 4, cache 5 min).
+  Resolver una NAP de 16 puertos "completa" costaría 17 llamadas por cada tap
+  en "Ver puertos".
+
+Llamadas upstream por ruta:
+
+| Ruta interna | Llamadas |
+|--------------|----------|
+| `GET /integrations/fsm/health` | **0** |
+| `GET /accounts/{n}/client-profile` | 1 |
+| `GET /accounts/{n}/contract-status` | 2 |
+| `GET /accounts/{n}/orders` | 1 |
+| `GET /accounts/{n}/previous-visits` | 1 |
+| `GET /accounts/{n}/unsatisfactory-tasks` | 1 + ≤ `FSM_ORDERS_MAX_FANOUT` |
+| `GET /workorders/tasks?workOrder=` | 1 |
+| `GET /naps/nearby` | 1 |
+| `GET /naps/{napRef}/ports` | 1 |
+| `POST /accounts/status-batch` | ≤ `FSM_STATUS_BATCH_LIMIT` |
+
+### Fuente de NAPs (campo 6)
+
+`NAPS_PRIMARY_SOURCE` (`fsm` \| `tec`) decide quién sirve `/naps/nearby`. **Hoy
+se despliega en `tec`**, que es lo que ya funciona en producción; se cambia a
+`fsm` el día que haya token. Con `fsm`, si falla la autenticación se cae a TEC y
+se responde 200 con `source:"TEC"` más un aviso en el header
+`X-Wifix-Degraded`. Si FSM falla por otra causa (5xx, timeout) **no** hay
+fallback: se propaga el 502, porque un error transitorio no justifica duplicar
+la carga sobre la otra API.
+
+### Sondeo manual: `probe-fsm-api.ts`
+
+Es la **única** vía de contacto manual con FSM y es de un solo tiro: no lo
+pongas en un bucle ni en CI. `chain` está acotado a 4 llamadas.
+
+```bash
+npx tsx scripts/probe-fsm-api.ts token                    # sin red: brand, azp, exp, tiempo restante
+npx tsx scripts/probe-fsm-api.ts process <cuenta> [Todas|Pendientes]
+npx tsx scripts/probe-fsm-api.ts tasks <workOrder>
+npx tsx scripts/probe-fsm-api.ts status <cuenta>          # prueba account_id y, si falla, accountId
+npx tsx scripts/probe-fsm-api.ts naps <lat> <lng> [meters] [maxRows]
+npx tsx scripts/probe-fsm-api.ts nap-accounts <napId>
+npx tsx scripts/probe-fsm-api.ts chain <cuenta>           # máx. 4 llamadas
+# flags: --brand=telenews|seteinfo   --save (guarda el JSON en tests/fixtures/fsm/)
+```
+
+### Lo que todavía es un supuesto
+
+No hay **ni una** respuesta real de FSM: todos los parsers de `normalize.ts`
+están escritos contra la documentación y la colección de Postman, con mapeo
+tolerante (`pick()` multi-clave). Antes de dar por buena la integración hay que
+correr `probe-fsm-api.ts --save` con un token vigente y recalibrar. En
+particular:
+
+- **`classifyTaskResult()` es un heurístico.** La doc no enumera los valores de
+  `status` de `/workorder/tasks` ni expone un campo satisfactoria/insatisfactoria:
+  se infiere de `status` + notas con `FSM_UNSATISFACTORY_KEYWORDS`.
+- **`/account/status`: `account_id` o `accountId`.** La doc dice una cosa y el
+  Postman otra. El conector manda `account_id`, ante un 400 reintenta **una** vez
+  con `accountId` y memoiza cuál funcionó.
+- **`ClosedTask.technician` no existe en FSM**: siempre `null`.
+- **La rejilla de puertos** necesita el total de puertos de `/naps/nearest`. Si
+  no se conoce, se devuelven solo los puertos ocupados con
+  `degraded.reason: TRUNCATED`.
 
 ## Endpoints
 
@@ -259,8 +398,8 @@ y el tráfico de internet del cliente (campo 13). `getNapPorts` real devuelve
 | Historial | `/herramientas/v1/accounts/{accountNumber}/tool-history` | GET |
 | Datos del Cliente | `/herramientas/v1/accounts/{n}/client-profile` | GET · PUT |
 | | `/herramientas/v1/accounts/{n}/contract-status` | GET |
-| Diagnóstico de Red | `/herramientas/v1/naps/nearby?lat=&lng=` | GET |
-| | `/herramientas/v1/naps/{napCode}/ports` | GET |
+| Diagnóstico de Red | `/herramientas/v1/naps/nearby?lat=&lng=&meters=&maxRows=` | GET |
+| | `/herramientas/v1/naps/{napRef}/ports` | GET |
 | | `/herramientas/v1/terminals/{id}` | GET |
 | | `/herramientas/v1/terminals/{id}/diagnostics` | GET |
 | | `/herramientas/v1/terminals/{id}/series/{scope}/{metric}` | GET |
@@ -271,6 +410,10 @@ y el tráfico de internet del cliente (campo 13). `getNapPorts` real devuelve
 | | `/herramientas/v1/accounts/{n}/wifi-config` | GET · PUT |
 | Tareas y Visitas | `/herramientas/v1/accounts/{n}/unsatisfactory-tasks` | GET |
 | | `/herramientas/v1/accounts/{n}/previous-visits` | GET |
+| | `/herramientas/v1/accounts/{n}/orders` | GET |
+| | `/herramientas/v1/workorders/tasks?workOrder=` | GET |
+| Integraciones | `/herramientas/v1/integrations/fsm/health` | GET |
+| | `/herramientas/v1/accounts/status-batch` | POST |
 
 ## Reglas de negocio (resumen)
 
@@ -297,7 +440,14 @@ y el tráfico de internet del cliente (campo 13). `getNapPorts` real devuelve
 | `CATALOG_ITEM_NOT_FOUND` | 404 | Modelo o motivo de catálogo inexistente |
 | `MEDIA_NOT_FOUND` | 404 | `barcodePhotoId` inexistente |
 | `CONNECTOR_ERROR` | 502 | Fallo de un sistema externo (modo real) |
+| `UPSTREAM_AUTH_ERROR` | 503 | Token de FSM ausente, vencido o rechazado |
 | `INTERNAL_ERROR` | 500 | Error no controlado |
+
+`UNAUTHORIZED` (401) es **solo** para el JWT propio de Wifix: ningún fallo de
+FSM puede producir un 401, porque la webapp cierra la sesión del técnico ante
+cualquiera. `UPSTREAM_AUTH_ERROR` trae un bloque `meta` con
+`{ integration, brand, reason, tokenExpiresAt, retryable }`; el cliente pinta un
+banner no bloqueante y **no** cierra sesión.
 
 Mensajes (`message`) en español; códigos en inglés.
 
@@ -327,6 +477,8 @@ src/
 ├── lib/            # storage S3, paginación, validación Zod, helpers
 ├── schemas/        # service-context, filters, geo, common (UUID)
 ├── connectors/     # comarch · fsm · ispmonitor · acs · tec · rms
+│   ├── http/       # digest · tec-api · fsm-token · fsm-api · throttle
+│   └── naps.ts     # política FSM/TEC del campo 6 (ADR-04)
 └── modules/
     ├── auth/                 # POST /auth/login, GET /auth/me
     ├── catalogs/
@@ -334,9 +486,10 @@ src/
     ├── tools/{distance,speedtest,heatmap,ping,traceroute}/
     ├── retired-equipment/
     ├── account-history/
-    ├── client-data/          # campos 1-5, 7 (usa comarch)
+    ├── client-data/          # campos 1-5, 7 (compone fsm + comarch)
     ├── network-diagnostics/  # 6, 8-14, 19-21 (varios conectores)
-    └── tasks-visits/         # campos 15-16 (usa fsm)
+    ├── tasks-visits/         # campos 15-16 y órdenes (usa fsm)
+    └── integrations/         # salud de FSM y estados en lote
 ```
 
 ## Almacenamiento de archivos
@@ -357,12 +510,24 @@ el proceso aborta con un mensaje claro. Las relevantes:
 - `JWT_SECRET`, `JWT_EXPIRES_IN` — emisión y vigencia del token.
 - `SEED_USER_EMAIL`, `SEED_USER_PASSWORD`, `SEED_USER_NAME` — usuario inicial.
 - `CONNECTOR_MODE` — `mock` o `real` (modo global de los conectores).
-- `CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR` — override por conector.
+- `CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`, `CONNECTOR_MODE_FSM` —
+  override por conector.
 - `TEC_API_BASE_URL`, `TEC_API_USERNAME`, `TEC_API_PASSWORD`,
   `TEC_API_TIMEOUT_MS` — API de operadora (Digest). Obligatorias si alguno
   de esos dos conectores está en `real`; el arranque aborta si faltan.
 - `TEC_API_MAX_CONCURRENCY` (4), `TEC_API_CACHE_TTL_MS` (60000) — cuidado del
   upstream: peticiones simultáneas máximas y vigencia del cache de respuestas.
+- `FSM_API_BASE_URL`, `FSM_API_CHANNEL`, `FSM_API_TIMEOUT_MS` — API de FSM.
+  **No abortan el arranque si faltan credenciales**, a diferencia de TEC.
+- `FSM_API_TOKEN_TELENEWS` / `FSM_API_TOKEN_SETEINFO` — Bearer estático (24 h).
+  Alternativa: `FSM_TOKEN_URL_*` + `FSM_CLIENT_ID_*` + `FSM_CLIENT_SECRET_*`
+  (`client_credentials`, con prioridad) y `FSM_TOKEN_SKEW_MS` (60000).
+- `FSM_BRANDS`, `FSM_DEFAULT_BRAND`, `FSM_BRAND_STRATEGY` — marcas/realms.
+- `FSM_API_MAX_CONCURRENCY` (4), `FSM_API_CACHE_TTL_MS` (60000),
+  `FSM_STATUS_CACHE_TTL_MS` (300000), `FSM_STATUS_BATCH_LIMIT` (12),
+  `FSM_ORDERS_MAX_FANOUT` (5) — cuidado del upstream en FSM.
+- `FSM_UNSATISFACTORY_KEYWORDS` — heurístico de clasificación del campo 15.
+- `NAPS_PRIMARY_SOURCE` (`fsm` | `tec`) — fuente del campo 6.
 - `DATABASE_URL` — Postgres (puerto 5433 con el `docker-compose.yml` actual).
 - `STORAGE_*` — MinIO/S3.
 
@@ -374,27 +539,50 @@ npm run prisma:migrate && npm run prisma:seed
 npm test
 ```
 
-**Cobertura actual:** 67 pruebas en 11 archivos:
+Los tests de FSM y de los conectores **no necesitan Postgres ni MinIO** y
+**nunca** salen a la red: usan `tests/helpers/fsm-app.ts`, que levanta la app sin
+base de datos y reemplaza `fetch` por un doble que además cuenta las llamadas.
+Todo es producción del lado de la operadora: ninguna prueba puede pegarle.
+
+```bash
+npx vitest run tests/connectors tests/lib tests/middleware   # sin infraestructura
+```
+
+**Cobertura actual:** 162 pruebas en 18 archivos:
 
 - `lib/`: paginación (9), validación (3)
 - `middleware/`: error handler (6)
-- `connectors/`: determinismo y persistencia de PUT mock (8)
+- `connectors/`: determinismo y persistencia de PUT mock (8), Digest y parseo
+  de TEC/ISP Monitor (33), token de FSM (17), cliente HTTP de FSM (15),
+  normalización de FSM (22), throttle (9)
 - `modules/`: auth (7), catalogs (4), media (4), tools (7), retired-equipment (5),
-  account-history (2), integration-endpoints (12)
+  account-history (2), integration-endpoints (12), rutas de FSM (31)
 
 ## Paso a conectores reales
 
 Para activar el modo real:
 
 1. Cambiar `CONNECTOR_MODE=real` en `.env`, o solo el conector que
-   corresponda (`CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`).
+   corresponda (`CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`,
+   `CONNECTOR_MODE_FSM`).
 2. Implementar cada `*Real` en `src/connectors/<system>/index.ts` reemplazando
    los `notImplemented(...)` por llamadas HTTP a la API del sistema.
 3. Agregar las URLs y credenciales por sistema como variables de entorno
    nuevas (una por conector).
 
-`tec` e `ispmonitor` ya siguen este patrón: sirven de referencia para los
+`tec`, `ispmonitor` y `fsm` ya siguen este patrón: sirven de referencia para los
 que faltan.
+
+**Para encender FSM** hacen falta dos pasos más, en este orden:
+
+1. `CONNECTOR_MODE_FSM=real` + `FSM_API_TOKEN_TELENEWS=<bearer vigente>`, y
+   verificar con `npx tsx scripts/probe-fsm-api.ts token`.
+2. Recalibrar `connectors/fsm/normalize.ts` con respuestas reales
+   (`probe-fsm-api.ts <comando> --save`). Hasta entonces los parsers están
+   escritos a ciegas contra la documentación.
+3. Recién después, `NAPS_PRIMARY_SOURCE=fsm` para migrar el campo 6 de TEC a
+   FSM (el panel NAP ya está en producción con TEC: no se toca hasta tener
+   datos reales verificados).
 
 Los módulos de routes y los tests **no requieren cambios** — el cambio se
 concentra en la capa de conectores.

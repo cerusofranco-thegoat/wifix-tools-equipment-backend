@@ -4,6 +4,31 @@
 
 import { ApiError } from '../middleware/error-handler.js';
 
+/** Código de estado de cuenta tal cual lo publica la operadora (FSM). */
+export type AccountStatusCode = 'A' | 'S' | 'T' | 'O' | 'P';
+
+/** Estado de cuenta en el modelo interno. */
+export type AccountStatusName =
+  | 'ACTIVA'
+  | 'SUSPENDIDA'
+  | 'TERMINADA'
+  | 'ORDENADA'
+  | 'PENDIENTE'
+  | 'DESCONOCIDA';
+
+export type DegradedReason = 'FSM_AUTH' | 'FSM_UNAVAILABLE' | 'SOURCE_FALLBACK' | 'TRUNCATED';
+
+/**
+ * Aviso de respuesta servida con una fuente alternativa o incompleta. NO es un
+ * error: la respuesta es 200 y el frontend solo pinta un aviso. Es opcional:
+ * ausente cuando todo salió bien.
+ */
+export interface Degraded {
+  reason: DegradedReason;
+  /** Texto en español, listo para mostrar al técnico. */
+  message: string;
+}
+
 /** Hash xmur3 (32-bit) sobre un string. Sin dependencias. */
 function xmur3(str: string): () => number {
   let h = 1779033703 ^ str.length;

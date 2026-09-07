@@ -8,9 +8,9 @@
 // La consulta es por COORDENADA (la del técnico o la de la tarea), no por
 // número de cuenta: es lo que hace la pestaña "GPON" de FSM.
 
-import { connectorMode } from '../../config/env.js';
+import { connectorMode, env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
-import { seededRng } from '../_shared.js';
+import { seededRng, type AccountStatusCode, type Degraded } from '../_shared.js';
 import { fetchNearbyNaps } from '../http/tec-api.js';
 import { toNumber } from '../ispmonitor/normalize.js';
 
@@ -19,8 +19,15 @@ export interface Coordinates {
   longitude: number;
 }
 
+/** De dónde salió el dato de NAPs: FSM (fsm-data-ms) o TEC (registro GPON). */
+export type NapSource = 'FSM' | 'TEC';
+
 export interface NearbyNap {
+  /** Id numérico de la NAP en FSM; null cuando la fuente es TEC. */
+  napId: number | null;
   napCode: string;
+  /** Red de acceso (OLT/puerto) a la que cuelga la NAP. Nunca "nodo". */
+  networkName: string | null;
   /** Coordenada de la NAP; null si la API no la devuelve. */
   latitude: number | null;
   longitude: number | null;
@@ -29,32 +36,56 @@ export interface NearbyNap {
   occupiedPorts: number;
   totalPorts: number;
   freePorts: number;
+  source: NapSource;
 }
 
 export interface NapPort {
   portNumber: number;
   occupied: boolean;
-  clientAccountNumber?: string;
-  clientStatus?: 'A' | 'S';
+  clientAccountNumber: string | null;
+  /** Serial/ID GPON del equipo conectado al puerto. */
+  equipmentId: string | null;
+  /** Estado del cliente; null mientras no se haya consultado (`statusPending`). */
+  clientStatus: AccountStatusCode | null;
+  /** true en los puertos ocupados cuyo estado todavía no se consultó. */
+  statusPending: boolean;
+}
+
+/** Cuántos estados quedan por resolver y con qué tope, para el paso 2. */
+export interface StatusFanOut {
+  supported: boolean;
+  pendingAccounts: number;
+  batchLimit: number;
 }
 
 export interface NapPorts {
-  napCode: string;
+  /** Valor tal como llegó en la ruta: id numérico de FSM o código de NAP. */
+  napRef: string;
+  napId: number | null;
+  napCode: string | null;
   ports: NapPort[];
   /**
    * false cuando el detalle puerto a puerto no está disponible con los accesos
-   * actuales (la API de operadora solo expone el conteo ocupados/total).
+   * actuales (la API de TEC solo expone el conteo ocupados/total).
    */
   detailAvailable: boolean;
   occupiedPorts?: number;
   totalPorts?: number;
   /** Explicación para mostrar al técnico cuando `detailAvailable` es false. */
   note?: string;
+  statusFanOut: StatusFanOut;
+  source: NapSource;
+  degraded?: Degraded;
 }
 
 export interface TecConnector {
   getNearbyNaps(coords: Coordinates): Promise<NearbyNap[]>;
   getNapPorts(napCode: string): Promise<NapPorts>;
+}
+
+/** El fan-out de estados no existe por el camino TEC. */
+function tecFanOut(): StatusFanOut {
+  return { supported: false, pendingAccounts: 0, batchLimit: env.FSM_STATUS_BATCH_LIMIT };
 }
 
 // ---------------------------------------------------------------------------
@@ -90,13 +121,16 @@ export const tecMock: TecConnector = {
       const distance = rng.floatBetween(20, 320, 1);
       const position = offsetCoords(coords, distance, rng.floatBetween(0, Math.PI * 2, 4));
       naps.push({
+        napId: null,
         napCode: makeNapCode(rng),
+        networkName: null,
         latitude: position.latitude,
         longitude: position.longitude,
         distanceMeters: distance,
         occupiedPorts: occupied,
         totalPorts: total,
         freePorts: total - occupied,
+        source: 'TEC',
       });
     }
     return naps.sort((a, b) => a.distanceMeters - b.distanceMeters);
@@ -110,19 +144,26 @@ export const tecMock: TecConnector = {
     for (let i = 1; i <= total; i++) {
       const occupied = rng.bool(0.7);
       if (occupied) occupiedCount += 1;
-      const port: NapPort = { portNumber: i, occupied };
-      if (occupied) {
-        port.clientAccountNumber = `WX-${rng.intBetween(100000, 999999)}`;
-        port.clientStatus = rng.bool(0.85) ? 'A' : 'S';
-      }
+      const port: NapPort = {
+        portNumber: i,
+        occupied,
+        clientAccountNumber: occupied ? `WX-${rng.intBetween(100000, 999999)}` : null,
+        equipmentId: occupied ? `ZTEG${rng.intBetween(10000000, 99999999)}` : null,
+        clientStatus: occupied ? (rng.bool(0.85) ? 'A' : 'S') : null,
+        statusPending: false,
+      };
       ports.push(port);
     }
     return {
+      napRef: napCode,
+      napId: null,
       napCode,
       ports,
       detailAvailable: true,
       occupiedPorts: occupiedCount,
       totalPorts: total,
+      statusFanOut: tecFanOut(),
+      source: 'TEC',
     };
   },
 };
@@ -155,13 +196,18 @@ export function mapNapRow(row: unknown): NearbyNap | null {
   const distance = toNumber(pick(row, ['distance', 'distanceMeters', 'distancia', 'metros'])) ?? 0;
 
   return {
+    // TEC identifica la NAP por código, no por id numérico, y no expone la red
+    // de acceso: ambos campos quedan en null y `source` lo deja explícito.
+    napId: null,
     napCode: String(code),
+    networkName: null,
     latitude: toNumber(pick(row, ['lat', 'latitude', 'latitud'])),
     longitude: toNumber(pick(row, ['lng', 'lon', 'long', 'longitude', 'longitud'])),
     distanceMeters: distance,
     occupiedPorts: used,
     totalPorts: total,
     freePorts: Math.max(0, total - used),
+    source: 'TEC',
   };
 }
 
@@ -183,12 +229,16 @@ export const tecReal: TecConnector = {
     // que todavía no está publicado como API). Se devuelve una respuesta explícita
     // en vez de fallar, para que la app muestre el conteo y avise del faltante.
     return {
+      napRef: napCode,
+      napId: null,
       napCode,
       ports: [],
       detailAvailable: false,
       note:
         'El detalle puerto a puerto (clientes activos/suspendidos) todavía no está ' +
         'expuesto en la API de operadora. Se muestran los puertos ocupados del listado de NAPs.',
+      statusFanOut: tecFanOut(),
+      source: 'TEC',
     };
   },
 };

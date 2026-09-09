@@ -6,7 +6,7 @@
  * posible y `chain` está acotado a 4.
  *
  * Uso:
- *   npx tsx scripts/probe-fsm-api.ts token
+ *   npx tsx scripts/probe-fsm-api.ts token [--live]
  *   npx tsx scripts/probe-fsm-api.ts process <cuenta> [Todas|Pendientes]
  *   npx tsx scripts/probe-fsm-api.ts tasks <workOrder>
  *   npx tsx scripts/probe-fsm-api.ts status <cuenta>
@@ -15,7 +15,10 @@
  *   npx tsx scripts/probe-fsm-api.ts chain <cuenta>
  *
  * Flags globales:
- *   --brand=telenews|seteinfo   marca (realm) a usar. Default: FSM_DEFAULT_BRAND.
+ *   --brand=telenews            marca (realm) a usar. Default: FSM_DEFAULT_BRAND.
+ *                               (seteinfo está deshabilitada desde 2026-09-09.)
+ *   --live                      solo con `token`: negocia de verdad contra
+ *                               token-api/v1.0/generate (1 llamada).
  *   --save                      guarda la salida cruda en
  *                               tests/fixtures/fsm/<comando>.json, para que los
  *                               tests usen datos reales sin volver a pegarle a
@@ -44,6 +47,7 @@ import {
   configuredBrands,
   decodeJwtClaims,
   fsmTokenStatus,
+  getFsmAccessToken,
   resolveBrand,
   type FsmBrand,
 } from '../src/connectors/http/fsm-token.js';
@@ -96,6 +100,12 @@ function showToken(brand: FsmBrand): void {
   console.log(`client: ${brandClientId(brand)}`);
   console.log(`marcas configuradas: ${configuredBrands().join(', ') || '(ninguna)'}`);
   console.log(`modo NAPs: ${env.NAPS_PRIMARY_SOURCE}`);
+  // Nunca se imprime la key: solo si está o no.
+  const suffix = brand.toUpperCase();
+  const tokenUrl = (process.env[`FSM_TOKEN_URL_${suffix}`] ?? '').trim();
+  const tokenKey = (process.env[`FSM_TOKEN_KEY_${suffix}`] ?? '').trim();
+  console.log(`emisor: ${tokenUrl || '(sin FSM_TOKEN_URL)'}`);
+  console.log(`key:    ${tokenKey ? `configurada (${tokenKey.length} chars)` : '(sin FSM_TOKEN_KEY)'}`);
 
   for (const health of fsmTokenStatus()) {
     const restante =
@@ -124,12 +134,37 @@ function showToken(brand: FsmBrand): void {
   );
 }
 
-function parseFlags(argv: string[]): { args: string[]; brandFlag: string | null } {
+/**
+ * `token --live`: negocia de verdad contra `token-api/v1.0/generate`. UNA sola
+ * llamada, y el token NUNCA se imprime: solo `azp`, `iss`, `exp` y la fuente.
+ */
+async function checkTokenLive(brand: FsmBrand): Promise<void> {
+  console.log(`\n===== token --live (marca ${brand}) =====`);
+  console.log('(1 llamada real al emisor de la operadora)');
+  const token = await getFsmAccessToken(brand);
+  const claims = decodeJwtClaims(token.token);
+  console.log(`fuente:   ${token.source}`);
+  console.log(`exp:      ${token.expiresAt ? token.expiresAt.toISOString() : '—'}`);
+  console.log(`azp:      ${claims?.azp ?? '—'}`);
+  console.log(`iss:      ${claims?.iss ?? '—'}`);
+  console.log(`longitud: ${token.token.length} chars (el token no se imprime)`);
+}
+
+function parseFlags(argv: string[]): {
+  args: string[];
+  brandFlag: string | null;
+  live: boolean;
+} {
   const args: string[] = [];
   let brandFlag: string | null = null;
+  let live = false;
   for (const arg of argv) {
     if (arg === '--save') {
       saveEnabled = true;
+      continue;
+    }
+    if (arg === '--live') {
+      live = true;
       continue;
     }
     if (arg.startsWith('--brand=')) {
@@ -138,17 +173,18 @@ function parseFlags(argv: string[]): { args: string[]; brandFlag: string | null 
     }
     args.push(arg);
   }
-  return { args, brandFlag };
+  return { args, brandFlag, live };
 }
 
 async function main(): Promise<void> {
-  const { args, brandFlag } = parseFlags(process.argv.slice(2));
+  const { args, brandFlag, live } = parseFlags(process.argv.slice(2));
   const [command, ...rest] = args;
   const brand = resolveBrand(brandFlag);
   saveName = command ?? 'probe';
 
   if (command === 'token') {
     showToken(brand);
+    if (live) await checkTokenLive(brand);
     return;
   }
 
@@ -270,14 +306,14 @@ async function main(): Promise<void> {
 
   console.log(
     'Uso:\n' +
-      '  npx tsx scripts/probe-fsm-api.ts token\n' +
+      '  npx tsx scripts/probe-fsm-api.ts token [--live]\n' +
       '  npx tsx scripts/probe-fsm-api.ts process <cuenta> [Todas|Pendientes]\n' +
       '  npx tsx scripts/probe-fsm-api.ts tasks <workOrder>\n' +
       '  npx tsx scripts/probe-fsm-api.ts status <cuenta>\n' +
       '  npx tsx scripts/probe-fsm-api.ts naps <lat> <lng> [meters] [maxRows]\n' +
       '  npx tsx scripts/probe-fsm-api.ts nap-accounts <napId>\n' +
       '  npx tsx scripts/probe-fsm-api.ts chain <cuenta>   (máx. 4 llamadas)\n' +
-      '\nFlags: --brand=telenews|seteinfo  --save',
+      '\nFlags: --brand=telenews  --save  --live (solo token)',
   );
   process.exitCode = 1;
 }

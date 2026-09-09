@@ -177,16 +177,16 @@ describe('Traducción de las respuestas upstream', () => {
     expect(spy.calls).toHaveLength(1);
   });
 
-  it('401 en modo client_credentials reintenta UNA vez con un token nuevo', async () => {
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://keycloak.local/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'id';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = 'secreto';
+  it('401 con token renovable reintenta UNA vez con un token nuevo', async () => {
+    // Protocolo real de la operadora: token-api/v1.0/generate (no OAuth).
+    process.env.FSM_TOKEN_URL_TELENEWS = 'https://apix.local/rest/token-api/v1.0/generate';
+    process.env.FSM_TOKEN_KEY_TELENEWS = 'a2V5LWRlLXBydWViYQ==';
     resetFsmTokenCache();
 
     let dataCalls = 0;
     spy = installFetchSpy((call) => {
-      if (call.url.includes('keycloak')) {
-        return { status: 200, body: { access_token: futureJwt(24), expires_in: 86400 } };
+      if (call.url.includes('token-api')) {
+        return { status: 200, body: { token: futureJwt(24), expiryTime: 86400 } };
       }
       dataCalls += 1;
       return dataCalls === 1
@@ -198,9 +198,8 @@ describe('Traducción de las respuestas upstream', () => {
     expect(result).toEqual({ data: [{ ok: true }] });
     expect(dataCalls).toBe(2);
 
-    delete process.env.FSM_TOKEN_URL_TELENEWS;
-    delete process.env.FSM_CLIENT_ID_TELENEWS;
-    delete process.env.FSM_CLIENT_SECRET_TELENEWS;
+    process.env.FSM_TOKEN_URL_TELENEWS = '';
+    process.env.FSM_TOKEN_KEY_TELENEWS = '';
   });
 });
 

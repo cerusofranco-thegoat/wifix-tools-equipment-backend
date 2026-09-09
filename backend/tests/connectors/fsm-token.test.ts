@@ -10,9 +10,11 @@ import {
   getFsmAccessToken,
   invalidateFsmToken,
   markFsmTokenRejected,
+  parseGeneratedToken,
   resetFsmTokenCache,
   resolveBrand,
 } from '../../src/connectors/http/fsm-token.js';
+import { env } from '../../src/config/env.js';
 import { ApiError } from '../../src/middleware/error-handler.js';
 import { expiredJwt, futureJwt, installFetchSpy, type FetchSpy } from '../helpers/fsm-app.js';
 
@@ -20,14 +22,24 @@ const TOKEN_VARS = [
   'FSM_API_TOKEN_TELENEWS',
   'FSM_API_TOKEN_SETEINFO',
   'FSM_TOKEN_URL_TELENEWS',
-  'FSM_CLIENT_ID_TELENEWS',
-  'FSM_CLIENT_SECRET_TELENEWS',
+  'FSM_TOKEN_KEY_TELENEWS',
+  'FSM_TOKEN_URL_SETEINFO',
+  'FSM_TOKEN_KEY_SETEINFO',
 ];
+
+/** URL real del emisor (solo como literal: ningún test sale a la red). */
+const GENERATE_URL = 'https://apix.grupotvcable.com/rest/token-api/v1.0/generate';
 
 let spy: FetchSpy | null = null;
 
 function clearFsmEnv(): void {
   for (const key of TOKEN_VARS) delete process.env[key];
+}
+
+/** Configura la renovación automática de una marca con una key de mentira. */
+function useGeneratedToken(key = 'a2V5LWRlLXBydWViYQ=='): void {
+  process.env.FSM_TOKEN_URL_TELENEWS = GENERATE_URL;
+  process.env.FSM_TOKEN_KEY_TELENEWS = key;
 }
 
 beforeEach(() => {
@@ -66,8 +78,7 @@ describe('resolveBrand', () => {
   });
 
   it('acepta las marcas configuradas, sin importar mayúsculas', () => {
-    expect(resolveBrand('SETEINFO')).toBe('seteinfo');
-    expect(resolveBrand(' telenews ')).toBe('telenews');
+    expect(resolveBrand(' TELENEWS ')).toBe('telenews');
   });
 
   it('rechaza una marca desconocida con VALIDATION_ERROR', () => {
@@ -79,6 +90,46 @@ describe('resolveBrand', () => {
       expect((err as ApiError).code).toBe('VALIDATION_ERROR');
       expect((err as ApiError).statusCode).toBe(400);
     }
+  });
+
+  // La operadora deshabilitó seteinfo el 2026-09-09, pero la plomería
+  // multi-marca sigue viva: reactivarla es solo listarla en FSM_BRANDS.
+  it('seteinfo está fuera por defecto y vuelve con solo listarla en FSM_BRANDS', () => {
+    expect(() => resolveBrand('seteinfo')).toThrow(ApiError);
+
+    const original = env.FSM_BRANDS;
+    Object.assign(env, { FSM_BRANDS: ['telenews', 'seteinfo'] });
+    try {
+      expect(resolveBrand('SETEINFO')).toBe('seteinfo');
+    } finally {
+      Object.assign(env, { FSM_BRANDS: original });
+    }
+  });
+});
+
+describe('parseGeneratedToken — respuesta de token-api/generate', () => {
+  it('lee token y expiryTime en la raíz', () => {
+    expect(parseGeneratedToken({ token: 'jwt-1', expiryTime: 86400 })).toEqual({
+      token: 'jwt-1',
+      expiry: 86400,
+    });
+  });
+
+  it('los lee también un nivel adentro (data / result)', () => {
+    expect(parseGeneratedToken({ data: { token: 'jwt-2', expiryTime: '86400' } })).toEqual({
+      token: 'jwt-2',
+      expiry: 86400,
+    });
+    expect(parseGeneratedToken({ result: { token: 'jwt-3' } })).toEqual({
+      token: 'jwt-3',
+      expiry: null,
+    });
+  });
+
+  it('devuelve null si no hay token', () => {
+    expect(parseGeneratedToken({ expiryTime: 86400 })).toBeNull();
+    expect(parseGeneratedToken(null)).toBeNull();
+    expect(parseGeneratedToken('boom')).toBeNull();
   });
 });
 
@@ -120,33 +171,73 @@ describe('getFsmAccessToken — prioridad de modos', () => {
     expect(spy.calls).toHaveLength(0);
   });
 
-  it('client_credentials tiene prioridad sobre el token estático', async () => {
+  it('el token generado tiene prioridad sobre el estático y usa el contrato de la operadora', async () => {
     process.env.FSM_API_TOKEN_TELENEWS = futureJwt(10, { azp: 'estatico' });
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://keycloak.local/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'apim_callcenter_telenews';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = 'secreto-que-no-debe-loguearse';
+    useGeneratedToken('a2V5LXF1ZS1uby1kZWJlLWxvZ3VlYXJzZQ==');
 
     const negotiated = futureJwt(24, { azp: 'negociado' });
     spy = installFetchSpy(() => ({
       status: 200,
-      body: { access_token: negotiated, expires_in: 86400 },
+      body: { token: negotiated, expiryTime: 86400 },
     }));
 
     const token = await getFsmAccessToken('telenews');
-    expect(token.source).toBe('CLIENT_CREDENTIALS');
+    expect(token.source).toBe('GENERATED');
     expect(token.token).toBe(negotiated);
     expect(spy.calls).toHaveLength(1);
-    expect(spy.calls[0]!.method).toBe('POST');
-    expect(spy.calls[0]!.url).toBe('http://keycloak.local/token');
+
+    const call = spy.calls[0]!;
+    expect(call.method).toBe('POST');
+    expect(call.url).toBe(GENERATE_URL);
+    expect(call.headers['content-type']).toBe('application/json');
+    // Contrato exacto confirmado por la operadora el 2026-09-09.
+    expect(call.body).toEqual({
+      channel: 'telenews',
+      key: 'a2V5LXF1ZS1uby1kZWJlLWxvZ3VlYXJzZQ==',
+      realm: 'realm-ecommerce-callcenter-telenews',
+      type: 'Basic',
+    });
+  });
+
+  it('expiryTime (segundos) manda sobre el exp del JWT', async () => {
+    useGeneratedToken();
+    // JWT que dice durar 24 h, pero la operadora concede 3600 s.
+    spy = installFetchSpy(() => ({
+      status: 200,
+      body: { token: futureJwt(24), expiryTime: 3600 },
+    }));
+
+    const token = await getFsmAccessToken('telenews');
+    const seconds = Math.round((token.expiresAt!.getTime() - Date.now()) / 1000);
+    expect(seconds).toBeGreaterThan(3500);
+    expect(seconds).toBeLessThanOrEqual(3600);
+  });
+
+  it('sin expiryTime cae al exp del propio JWT', async () => {
+    useGeneratedToken();
+    spy = installFetchSpy(() => ({ status: 200, body: { data: { token: futureJwt(24) } } }));
+
+    const token = await getFsmAccessToken('telenews');
+    const seconds = Math.round((token.expiresAt!.getTime() - Date.now()) / 1000);
+    expect(seconds).toBeGreaterThan(86_000);
+  });
+
+  it('una respuesta sin "token" degrada a REJECTED', async () => {
+    useGeneratedToken();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spy = installFetchSpy(() => ({ status: 200, body: { mensaje: 'sin token' } }));
+
+    const err = await getFsmAccessToken('telenews').catch((e: unknown) => e);
+    expect((err as ApiError).code).toBe('UPSTREAM_AUTH_ERROR');
+    expect((err as ApiError).statusCode).toBe(503);
+    expect((err as ApiError).meta).toMatchObject({ reason: 'REJECTED' });
   });
 
   it('cachea el token negociado: la segunda llamada no vuelve a negociar', async () => {
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://keycloak.local/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'id';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = 'secreto';
+    useGeneratedToken();
     spy = installFetchSpy(() => ({
       status: 200,
-      body: { access_token: futureJwt(24), expires_in: 86400 },
+      body: { token: futureJwt(24), expiryTime: 86400 },
     }));
 
     await getFsmAccessToken('telenews');
@@ -159,12 +250,10 @@ describe('getFsmAccessToken — prioridad de modos', () => {
   });
 
   it('single-flight: dos llamadas concurrentes disparan UNA sola negociación', async () => {
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://keycloak.local/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'id';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = 'secreto';
+    useGeneratedToken();
     spy = installFetchSpy(async () => {
       await new Promise((r) => setTimeout(r, 20));
-      return { status: 200, body: { access_token: futureJwt(24), expires_in: 86400 } };
+      return { status: 200, body: { token: futureJwt(24), expiryTime: 86400 } };
     });
 
     const [a, b, c] = await Promise.all([
@@ -178,9 +267,7 @@ describe('getFsmAccessToken — prioridad de modos', () => {
   });
 
   it('un emisor inalcanzable degrada a REJECTED (no tumba el proceso)', async () => {
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://192.168.59.181:8080/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'id';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = 'secreto';
+    useGeneratedToken();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     spy = installFetchSpy(() => {
       throw new Error('ECONNREFUSED');
@@ -193,12 +280,10 @@ describe('getFsmAccessToken — prioridad de modos', () => {
 });
 
 describe('Los tokens nunca aparecen en los logs', () => {
-  it('ni el access_token ni el client_secret salen por consola', async () => {
-    const secret = 'secreto-super-confidencial-123';
+  it('ni el JWT ni la key Basic salen por consola', async () => {
+    const secret = 'a2V5LXN1cGVyLWNvbmZpZGVuY2lhbC0xMjM=';
     const negotiated = futureJwt(24, { azp: 'apim_callcenter_telenews' });
-    process.env.FSM_TOKEN_URL_TELENEWS = 'http://keycloak.local/token';
-    process.env.FSM_CLIENT_ID_TELENEWS = 'apim_callcenter_telenews';
-    process.env.FSM_CLIENT_SECRET_TELENEWS = secret;
+    useGeneratedToken(secret);
 
     const logged: string[] = [];
     const collect = (...args: unknown[]): void => {
@@ -211,7 +296,7 @@ describe('Los tokens nunca aparecen en los logs', () => {
 
     spy = installFetchSpy(() => ({
       status: 200,
-      body: { access_token: negotiated, expires_in: 86400 },
+      body: { token: negotiated, expiryTime: 86400 },
     }));
     await getFsmAccessToken('telenews');
 
@@ -228,7 +313,8 @@ describe('fsmTokenStatus — sin red', () => {
   it('informa MISSING cuando no hay nada configurado', () => {
     spy = installFetchSpy(() => ({ status: 200, body: {} }));
     const status = fsmTokenStatus();
-    expect(status.map((s) => s.brand)).toEqual(['telenews', 'seteinfo']);
+    // Solo telenews: seteinfo quedó fuera por indicación de la operadora.
+    expect(status.map((s) => s.brand)).toEqual(['telenews']);
     expect(status.every((s) => s.available === false && s.reason === 'MISSING')).toBe(true);
     expect(status.every((s) => s.tokenSource === null)).toBe(true);
     expect(spy.calls).toHaveLength(0);

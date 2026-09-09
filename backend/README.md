@@ -268,6 +268,14 @@ quedan encerrados en `fsm-token.ts`: el técnico nunca los ve. La marca viaja en
 el header **`X-Wifix-Brand`**, con override por query `?brand=`; si falta se usa
 `FSM_DEFAULT_BRAND`.
 
+> **Indicación oficial de la operadora (2026-09-09): usar SOLO
+> `realm-ecommerce-callcenter-telenews`**, que contiene **toda** la base de
+> clientes. `seteinfo` queda **deshabilitada**: el default de `FSM_BRANDS` es
+> `telenews` y una petición con `X-Wifix-Brand: seteinfo` responde 400. La
+> plomería multi-marca (header, cache por marca, tabla de realms, health por
+> marca) **no se borró**: reactivar la segunda marca es listarla en `FSM_BRANDS`
+> y poner su credencial, nada más.
+
 ### El token vence cada 24 h — y eso NO puede tumbar la app
 
 - **Un 401 de FSM jamás sale como 401 del backend.** La webapp borra la sesión
@@ -281,20 +289,39 @@ el header **`X-Wifix-Brand`**, con override por query `?brand=`; si falta se usa
   TEC, cuyas credenciales Digest sí son obligatorias.
 - Los tokens **nunca** se loguean: en logs solo `brand`, `azp` y `exp`.
 
-Prioridad de resolución: `client_credentials`
-(`FSM_TOKEN_URL_*` + `FSM_CLIENT_ID_*` + `FSM_CLIENT_SECRET_*`, con
-single-flight y refresh en `exp − FSM_TOKEN_SKEW_MS`) → token estático
-`FSM_API_TOKEN_<MARCA>` → `MISSING`.
+Prioridad de resolución: **token generado** (`FSM_TOKEN_URL_<MARCA>` +
+`FSM_TOKEN_KEY_<MARCA>`, con single-flight y refresh en
+`exp − FSM_TOKEN_SKEW_MS`) → token estático `FSM_API_TOKEN_<MARCA>` → `MISSING`.
 
-⚠ El emisor del token de ejemplo es `192.168.59.181:8080` (IP privada): si ese
-Keycloak solo vive en la LAN de la operadora, `client_credentials` no funcionará
-desde el servidor y **la rotación manual es el camino real**, no el de respaldo.
+**Renovación automática (protocolo confirmado por la operadora, 2026-09-09).**
+No es OAuth `client_credentials`: es un protocolo propio del API manager y hay
+URL pública, así que la rotación manual dejó de ser el camino principal.
 
-**Rotación manual del token (procedimiento):**
+```http
+POST https://apix.grupotvcable.com/rest/token-api/v1.0/generate
+Content-Type: application/json
+
+{ "channel": "telenews",
+  "key": "<FSM_TOKEN_KEY_TELENEWS>",
+  "realm": "realm-ecommerce-callcenter-telenews",
+  "type": "Basic" }
+```
+
+Responde `token` (el JWT) y `expiryTime` (86400 s). El parser es tolerante:
+busca `token`/`expiryTime` en la raíz **y un nivel adentro** (`data`, `result`),
+porque la operadora entregó el contrato como un fragmento suelto. Si no viene
+`expiryTime`, se cae al `exp` del propio JWT. `FSM_TOKEN_KEY_*` es la credencial
+**Basic en base64** (`usuario:secreto`); vive solo en el `.env` del servidor
+—que está en `.gitignore`— y **nunca** se loguea, ni entera ni parcial.
+
+Las antiguas `FSM_CLIENT_ID_*` / `FSM_CLIENT_SECRET_*` se **eliminaron**: no
+existía tal negociación.
+
+**Rotación manual del token (respaldo, si `generate` no responde):**
 
 1. Pedir el Bearer nuevo al contacto de la operadora (dura 24 h).
-2. Pegarlo en `FSM_API_TOKEN_TELENEWS` (o `..._SETEINFO`) del `.env` del
-   servidor. No se comparte por canales sin cifrar y no se commitea.
+2. Pegarlo en `FSM_API_TOKEN_TELENEWS` del `.env` del servidor. No se comparte
+   por canales sin cifrar y no se commitea.
 3. Reiniciar el servicio (el token se lee del entorno al arrancar).
 4. Verificar **sin gastar una consulta a producción**:
    `npx tsx scripts/probe-fsm-api.ts token` o `GET /integrations/fsm/health`,
@@ -519,10 +546,12 @@ el proceso aborta con un mensaje claro. Las relevantes:
   upstream: peticiones simultáneas máximas y vigencia del cache de respuestas.
 - `FSM_API_BASE_URL`, `FSM_API_CHANNEL`, `FSM_API_TIMEOUT_MS` — API de FSM.
   **No abortan el arranque si faltan credenciales**, a diferencia de TEC.
-- `FSM_API_TOKEN_TELENEWS` / `FSM_API_TOKEN_SETEINFO` — Bearer estático (24 h).
-  Alternativa: `FSM_TOKEN_URL_*` + `FSM_CLIENT_ID_*` + `FSM_CLIENT_SECRET_*`
-  (`client_credentials`, con prioridad) y `FSM_TOKEN_SKEW_MS` (60000).
-- `FSM_BRANDS`, `FSM_DEFAULT_BRAND`, `FSM_BRAND_STRATEGY` — marcas/realms.
+- `FSM_API_TOKEN_TELENEWS` / `FSM_API_TOKEN_SETEINFO` — Bearer estático (24 h),
+  respaldo. Camino principal: `FSM_TOKEN_URL_<MARCA>` (endpoint `generate`) +
+  `FSM_TOKEN_KEY_<MARCA>` (credencial Basic base64, **secreta**), con prioridad
+  sobre el estático, más `FSM_TOKEN_SKEW_MS` (60000).
+- `FSM_BRANDS` (default `telenews`, seteinfo deshabilitada por la operadora),
+  `FSM_DEFAULT_BRAND`, `FSM_BRAND_STRATEGY` — marcas/realms.
 - `FSM_API_MAX_CONCURRENCY` (4), `FSM_API_CACHE_TTL_MS` (60000),
   `FSM_STATUS_CACHE_TTL_MS` (300000), `FSM_STATUS_BATCH_LIMIT` (12),
   `FSM_ORDERS_MAX_FANOUT` (5) — cuidado del upstream en FSM.

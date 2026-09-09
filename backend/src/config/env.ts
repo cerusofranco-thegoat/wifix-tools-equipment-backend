@@ -61,9 +61,13 @@ const envSchema = z.object({
         .filter((s) => s.length > 0),
     ),
   // Marcas / realms. La marca por defecto se usa si la petición no manda X-Wifix-Brand.
+  // Indicación oficial de la operadora (2026-09-09): usar SOLO `telenews`
+  // (realm-ecommerce-callcenter-telenews), que contiene toda la base de
+  // clientes. `seteinfo` queda deshabilitada; para reactivarla basta con
+  // listarla acá — la plomería multi-marca sigue intacta.
   FSM_BRANDS: z
     .string()
-    .default('telenews,seteinfo')
+    .default('telenews')
     .transform((val) =>
       val
         .split(',')
@@ -78,14 +82,15 @@ const envSchema = z.object({
   // Token estático (24 h, pegado a mano). Vacío = la marca no está disponible.
   FSM_API_TOKEN_TELENEWS: z.string().default(''),
   FSM_API_TOKEN_SETEINFO: z.string().default(''),
-  // Gancho client_credentials: si están los tres, tienen prioridad sobre el estático.
+  // Renovación automática contra `token-api/v1.0/generate` (protocolo propio de
+  // la operadora, NO OAuth client_credentials). Si están URL + KEY de la marca,
+  // tienen prioridad sobre el token estático. Las antiguas FSM_CLIENT_ID_* /
+  // FSM_CLIENT_SECRET_* quedaron sin uso el 2026-09-09 y se eliminaron.
   FSM_TOKEN_SKEW_MS: z.coerce.number().int().nonnegative().default(60000),
   FSM_TOKEN_URL_TELENEWS: z.string().default(''),
-  FSM_CLIENT_ID_TELENEWS: z.string().default(''),
-  FSM_CLIENT_SECRET_TELENEWS: z.string().default(''),
+  FSM_TOKEN_KEY_TELENEWS: z.string().default(''),
   FSM_TOKEN_URL_SETEINFO: z.string().default(''),
-  FSM_CLIENT_ID_SETEINFO: z.string().default(''),
-  FSM_CLIENT_SECRET_SETEINFO: z.string().default(''),
+  FSM_TOKEN_KEY_SETEINFO: z.string().default(''),
   // Fuente primaria de NAPs para el campo 6 (ver ADR-04). Hoy: tec.
   NAPS_PRIMARY_SOURCE: z.enum(['fsm', 'tec']).default('tec'),
   // --- Almacenamiento ---
@@ -162,9 +167,8 @@ if ((parsed.data.CONNECTOR_MODE_FSM ?? parsed.data.CONNECTOR_MODE) === 'real') {
     const suffix = brand.toUpperCase();
     const staticToken = process.env[`FSM_API_TOKEN_${suffix}`] ?? '';
     const tokenUrl = process.env[`FSM_TOKEN_URL_${suffix}`] ?? '';
-    const clientId = process.env[`FSM_CLIENT_ID_${suffix}`] ?? '';
-    const clientSecret = process.env[`FSM_CLIENT_SECRET_${suffix}`] ?? '';
-    return !staticToken && !(tokenUrl && clientId && clientSecret);
+    const tokenKey = process.env[`FSM_TOKEN_KEY_${suffix}`] ?? '';
+    return !staticToken && !(tokenUrl && tokenKey);
   });
   if (sinAcceso.length > 0) {
     console.warn(

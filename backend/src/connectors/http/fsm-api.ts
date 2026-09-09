@@ -221,11 +221,11 @@ async function call<T>(input: CallInput): Promise<T | null> {
     return translate<T>(brand, path, first.status, first.body);
   }
 
-  // La operadora rechazó el token: se invalida el cacheado y, SOLO en modo
-  // client_credentials, se reintenta una vez con uno nuevo. Con token estático
-  // no hay con qué renovar → REJECTED directo.
+  // La operadora rechazó el token: se invalida el cacheado y, SOLO si el token
+  // se puede regenerar (`token-api/generate`), se reintenta una vez con uno
+  // nuevo. Con token estático no hay con qué renovar → REJECTED directo.
   invalidateFsmToken(brand);
-  if (token.source !== 'CLIENT_CREDENTIALS') {
+  if (token.source !== 'GENERATED') {
     markFsmTokenRejected(brand);
     throw ApiError.upstreamAuth({ brand, reason: 'REJECTED', expiresAt: token.expiresAt });
   }

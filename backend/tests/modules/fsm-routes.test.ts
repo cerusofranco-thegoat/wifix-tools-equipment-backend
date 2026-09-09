@@ -31,6 +31,7 @@ const originalEnv = {
   CONNECTOR_MODE_FSM: env.CONNECTOR_MODE_FSM,
   CONNECTOR_MODE_TEC: env.CONNECTOR_MODE_TEC,
   NAPS_PRIMARY_SOURCE: env.NAPS_PRIMARY_SOURCE,
+  FSM_BRANDS: env.FSM_BRANDS,
 };
 
 beforeAll(async () => {
@@ -50,6 +51,7 @@ beforeEach(() => {
     CONNECTOR_MODE_FSM: 'mock',
     CONNECTOR_MODE_TEC: 'mock',
     NAPS_PRIMARY_SOURCE: 'tec',
+    FSM_BRANDS: originalEnv.FSM_BRANDS,
   });
   delete process.env.FSM_API_TOKEN_TELENEWS;
   delete process.env.FSM_API_TOKEN_SETEINFO;
@@ -94,7 +96,8 @@ describe('CONNECTOR_MODE_FSM=mock — el frontend puede trabajar sin token', () 
     expect(body.mode).toBe('mock');
     expect(body.defaultBrand).toBe('telenews');
     expect(body.napsPrimarySource).toBe('tec');
-    expect(body.brands.map((b: { brand: string }) => b.brand)).toEqual(['telenews', 'seteinfo']);
+    // Solo telenews: la operadora deshabilitó seteinfo el 2026-09-09.
+    expect(body.brands.map((b: { brand: string }) => b.brand)).toEqual(['telenews']);
     for (const brand of body.brands) {
       expect(brand).toHaveProperty('available');
       expect(brand).toHaveProperty('reason');
@@ -744,8 +747,12 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(res.json().code).toBe('UPSTREAM_AUTH_ERROR');
   });
 
+  // La operadora dejó una sola marca activa (telenews), pero la plomería
+  // multi-marca sigue siendo obligatoria: si vuelve seteinfo, el cache NO puede
+  // mezclar realms. El test la habilita a mano para seguir protegiendo la regla.
   it('la marca del header cambia la consulta y no comparte cache con la otra', async () => {
     const fetchSpy = useRealFsm(() => ({ status: 200, body: ORDERS }));
+    Object.assign(env, { FSM_BRANDS: ['telenews', 'seteinfo'] });
 
     await app.inject({
       method: 'GET',

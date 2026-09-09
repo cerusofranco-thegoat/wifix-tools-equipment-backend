@@ -369,8 +369,10 @@ Llamadas upstream por ruta:
 ### Fuente de NAPs (campo 6)
 
 `NAPS_PRIMARY_SOURCE` (`fsm` \| `tec`) decide quién sirve `/naps/nearby`. **Hoy
-se despliega en `tec`**, que es lo que ya funciona en producción; se cambia a
-`fsm` el día que haya token. Con `fsm`, si falla la autenticación se cae a TEC y
+se despliega en `tec`**, que es lo que ya funciona en producción. Se cambia a
+`fsm` cuando la sonda confirme, desde una IP autorizada, que el token se negocia
+y que `/naps/nearest` devuelve datos válidos: tener la credencial no alcanza si
+el API manager no contesta. Con `fsm`, si falla la autenticación se cae a TEC y
 se responde 200 con `source:"TEC"` más un aviso en el header
 `X-Wifix-Degraded`. Si FSM falla por otra causa (5xx, timeout) **no** hay
 fallback: se propaga el 502, porque un error transitorio no justifica duplicar

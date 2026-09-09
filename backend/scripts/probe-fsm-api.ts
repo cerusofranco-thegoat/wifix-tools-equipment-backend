@@ -19,14 +19,23 @@
  *                               (seteinfo está deshabilitada desde 2026-09-09.)
  *   --live                      solo con `token`: negocia de verdad contra
  *                               token-api/v1.0/generate (1 llamada).
- *   --save                      guarda la salida cruda en
+ *   --save                      guarda la salida en
  *                               tests/fixtures/fsm/<comando>.json, para que los
  *                               tests usen datos reales sin volver a pegarle a
- *                               la operadora.
+ *                               la operadora. Los fixtures se guardan SIEMPRE
+ *                               redactados (nombres, teléfonos, correos,
+ *                               direcciones y documentos): se commitean, y lo
+ *                               que hace falta de ellos es la estructura.
  *
  * `token` funciona SIN RED y sin token configurado: informa MISSING.
  * Imprime el JSON crudo y la lista de claves de cada respuesta: es la única
  * forma de calibrar los parsers de `connectors/fsm/normalize.ts`.
+ *
+ * ⚠ Estado 2026-09-09: `apix.grupotvcable.com` NO responde desde la red de
+ * desarrollo. La conexión TLS se establece y el servidor la resetea sin
+ * contestar, en cualquier ruta y método (los puertos 80 y 8243 ni siquiera
+ * abren). Tiene pinta de filtrado por IP: hay que correr esta sonda desde una
+ * IP autorizada por la operadora.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -83,13 +92,56 @@ function show(label: string, data: unknown): void {
   }
 }
 
-/** Guarda la respuesta cruda como fixture reutilizable por los tests. */
+/**
+ * Claves cuyo valor es dato personal del cliente. Los fixtures se commitean, y
+ * lo que se necesita de ellos es la ESTRUCTURA (nombres de clave, tipos,
+ * formato de fecha), no la identidad de nadie.
+ */
+const SENSITIVE_KEYS = [
+  'name', 'names', 'nombre', 'nombres', 'clientname', 'fullname', 'apellido', 'apellidos',
+  'phone', 'phonenumber', 'telefono', 'celular', 'movil', 'contacto',
+  'email', 'correo', 'mail',
+  'address', 'direccion', 'domicilio', 'referencia', 'referencias',
+  'cedula', 'ruc', 'identification', 'identificacion', 'documento', 'dni', 'pasaporte',
+];
+
+/** Enmascara un valor conservando tipo y longitud aproximada. */
+function maskValue(value: unknown): unknown {
+  if (typeof value === 'number') return 0;
+  if (typeof value !== 'string') return value;
+  const text = value.trim();
+  if (!text) return value;
+  return `«REDACTADO:${text.length}»`;
+}
+
+/**
+ * Copia el payload enmascarando los datos personales. Conserva claves, tipos,
+ * anidamiento y longitud de los arrays: es lo que sirve para calibrar
+ * `normalize.ts`. Las coordenadas SÍ se conservan (son de la NAP/la orden y son
+ * necesarias para probar el cálculo de distancias).
+ */
+function redact(value: unknown, key = ''): unknown {
+  if (Array.isArray(value)) return value.map((item) => redact(item));
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redact(v, k);
+    }
+    return out;
+  }
+  return SENSITIVE_KEYS.includes(key.toLowerCase()) ? maskValue(value) : value;
+}
+
+/**
+ * Guarda la respuesta como fixture reutilizable por los tests, SIEMPRE
+ * redactada. Nunca se guarda un token: este script no persiste credenciales.
+ */
 function save(suffix: string, data: unknown): void {
   if (!saveEnabled) return;
   mkdirSync(FIXTURES_DIR, { recursive: true });
   const file = resolve(FIXTURES_DIR, `${saveName}${suffix}.json`);
-  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  console.log(`-- guardado en ${file}`);
+  writeFileSync(file, `${JSON.stringify(redact(data), null, 2)}\n`, 'utf8');
+  console.log(`-- guardado en ${file} (nombres, teléfonos, correos y direcciones redactados)`);
 }
 
 /** `token`: decodifica lo configurado. CERO llamadas de red. */
@@ -223,7 +275,8 @@ async function main(): Promise<void> {
       throw new Error('Uso: probe-fsm-api.ts naps <lat> <lng> [meters] [maxRows]');
     }
     const meters = Number(rest[2] ?? 100) || 100;
-    const maxRows = Number(rest[3] ?? 5) || 5;
+    // La operadora pidió pedir solo la NAP más cercana: default conservador.
+    const maxRows = Number(rest[3] ?? 3) || 3;
     const data = await fetchNapsNearest(brand, lat, lng, meters, maxRows);
     show(`naps/nearest ${lat},${lng} (${meters} m, ${maxRows} filas, marca ${brand})`, data);
     save('', data);
@@ -266,7 +319,7 @@ async function main(): Promise<void> {
 
     // 2/4
     if (Number.isFinite(lat) && Number.isFinite(lng)) {
-      const naps = await fetchNapsNearest(brand, lat, lng, 100, 5);
+      const naps = await fetchNapsNearest(brand, lat, lng, 100, 3);
       show(`2/4 naps/nearest ${lat},${lng}`, naps);
       save('-naps', naps);
 

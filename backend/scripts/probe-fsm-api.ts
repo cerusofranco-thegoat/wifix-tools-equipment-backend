@@ -34,7 +34,6 @@ import { fileURLToPath } from 'node:url';
 import { env } from '../src/config/env.js';
 import { ApiError } from '../src/middleware/error-handler.js';
 import {
-  activeAccountStatusKey,
   fetchAccountProcess,
   fetchAccountStatus,
   fetchNapAccounts,
@@ -213,7 +212,6 @@ async function main(): Promise<void> {
     // fetchAccountStatus prueba `account_id` y, ante un 400, `accountId`.
     const data = await fetchAccountStatus(brand, account);
     show(`account/status ${account} (marca ${brand})`, data);
-    console.log(`-- clave aceptada por /account/status: ${activeAccountStatusKey() ?? '(ninguna)'}`);
     save('', data);
     return;
   }

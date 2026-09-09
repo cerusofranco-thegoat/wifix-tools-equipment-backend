@@ -282,58 +282,35 @@ export function fetchWorkOrderTasks(brand: FsmBrand, workOrder: string): Promise
   return fsmPost(brand, '/workorder/tasks', { workOrder });
 }
 
-/**
- * Cuál de las dos claves acepta `/account/status`. La documentación dice
- * `data.account_id`, la colección Postman manda `data.accountId`: se prueba
- * `account_id` y, ante un 400, se reintenta UNA vez con `accountId`. La que
- * funcione queda memoizada para no volver a gastar la vuelta.
- */
-let accountStatusKey: 'account_id' | 'accountId' | null = null;
-
-/** Solo para pruebas: olvida qué clave funcionó en `/account/status`. */
-export function resetAccountStatusKey(): void {
-  accountStatusKey = null;
-}
-
-/** Clave que quedó activa en `/account/status` (diagnóstico). */
-export function activeAccountStatusKey(): 'account_id' | 'accountId' | null {
-  return accountStatusKey;
-}
-
 /** El endpoint documenta `account_id` como entero; la cuenta suele ser numérica. */
 function accountStatusValue(accountId: string): string | number {
   return /^\d+$/.test(accountId) ? Number(accountId) : accountId;
 }
 
-/** Estado A/S/T/O/P de una cuenta. Cache propio de 5 min. */
-export async function fetchAccountStatus(
-  brand: FsmBrand,
-  accountId: string,
-): Promise<Json | null> {
-  const value = accountStatusValue(accountId);
-  const opts: FsmRequestOptions = { ttlMs: env.FSM_STATUS_CACHE_TTL_MS };
-
-  if (accountStatusKey) {
-    return fsmPost(brand, '/account/status', { [accountStatusKey]: value }, opts);
-  }
-
-  try {
-    const result = await fsmPost(brand, '/account/status', { account_id: value }, opts);
-    accountStatusKey = 'account_id';
-    console.warn('[FSM] /account/status acepta la clave "account_id".');
-    return result;
-  } catch (err) {
-    // Solo un 400 (VALIDATION_ERROR) justifica probar la otra clave; cualquier
-    // otro fallo se propaga tal cual para no duplicar carga sobre producción.
-    if (!(err instanceof ApiError) || err.code !== 'VALIDATION_ERROR') throw err;
-    const result = await fsmPost(brand, '/account/status', { accountId: value }, opts);
-    accountStatusKey = 'accountId';
-    console.warn('[FSM] /account/status acepta la clave "accountId" (no "account_id").');
-    return result;
-  }
+/**
+ * Estado A/S/T/O/P de una cuenta. Cache propio de 5 min.
+ *
+ * La clave es **`data.account_id`** (snake_case, numérica), confirmado por la
+ * operadora el 2026-09-09. Hasta esa fecha había un doble intento
+ * `account_id` → `accountId` porque la documentación y la colección de Postman
+ * se contradecían; se eliminó: era una llamada de más contra producción.
+ */
+export function fetchAccountStatus(brand: FsmBrand, accountId: string): Promise<Json | null> {
+  return fsmPost(
+    brand,
+    '/account/status',
+    { account_id: accountStatusValue(accountId) },
+    { ttlMs: env.FSM_STATUS_CACHE_TTL_MS },
+  );
 }
 
-/** NAPs GPON cercanas a una coordenada. */
+/**
+ * NAPs GPON cercanas a una coordenada.
+ *
+ * La operadora confirmó (2026-09-09) que no hay tope de `meters`/`maxRows`,
+ * pero pidió **pedir solo la NAP más cercana a las coordenadas del cliente**:
+ * los defaults de la ruta son conservadores (ver `network-diagnostics.routes.ts`).
+ */
 export function fetchNapsNearest(
   brand: FsmBrand,
   lat: number,

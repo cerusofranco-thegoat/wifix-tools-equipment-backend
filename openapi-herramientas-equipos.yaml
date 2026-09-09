@@ -951,12 +951,16 @@ paths:
         - name: maxRows
           in: query
           required: false
-          description: Cantidad máxima de NAPs. Se ignora si la fuente efectiva es TEC.
+          description: >
+            Cantidad máxima de NAPs. Se ignora si la fuente efectiva es TEC.
+            La operadora pidió (2026-09-09) pedir solo la NAP más cercana a las
+            coordenadas del cliente: el default es conservador (3). El tope de
+            25 se mantiene para quien pida más filas a propósito.
           schema:
             type: integer
             minimum: 1
             maximum: 25
-            default: 5
+            default: 3
         - $ref: '#/components/parameters/BrandHeader'
         - $ref: '#/components/parameters/BrandQuery'
       responses:
@@ -2747,9 +2751,11 @@ components:
         totalPorts:
           type: integer
           description: >
-            Se toma del `ports` de `/naps/nearest` memorizado. Si no se puede
-            determinar, se devuelven solo los puertos conocidos y viene
-            `degraded.reason: TRUNCATED`.
+            Se toma del `ports` de `/naps/nearest` memorizado. Si no se conoce,
+            se aplica la regla oficial de la operadora (2026-09-09): una NAP
+            tiene 8 puertos, o 16 si hay más de 8 ocupados (máximo absoluto 16).
+            Por el camino FSM la rejilla `ports` sale siempre completa
+            (ocupados + libres).
         note:
           type: string
           description: Explicación para mostrar al técnico cuando no hay detalle.
@@ -3338,18 +3344,20 @@ components:
           type: string
           nullable: true
           description: >
-            ⚠ **Siempre `null` con FSM**: `/workorder/tasks` no devuelve el
-            técnico que cerró la tarea. Queda como punto abierto con la
-            operadora; la UI muestra "—".
+            Técnico que cerró la tarea. Sale de `lastModifyUser` de
+            `/workorder/tasks`, que la operadora expuso el 2026-09-09. Es `null`
+            en `previous-visits` (esa lista no abre las tareas: aparece al
+            expandir la visita, con `notesLoaded: true`) y en tareas sin cerrar.
         result:
           type: string
           enum: [SATISFACTORIA, INSATISFACTORIA, PENDIENTE]
           description: >
-            Valor **inferido** por el backend, no un dato de la operadora:
-            `PENDIENTE` si la tarea no terminó, `INSATISFACTORIA` si el `status`
-            o las notas contienen una palabra de `FSM_UNSATISFACTORY_KEYWORDS`,
-            `SATISFACTORIA` en cualquier otro caso. Heurístico provisional a
-            recalibrar con datos reales.
+            Valor **inferido** por el backend a partir del `status` y de las
+            notas: `PENDIENTE` si la tarea no terminó, `INSATISFACTORIA` si
+            alguno contiene una palabra de `FSM_UNSATISFACTORY_KEYWORDS`,
+            `SATISFACTORIA` en cualquier otro caso. La operadora confirmó el
+            2026-09-09 que hoy es la ÚNICA forma de saberlo —no hay campo
+            directo— y que está gestionando exponerlo.
         notesLoaded:
           type: boolean
           description: >
@@ -3511,6 +3519,13 @@ components:
                 type: string
                 enum: [SATISFACTORIA, INSATISFACTORIA, PENDIENTE]
                 description: Valor inferido por el backend (ver `ClosedTask.result`).
+              closedBy:
+                type: string
+                nullable: true
+                description: >
+                  Técnico que cerró la tarea (`lastModifyUser`, expuesto por la
+                  operadora el 2026-09-09). `null` si la tarea sigue abierta o
+                  si la operadora no lo trae.
               notes:
                 type: array
                 description: Ordenadas por `createdAt` ascendente. Puede ser `[]`.

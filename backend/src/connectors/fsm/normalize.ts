@@ -1,14 +1,25 @@
 // ---------------------------------------------------------------------------
 // Normalización tolerante de las respuestas de `fsm-data-ms`.
 //
-// La operadora no publica esquema y NO tenemos ni una respuesta real de
-// muestra: todos los parsers están escritos a ciegas contra la documentación.
-// Por eso, igual que en `tec/index.ts`, nunca se confía en el nombre exacto de
-// una clave: se prueban varias candidatas (`pick()`), se acepta el envoltorio
-// `{ data: … }` o el array desnudo, y todo campo ausente cae en `null`.
+// La operadora no publica esquema. Igual que en `tec/index.ts`, nunca se confía
+// en el nombre exacto de una clave: se prueban varias candidatas (`pick()`), se
+// acepta el envoltorio `{ data: … }` o el array desnudo, y todo campo ausente
+// cae en `null`.
 //
-// Calibrar con la salida de `scripts/probe-fsm-api.ts` antes de dar por buena
-// cualquiera de estas funciones.
+// Confirmado por la operadora el 2026-09-09:
+//   - todos los endpoints devuelven las fechas en **UTC**; una fecha sin zona
+//     se interpreta como UTC y se emite ISO-8601 con `Z` (`toIsoUtc`). Pasar a
+//     hora de Ecuador es asunto de la UI, no del backend;
+//   - el cierre satisfactorio/insatisfactorio HOY solo se puede inferir de las
+//     notas (`classifyTaskResult`); la operadora está gestionando exponerlo
+//     como dato directo;
+//   - las tareas traen `lastModifyUser`: el técnico que cerró la tarea
+//     (`FsmTask.closedBy`);
+//   - una NAP tiene 8 puertos, o 16 si está ampliada (`inferNapTotalPorts`).
+//
+// Sigue pendiente calibrar los NOMBRES exactos de las claves con la salida de
+// `scripts/probe-fsm-api.ts --save`: el API manager (`apix.grupotvcable.com`)
+// no es alcanzable desde la red de desarrollo.
 // ---------------------------------------------------------------------------
 
 import { env } from '../../config/env.js';
@@ -65,6 +76,8 @@ export interface FsmTask {
   createdAt: string | null;
   finishedAt: string | null;
   result: TaskResult;
+  /** Técnico que cerró la tarea (`lastModifyUser`). */
+  closedBy: string | null;
   notes: FsmNote[];
 }
 
@@ -119,18 +132,41 @@ function pickString(row: Record<string, unknown>, keys: string[]): string | null
 }
 
 /**
- * Fecha a ISO-8601 UTC. Las fechas sin zona horaria se interpretan como UTC
- * (la operadora no documenta el huso; se asume UTC y se deja constancia acá).
+ * Fecha a ISO-8601 UTC.
+ *
+ * La operadora confirmó el 2026-09-09 que **todos** sus endpoints devuelven
+ * fechas en UTC, así que una fecha "naive" (sin zona) se interpreta como UTC y
+ * NO como hora local del servidor: si no, un backend en Ecuador (UTC-5) las
+ * correría cinco horas. La conversión a hora de Ecuador la hace la UI.
  */
 export function toIsoUtc(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') {
-    const naive = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(:(\d{2}))?(\.\d+)?$/.exec(
-      value.trim(),
+    const text = value.trim();
+
+    // "2026-08-14 14:02:00" / "2026-08-14T14:02" — ISO sin zona.
+    const iso = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(:(\d{2}))?(\.\d+)?$/.exec(text);
+    if (iso) {
+      const parsed = new Date(`${text.replace(' ', 'T')}Z`);
+      if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+    }
+
+    // "14/08/2026 14:02[:00]" — formato con día primero, también sin zona.
+    // `toIsoDate` lo interpretaría en la hora LOCAL del servidor; acá manda UTC.
+    const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(
+      text,
     );
-    if (naive) {
-      const iso = `${value.trim().replace(' ', 'T')}Z`;
-      const parsed = new Date(iso);
+    if (dmy) {
+      const [, dd, mm, yyyy, hh = '0', mi = '0', ss = '0'] = dmy;
+      const ms = Date.UTC(
+        Number(yyyy),
+        Number(mm) - 1,
+        Number(dd),
+        Number(hh),
+        Number(mi),
+        Number(ss),
+      );
+      const parsed = new Date(ms);
       if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
     }
   }
@@ -259,12 +295,13 @@ function mapNotes(raw: unknown): FsmNote[] {
 /**
  * Clasifica el resultado de una tarea.
  *
- * ⚠ HEURÍSTICO PROVISIONAL. La documentación de `/workorder/tasks` **no
- * enumera los valores de `status`** ni expone un campo de resultado
- * satisfactoria/insatisfactoria. Se infiere del `status` y del contenido de las
- * notas con la lista `FSM_UNSATISFACTORY_KEYWORDS`. Debe recalibrarse con la
- * salida real de `scripts/probe-fsm-api.ts` antes de darse por buena; es una
- * pregunta abierta con la operadora.
+ * La operadora CONFIRMÓ el 2026-09-09 que hoy el cierre satisfactorio o
+ * insatisfactorio **solo se puede inferir de las notas**: no hay campo directo
+ * (están gestionando exponerlo). Este heurístico deja de ser un supuesto y pasa
+ * a ser el mecanismo oficial: `status` + contenido de las notas contra
+ * `FSM_UNSATISFACTORY_KEYWORDS`, sin acentos ni mayúsculas.
+ *
+ * Cuando la operadora publique el dato directo, este parser pasa a respaldo.
  */
 export function classifyTaskResult(task: {
   status?: string | null;
@@ -301,6 +338,14 @@ export function mapWorkOrderTasks(raw: unknown): FsmTask[] {
       createdAt: toIsoUtc(pick(row, ['createDate', 'createdAt', 'creationDate', 'fecha'])),
       finishedAt,
       result: classifyTaskResult({ status, finishedAt, notes }),
+      // Técnico que cerró la tarea. La operadora lo expuso el 2026-09-09 como
+      // `lastModifyUser`; antes se creía que FSM no traía este dato.
+      closedBy: pickString(row, [
+        'lastModifyUser',
+        'last_modify_user',
+        'lastModifiedUser',
+        'lastModifyUserName',
+      ]),
       notes,
     });
   }
@@ -322,6 +367,25 @@ export function mapAccountStatus(raw: unknown): FsmAccountStatus | null {
   };
 }
 
+/** Puertos de una NAP sin ampliar. */
+export const NAP_BASE_PORTS = 8;
+/** Puertos de una NAP ampliada. Es el máximo absoluto. */
+export const NAP_MAX_PORTS = 16;
+
+/**
+ * Capacidad de una NAP a partir de sus puertos ocupados.
+ *
+ * Regla oficial de la operadora (2026-09-09): una NAP tiene **8 puertos base**;
+ * si tiene MÁS de 8 ocupados es porque lleva la ampliación y su total es **16**.
+ * 16 es el máximo absoluto. Es la fuente del `totalPorts` cuando la respuesta
+ * no trae un total explícito, y lo que permite dibujar la rejilla completa
+ * (ocupados + libres) del campo 8.
+ */
+export function inferNapTotalPorts(occupiedPorts: number): number {
+  const occupied = Number.isFinite(occupiedPorts) ? Math.max(0, Math.trunc(occupiedPorts)) : 0;
+  return occupied > NAP_BASE_PORTS ? NAP_MAX_PORTS : NAP_BASE_PORTS;
+}
+
 /** `GET /naps/nearest` → NAPs cercanas ordenadas por distancia ascendente. */
 export function mapNapNearest(raw: unknown): FsmNapRow[] {
   const rows = toRows(raw);
@@ -331,8 +395,14 @@ export function mapNapNearest(raw: unknown): FsmNapRow[] {
     const code = pickString(row, ['name', 'nombre', 'nap', 'napCode', 'code', 'codigo']);
     const napId = toNumber(pick(row, ['id', 'napId', 'idNap']));
     if (!code && napId === null) continue;
-    const total = toNumber(pick(row, ['ports', 'totalPorts', 'puertos', 'capacidad'])) ?? 0;
-    const used = toNumber(pick(row, ['used', 'occupiedPorts', 'ocupados', 'usados'])) ?? 0;
+    const used = Math.max(0, toNumber(pick(row, ['used', 'occupiedPorts', 'ocupados', 'usados'])) ?? 0);
+    // Total explícito si viene; si no, la regla 8/16 de la operadora. Nunca
+    // menos que los ocupados ni más que el máximo físico.
+    const declared = toNumber(pick(row, ['ports', 'totalPorts', 'puertos', 'capacidad']));
+    const total =
+      declared !== null && declared > 0
+        ? Math.min(Math.max(declared, used), NAP_MAX_PORTS)
+        : inferNapTotalPorts(used);
     naps.push({
       napId,
       napCode: code ?? String(napId),

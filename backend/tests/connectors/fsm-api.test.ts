@@ -1,17 +1,15 @@
 // Cliente HTTP de FSM: forma del body, aislamiento del cache por marca,
-// traducción de códigos upstream y la ambigüedad account_id / accountId.
+// traducción de códigos upstream y la clave `account_id` de /account/status.
 //
 // Ningún test sale a la red.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  activeAccountStatusKey,
   fetchAccountProcess,
   fetchAccountStatus,
   fetchNapsNearest,
   fsmCacheKey,
   fsmGet,
   fsmPost,
-  resetAccountStatusKey,
   resetFsmLimiter,
 } from '../../src/connectors/http/fsm-api.js';
 import { resetFsmTokenCache } from '../../src/connectors/http/fsm-token.js';
@@ -28,7 +26,6 @@ beforeEach(() => {
   resetFsmTokenCache();
   resetHttpCache();
   resetFsmLimiter();
-  resetAccountStatusKey();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -203,33 +200,29 @@ describe('Traducción de las respuestas upstream', () => {
   });
 });
 
-describe('/account/status — account_id vs accountId', () => {
-  it('manda account_id y lo memoiza cuando funciona', async () => {
+describe('/account/status — la clave es account_id', () => {
+  // Confirmado por la operadora el 2026-09-09: `data.account_id`, numérico.
+  // El doble intento account_id → accountId se eliminó: era una llamada de más
+  // contra producción.
+  it('manda data.account_id como entero, en UNA sola llamada', async () => {
     spy = installFetchSpy(() => ({ status: 200, body: { data: { accountId: 1, status: 'A' } } }));
     await fetchAccountStatus('telenews', '35070291');
-    expect(activeAccountStatusKey()).toBe('account_id');
     const body = spy.calls[0]!.body as { data: Record<string, unknown> };
-    // El endpoint documenta account_id como entero.
     expect(body.data).toEqual({ account_id: 35070291 });
     expect(spy.calls).toHaveLength(1);
   });
 
-  it('ante un 400 reintenta UNA vez con accountId y memoiza cuál sirvió', async () => {
-    spy = installFetchSpy((call) => {
-      const data = (call.body as { data?: Record<string, unknown> }).data ?? {};
-      if ('account_id' in data) return { status: 400, body: { message: 'campo inválido' } };
-      return { status: 200, body: { data: { accountId: 71398253, status: 'S' } } };
-    });
+  it('una cuenta no numérica viaja tal cual, sin convertir', async () => {
+    spy = installFetchSpy(() => ({ status: 200, body: { data: { status: 'A' } } }));
+    await fetchAccountStatus('telenews', 'CTA-99');
+    const body = spy.calls[0]!.body as { data: Record<string, unknown> };
+    expect(body.data).toEqual({ account_id: 'CTA-99' });
+  });
 
-    const result = await fetchAccountStatus('telenews', '71398253');
-    expect(result).toEqual({ data: { accountId: 71398253, status: 'S' } });
-    expect(activeAccountStatusKey()).toBe('accountId');
-    expect(spy.calls).toHaveLength(2);
-
-    // Con la clave memoizada, la siguiente cuenta ya no gasta la vuelta extra.
-    await fetchAccountStatus('telenews', '40012345');
-    expect(spy.calls).toHaveLength(3);
-    const last = spy.calls[2]!.body as { data: Record<string, unknown> };
-    expect(last.data).toEqual({ accountId: 40012345 });
+  it('un 400 se propaga: ya no hay reintento con accountId', async () => {
+    spy = installFetchSpy(() => ({ status: 400, body: { message: 'campo inválido' } }));
+    const err = await fetchAccountStatus('telenews', '71398253').catch((e: unknown) => e);
+    expect((err as ApiError).code).toBe('VALIDATION_ERROR');
+    expect(spy.calls).toHaveLength(1);
   });
 });

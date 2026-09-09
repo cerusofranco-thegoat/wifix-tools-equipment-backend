@@ -18,7 +18,7 @@ import { resetHttpCache } from '../../src/connectors/http/throttle.js';
 import {
   resetFsmTokenCache,
 } from '../../src/connectors/http/fsm-token.js';
-import { resetAccountStatusKey, resetFsmLimiter } from '../../src/connectors/http/fsm-api.js';
+import { resetFsmLimiter } from '../../src/connectors/http/fsm-api.js';
 import { resetNapRegistry } from '../../src/connectors/fsm/index.js';
 
 const PREFIX = '/herramientas/v1';
@@ -58,7 +58,6 @@ beforeEach(() => {
   resetHttpCache();
   resetFsmTokenCache();
   resetFsmLimiter();
-  resetAccountStatusKey();
   resetNapRegistry();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -251,6 +250,11 @@ describe('CONNECTOR_MODE_FSM=mock — el frontend puede trabajar sin token', () 
     for (const task of body.tasks) {
       expect(['SATISFACTORIA', 'INSATISFACTORIA', 'PENDIENTE']).toContain(task.result);
       expect(Array.isArray(task.notes)).toBe(true);
+      // `lastModifyUser`: string en las cerradas, null en las abiertas.
+      expect(task).toHaveProperty('closedBy');
+      expect(task.finishedAt === null ? task.closedBy : typeof task.closedBy).toBe(
+        task.finishedAt === null ? null : 'string',
+      );
     }
   });
 
@@ -523,6 +527,8 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
         status: 'CERRADA',
         createDate: '2026-08-14 14:02:00',
         finishDate: '2026-08-14 16:41:00',
+        // Técnico que cerró la tarea, expuesto por la operadora el 2026-09-09.
+        lastModifyUser: 'jcevallos',
         notes: [{ createDate: '2026-08-14 16:40:00', content: 'Visita reprogramada por el cliente.' }],
       },
     ],
@@ -563,7 +569,8 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(body.degraded.reason).toBe('TRUNCATED');
     expect(body.items.length).toBeGreaterThan(0);
     expect(body.items[0].result).toBe('INSATISFACTORIA');
-    expect(body.items[0].technician).toBeNull();
+    // Ya no es null: sale de `lastModifyUser`.
+    expect(body.items[0].technician).toBe('jcevallos');
     expect(body.items[0].notesLoaded).toBe(true);
     expect(body.items[0].closingNotes).toContain('reprogramada');
     expect(fetchSpy.calls).toHaveLength(6);
@@ -663,8 +670,40 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
       statusPending: true,
     });
     expect(body.statusFanOut).toEqual({ supported: true, pendingAccounts: 2, batchLimit: 12 });
-    // Sin totalPorts conocido, se avisa que la rejilla está recortada.
-    expect(body.degraded.reason).toBe('TRUNCATED');
+    // Regla de la operadora (2026-09-09): 2 ocupados ≤ 8 → NAP de 8 puertos.
+    // La rejilla sale completa y ya no hay aviso de recorte.
+    expect(body.totalPorts).toBe(8);
+    expect(body.ports).toHaveLength(8);
+    expect(body.ports.filter((p: { occupied: boolean }) => !p.occupied)).toHaveLength(6);
+    expect(body.degraded).toBeUndefined();
+  });
+
+  it('/naps/{napId}/ports con más de 8 ocupados devuelve la rejilla de 16', async () => {
+    Object.assign(env, { NAPS_PRIMARY_SOURCE: 'fsm' });
+    useRealFsm(() => ({
+      status: 200,
+      body: {
+        data: Array.from({ length: 9 }, (_, i) => ({
+          id: 11548,
+          number: i + 1,
+          accountId: 35070291 + i,
+          equipmentId: `ZTEGD52E1A9${i}`,
+        })),
+      },
+    }));
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/naps/11548/ports`,
+      headers: authHeaders,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.occupiedPorts).toBe(9);
+    expect(body.totalPorts).toBe(16);
+    expect(body.ports).toHaveLength(16);
+    expect(body.degraded).toBeUndefined();
   });
 
   it('/naps/{napCode}/ports (no numérico) va por el camino TEC sin tocar FSM', async () => {

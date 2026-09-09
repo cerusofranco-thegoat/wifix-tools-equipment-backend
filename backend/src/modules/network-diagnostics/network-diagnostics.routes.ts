@@ -29,7 +29,18 @@ const napPortsQuerySchema = z.object({
   withStatus: z.enum(['0', '1']).optional(),
 });
 
-/** Coordenada desde la que se buscan NAPs (GPS del técnico o de la tarea). */
+/**
+ * Coordenada desde la que se buscan NAPs (GPS del técnico o de la tarea).
+ *
+ * La operadora confirmó (2026-09-09) que `/naps/nearest` no impone tope de
+ * `meters` ni de `maxRows`, pero pidió **pedir solo la NAP más cercana a las
+ * coordenadas del cliente**. De ahí el default conservador de `maxRows`
+ * (`NEARBY_NAPS_DEFAULTS`, 3 en vez de 5).
+ *
+ * El tope de 25 NO se toca: el panel NAP de la webapp ofrece 5/10/20 filas y
+ * bajarlo rompería esa opción con un 400. Quien pide más filas es el técnico,
+ * a propósito; lo que se evita es que el default barra el sector entero.
+ */
 const coordsQuerySchema = z.object({
   lat: z.coerce.number().gte(-90).lte(90),
   lng: z.coerce.number().gte(-180).lte(180),
@@ -37,6 +48,9 @@ const coordsQuerySchema = z.object({
   maxRows: z.coerce.number().int().gte(1).lte(25).optional(),
   brand: z.string().optional(),
 });
+
+/** Radio y número de NAPs que se piden si el cliente no especifica nada. */
+const NEARBY_NAPS_DEFAULTS = { meters: 100, maxRows: 3 } as const;
 
 const terminalParamsSchema = z.object({
   id: z.string().min(1, 'El serial GPON o la MAC del cablemódem es obligatorio.'),
@@ -75,8 +89,8 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
       { latitude: lat, longitude: lng },
       {
         brand: brandFromRequest(request, brand),
-        meters: meters ?? 100,
-        maxRows: maxRows ?? 5,
+        meters: meters ?? NEARBY_NAPS_DEFAULTS.meters,
+        maxRows: maxRows ?? NEARBY_NAPS_DEFAULTS.maxRows,
         rangeRequested: meters !== undefined || maxRows !== undefined,
       },
     );

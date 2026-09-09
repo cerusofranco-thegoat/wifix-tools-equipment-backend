@@ -1,12 +1,14 @@
 // Mapeo crudo FSM → modelo interno.
 //
-// ⚠ No hay ni una respuesta real de la operadora: los payloads de estos tests
-// están construidos a partir de la documentación (`API-fsm-data-ms.md`) y de la
-// colección de Postman. Cuando `probe-fsm-api.ts --save` deje fixtures reales,
-// hay que recalibrar los parsers contra ellas.
+// ⚠ Los payloads de estos tests están construidos a partir de la documentación
+// (`API-fsm-data-ms.md`), de la colección de Postman y de las respuestas que la
+// operadora dio el 2026-09-09 (UTC, `lastModifyUser`, regla 8/16 de puertos).
+// Los NOMBRES exactos de las claves siguen sin verificarse contra una respuesta
+// real: cuando `probe-fsm-api.ts --save` deje fixtures, hay que recalibrar.
 import { describe, it, expect } from 'vitest';
 import {
   classifyTaskResult,
+  inferNapTotalPorts,
   mapAccountProcess,
   mapAccountStatus,
   mapNapAccounts,
@@ -37,9 +39,17 @@ describe('mapStatusCode', () => {
 });
 
 describe('toIsoUtc', () => {
+  // La operadora confirmó el 2026-09-09 que TODOS sus endpoints devuelven UTC.
   it('interpreta las fechas sin zona como UTC', () => {
     expect(toIsoUtc('2026-08-14 14:02:00')).toBe('2026-08-14T14:02:00.000Z');
     expect(toIsoUtc('2026-08-14T16:41:00')).toBe('2026-08-14T16:41:00.000Z');
+  });
+
+  it('también interpreta como UTC el formato con día primero', () => {
+    // Sin este caso, el servidor en Ecuador (UTC-5) las correría 5 horas.
+    expect(toIsoUtc('14/08/2026 16:41:00')).toBe('2026-08-14T16:41:00.000Z');
+    expect(toIsoUtc('14-08-2026 16:41')).toBe('2026-08-14T16:41:00.000Z');
+    expect(toIsoUtc('14/08/2026')).toBe('2026-08-14T00:00:00.000Z');
   });
 
   it('respeta las fechas que ya traen zona', () => {
@@ -52,7 +62,9 @@ describe('toIsoUtc', () => {
   });
 });
 
-describe('classifyTaskResult — heurístico provisional', () => {
+// Confirmado por la operadora el 2026-09-09: hoy el cierre satisfactorio o
+// insatisfactorio SOLO se puede inferir de las notas. Deja de ser un supuesto.
+describe('classifyTaskResult — inferencia oficial por notas', () => {
   it('sin finishDate la tarea está PENDIENTE', () => {
     expect(classifyTaskResult({ status: 'ABIERTA', finishedAt: null, notes: [] })).toBe(
       'PENDIENTE',
@@ -176,6 +188,7 @@ describe('mapWorkOrderTasks', () => {
           businessKey: 'BK-1',
           createDate: '2026-08-14 14:02:00',
           finishDate: '2026-08-14 16:41:00',
+          lastModifyUser: 'jcevallos',
           notes: [
             { createDate: '2026-08-14 16:40:00', content: 'Se reinició ONT.' },
             { createDate: '2026-08-14 14:10:00', content: 'Llegada al domicilio.' },
@@ -189,6 +202,22 @@ describe('mapWorkOrderTasks', () => {
       'Se reinició ONT.',
     ]);
     expect(tasks[0]!.result).toBe('SATISFACTORIA');
+  });
+
+  // `lastModifyUser` = técnico que cerró la tarea (operadora, 2026-09-09).
+  it('lee el técnico que cerró la tarea de lastModifyUser', () => {
+    const [task] = mapWorkOrderTasks({
+      data: [{ taskId: 'TASK/1/2026', lastModifyUser: 'mmendoza' }],
+    });
+    expect(task!.closedBy).toBe('mmendoza');
+  });
+
+  it('tolera la grafía snake_case y la ausencia del campo', () => {
+    expect(
+      mapWorkOrderTasks({ data: [{ taskId: 'TASK/2/2026', last_modify_user: 'asalazar' }] })[0]!
+        .closedBy,
+    ).toBe('asalazar');
+    expect(mapWorkOrderTasks({ data: [{ taskId: 'TASK/3/2026' }] })[0]!.closedBy).toBeNull();
   });
 
   it('descarta filas sin taskId', () => {
@@ -212,6 +241,23 @@ describe('mapAccountStatus', () => {
   });
 });
 
+// Regla oficial de la operadora (2026-09-09): 8 puertos base, 16 si hay más de
+// 8 ocupados, 16 como máximo absoluto.
+describe('inferNapTotalPorts', () => {
+  it('hasta 8 ocupados la NAP es de 8', () => {
+    expect(inferNapTotalPorts(0)).toBe(8);
+    expect(inferNapTotalPorts(4)).toBe(8);
+    expect(inferNapTotalPorts(8)).toBe(8);
+  });
+
+  it('más de 8 ocupados significa NAP ampliada de 16', () => {
+    expect(inferNapTotalPorts(9)).toBe(16);
+    expect(inferNapTotalPorts(16)).toBe(16);
+    // 16 es el máximo absoluto, aunque la operadora informe un absurdo.
+    expect(inferNapTotalPorts(40)).toBe(16);
+  });
+});
+
 describe('mapNapNearest', () => {
   it('mapea la fila documentada y ordena por distancia', () => {
     const naps = mapNapNearest({
@@ -231,6 +277,21 @@ describe('mapNapNearest', () => {
       occupiedPorts: 4,
       totalPorts: 8,
     });
+  });
+
+  it('sin total explícito lo deduce de los ocupados (8/16)', () => {
+    const naps = mapNapNearest({
+      data: [
+        { id: 1, name: 'PL1', distance: 10, used: 3 },
+        { id: 2, name: 'PL2', distance: 20, used: 11 },
+      ],
+    });
+    expect(naps.map((n) => n.totalPorts)).toEqual([8, 16]);
+  });
+
+  it('un total declarado absurdo se acota al máximo físico de 16', () => {
+    const [nap] = mapNapNearest({ data: [{ id: 3, name: 'PL3', ports: 64, used: 2 }] });
+    expect(nap!.totalPorts).toBe(16);
   });
 });
 

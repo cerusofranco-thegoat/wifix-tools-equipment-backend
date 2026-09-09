@@ -342,6 +342,14 @@ Mismas tres piezas que TEC, con **semáforo propio** (`FSM_API_MAX_CONCURRENCY`,
   `POST /accounts/status-batch` (≤12 cuentas, concurrencia 4, cache 5 min).
   Resolver una NAP de 16 puertos "completa" costaría 17 llamadas por cada tap
   en "Ver puertos".
+  La operadora **confirmó el 2026-09-09 que no existe un endpoint de estado en
+  lote**: hay que preguntar cuenta por cuenta. El "lote" es interno y ese
+  diseño queda validado, no es un supuesto.
+- **Las NAPs cercanas se piden con moderación.** `/naps/nearest` no tiene tope
+  de `meters`/`maxRows`, pero la operadora pidió pedir solo la NAP más cercana a
+  las coordenadas del cliente: el default de `maxRows` es **3** (antes 5) y el
+  de `meters` 100. El tope de 25 se mantiene para quien pida más a propósito
+  (el panel NAP de la webapp ofrece 5/10/20).
 
 Llamadas upstream por ruta:
 
@@ -374,34 +382,59 @@ Es la **única** vía de contacto manual con FSM y es de un solo tiro: no lo
 pongas en un bucle ni en CI. `chain` está acotado a 4 llamadas.
 
 ```bash
-npx tsx scripts/probe-fsm-api.ts token                    # sin red: brand, azp, exp, tiempo restante
+npx tsx scripts/probe-fsm-api.ts token                    # sin red: emisor, key sí/no, azp, exp
+npx tsx scripts/probe-fsm-api.ts token --live             # 1 llamada: negocia contra generate
 npx tsx scripts/probe-fsm-api.ts process <cuenta> [Todas|Pendientes]
 npx tsx scripts/probe-fsm-api.ts tasks <workOrder>
-npx tsx scripts/probe-fsm-api.ts status <cuenta>          # prueba account_id y, si falla, accountId
+npx tsx scripts/probe-fsm-api.ts status <cuenta>          # data.account_id (numérico)
 npx tsx scripts/probe-fsm-api.ts naps <lat> <lng> [meters] [maxRows]
 npx tsx scripts/probe-fsm-api.ts nap-accounts <napId>
 npx tsx scripts/probe-fsm-api.ts chain <cuenta>           # máx. 4 llamadas
-# flags: --brand=telenews|seteinfo   --save (guarda el JSON en tests/fixtures/fsm/)
+# flags: --brand=telenews   --save (guarda el JSON en tests/fixtures/fsm/)
 ```
 
-### Lo que todavía es un supuesto
+### Respuestas de la operadora (2026-09-09) y qué quedó abierto
 
-No hay **ni una** respuesta real de FSM: todos los parsers de `normalize.ts`
-están escritos contra la documentación y la colección de Postman, con mapeo
-tolerante (`pick()` multi-clave). Antes de dar por buena la integración hay que
-correr `probe-fsm-api.ts --save` con un token vigente y recalibrar. En
-particular:
+Lo que **ya está confirmado** y aplicado en el código:
 
-- **`classifyTaskResult()` es un heurístico.** La doc no enumera los valores de
-  `status` de `/workorder/tasks` ni expone un campo satisfactoria/insatisfactoria:
-  se infiere de `status` + notas con `FSM_UNSATISFACTORY_KEYWORDS`.
-- **`/account/status`: `account_id` o `accountId`.** La doc dice una cosa y el
-  Postman otra. El conector manda `account_id`, ante un 400 reintenta **una** vez
-  con `accountId` y memoiza cuál funcionó.
-- **`ClosedTask.technician` no existe en FSM**: siempre `null`.
-- **La rejilla de puertos** necesita el total de puertos de `/naps/nearest`. Si
-  no se conoce, se devuelven solo los puertos ocupados con
-  `degraded.reason: TRUNCATED`.
+- **Renovación del token:** protocolo propio de `token-api/v1.0/generate` (ver
+  más arriba). Ya no hay `client_credentials`.
+- **Un solo realm:** `telenews` contiene toda la base de clientes; `seteinfo`
+  deshabilitada.
+- **`/account/status` usa `data.account_id`** (snake_case, numérico). El doble
+  intento `account_id` → `accountId` se eliminó: era una llamada de más contra
+  producción.
+- **Cierre satisfactorio/insatisfactorio:** hoy **solo** se puede inferir de las
+  notas. `classifyTaskResult()` + `FSM_UNSATISFACTORY_KEYWORDS` deja de ser un
+  supuesto y pasa a ser el mecanismo oficial; la operadora está gestionando
+  exponerlo como dato directo.
+- **Técnico que cierra la tarea:** `lastModifyUser` en `/workorder/tasks`. Se
+  expone como `closedBy` en las tareas y como `technician` en `ClosedTask`
+  (sigue siendo `null` en `previous-visits`, que no abre las tareas).
+- **Capacidad de las NAPs:** 8 puertos base; más de 8 ocupados ⇒ NAP ampliada de
+  16; 16 es el máximo absoluto. Con esa regla la rejilla del campo 8 sale
+  **siempre completa** y desapareció el `degraded.reason: TRUNCATED` por total
+  desconocido.
+- **Fechas:** todos los endpoints devuelven **UTC**. Una fecha sin zona se
+  interpreta como UTC (nunca como hora local del servidor) y se emite ISO-8601
+  con `Z`; pasar a hora de Ecuador es cosa de la UI.
+- **No existe endpoint de estado en lote:** el `status-batch` interno (≤12
+  cuentas, cache 5 min, solo por tap explícito) queda validado.
+- **`/naps/nearest` sin topes**, pero pidieron consultar solo la NAP más cercana
+  al cliente: default `maxRows` = 3.
+
+Lo que **sigue sin verificarse contra una respuesta real**:
+
+- **Los nombres exactos de las claves** de cada endpoint. Los parsers de
+  `normalize.ts` siguen siendo tolerantes (`pick()` multi-clave) porque no hay
+  ni un payload real: el API manager `apix.grupotvcable.com` **no es alcanzable
+  desde la red de desarrollo** (la conexión TLS se establece y el servidor la
+  resetea sin responder, en cualquier ruta y método — huele a filtrado por IP).
+  En cuanto se pueda salir desde una IP autorizada: `probe-fsm-api.ts --save`,
+  guardar los fixtures en `tests/fixtures/fsm/` (redactando datos personales) y
+  recalibrar.
+- **Los valores reales de `status`** de `/workorder/tasks` y de `state` de
+  `/account/process`, que alimentan la clasificación de resultado.
 
 ## Endpoints
 
@@ -577,15 +610,19 @@ Todo es producción del lado de la operadora: ninguna prueba puede pegarle.
 npx vitest run tests/connectors tests/lib tests/middleware   # sin infraestructura
 ```
 
-**Cobertura actual:** 162 pruebas en 18 archivos:
+**Cobertura actual:** 178 pruebas en 18 archivos:
 
 - `lib/`: paginación (9), validación (3)
 - `middleware/`: error handler (6)
 - `connectors/`: determinismo y persistencia de PUT mock (8), Digest y parseo
-  de TEC/ISP Monitor (33), token de FSM (17), cliente HTTP de FSM (15),
-  normalización de FSM (22), throttle (9)
+  de TEC/ISP Monitor (33), token de FSM (24), cliente HTTP de FSM (16),
+  normalización de FSM (29), throttle (9)
 - `modules/`: auth (7), catalogs (4), media (4), tools (7), retired-equipment (5),
-  account-history (2), integration-endpoints (12), rutas de FSM (31)
+  account-history (2), integration-endpoints (12), rutas de FSM (32)
+
+`tests/setup/no-real-credentials.ts` corre antes de cada archivo y **vacía las
+credenciales de FSM** que `dotenv` carga del `.env`: ninguna prueba puede
+negociar un token contra la operadora por descuido.
 
 ## Paso a conectores reales
 
@@ -604,11 +641,15 @@ que faltan.
 
 **Para encender FSM** hacen falta dos pasos más, en este orden:
 
-1. `CONNECTOR_MODE_FSM=real` + `FSM_API_TOKEN_TELENEWS=<bearer vigente>`, y
-   verificar con `npx tsx scripts/probe-fsm-api.ts token`.
+1. `CONNECTOR_MODE_FSM=real` + `FSM_TOKEN_URL_TELENEWS` (endpoint `generate`) +
+   `FSM_TOKEN_KEY_TELENEWS`, y verificar con
+   `npx tsx scripts/probe-fsm-api.ts token --live` (1 llamada). El token
+   estático `FSM_API_TOKEN_TELENEWS` queda como respaldo.
+   **Desde una IP autorizada por la operadora:** `apix.grupotvcable.com` no
+   responde desde cualquier red (ver "Respuestas de la operadora").
 2. Recalibrar `connectors/fsm/normalize.ts` con respuestas reales
-   (`probe-fsm-api.ts <comando> --save`). Hasta entonces los parsers están
-   escritos a ciegas contra la documentación.
+   (`probe-fsm-api.ts <comando> --save`). Hasta entonces los nombres exactos de
+   las claves siguen sin verificar y el mapeo es tolerante a propósito.
 3. Recién después, `NAPS_PRIMARY_SOURCE=fsm` para migrar el campo 6 de TEC a
    FSM (el panel NAP ya está en producción con TEC: no se toca hasta tener
    datos reales verificados).

@@ -25,12 +25,14 @@ import { createLimiter } from '../http/throttle.js';
 import type { Coordinates, NapPort, NapPorts, NearbyNap } from '../tec/index.js';
 import {
   classifyTaskResult,
+  inferNapTotalPorts,
   mapAccountProcess,
   mapAccountStatus,
   mapNapAccounts,
   mapNapNearest,
   mapStatusCode,
   mapWorkOrderTasks,
+  NAP_MAX_PORTS,
   type AccountStatusName,
   type FsmClient,
   type FsmNote,
@@ -50,7 +52,12 @@ export interface ClosedTask {
   occurredAt: string;
   reason: string;
   closingNotes: string;
-  /** FSM no expone el técnico que cerró la tarea: siempre null en modo real. */
+  /**
+   * Técnico que cerró la tarea (`lastModifyUser` de `/workorder/tasks`,
+   * expuesto por la operadora el 2026-09-09). Sigue siendo `null` en las
+   * visitas de `/account/process`, que no abren las tareas: ese dato aparece al
+   * expandir la visita (`notesLoaded: true`).
+   */
   technician: string | null;
   result: TaskResult;
   /** false mientras no se hayan cargado las notas de la orden (§9 del contrato). */
@@ -140,6 +147,8 @@ export interface WorkOrderTask {
   createdAt: string | null;
   finishedAt: string | null;
   result: TaskResult;
+  /** Técnico que cerró la tarea (`lastModifyUser`). */
+  closedBy: string | null;
   notes: WorkOrderTaskNote[];
 }
 
@@ -222,7 +231,9 @@ function taskToClosedTask(workOrder: string, task: WorkOrderTask): ClosedTask {
     occurredAt: task.finishedAt ?? task.createdAt ?? '',
     reason: task.status ?? '',
     closingNotes: joinNotes(task.notes),
-    technician: null,
+    // `lastModifyUser`: quién cerró la tarea. Solo se conoce con las tareas
+    // abiertas, no con la orden desnuda de `/account/process`.
+    technician: task.closedBy,
     result: task.result,
     notesLoaded: true,
   };
@@ -271,11 +282,17 @@ function isUpstreamAuthError(err: unknown): err is ApiError {
 /**
  * Rejilla de puertos 1..totalPorts a partir de los registros de `/naps/accounts`.
  * Los puertos que no aparecen en la respuesta se consideran libres.
+ *
+ * `/naps/accounts` solo devuelve los puertos OCUPADOS. Cuando no se conoce el
+ * total (porque no se pasó por `/naps/nearest`), se aplica la regla oficial de
+ * la operadora (2026-09-09): 8 puertos base, 16 si hay más de 8 ocupados, con
+ * 16 como máximo absoluto. La rejilla sale **siempre completa**: nunca se
+ * devuelven solo los ocupados.
  */
 function buildPortGrid(
   rows: Array<{ portNumber: number | null; accountNumber: string | null; equipmentId: string | null }>,
   totalPorts: number | null,
-): { ports: NapPort[]; occupied: number; total: number | null } {
+): { ports: NapPort[]; occupied: number; total: number } {
   const byPort = new Map<number, { accountNumber: string | null; equipmentId: string | null }>();
   let maxPort = 0;
   for (const row of rows) {
@@ -286,10 +303,17 @@ function buildPortGrid(
     byPort.set(port, { accountNumber: row.accountNumber, equipmentId: row.equipmentId });
   }
 
-  const total = totalPorts && totalPorts > 0 ? Math.max(totalPorts, maxPort) : null;
-  const upTo = total ?? maxPort;
+  // El número de puerto más alto también delata la ampliación: una NAP con el
+  // puerto 12 ocupado es de 16 aunque solo tenga 3 cuentas conectadas.
+  const evidence = Math.max(byPort.size, maxPort);
+  const declared = totalPorts && totalPorts > 0 ? totalPorts : 0;
+  const total = Math.min(
+    NAP_MAX_PORTS,
+    Math.max(declared, evidence, inferNapTotalPorts(evidence)),
+  );
+
   const ports: NapPort[] = [];
-  for (let i = 1; i <= upTo; i++) {
+  for (let i = 1; i <= total; i++) {
     const hit = byPort.get(i);
     ports.push({
       portNumber: i,
@@ -323,6 +347,9 @@ const NOTES_OK = [
   'Configuración de SSID y contraseña aplicada.',
   'Sin novedades, servicio operando con normalidad.',
 ];
+
+/** Usuarios que cierran tareas (`lastModifyUser`) en el mock. */
+const TECHNICIAN_USERS = ['jcevallos', 'mmendoza', 'asalazar', 'dyepez'];
 
 const NOTES_BAD = [
   'Cliente no se encontraba en sitio, se reprogramada la visita.',
@@ -403,6 +430,9 @@ function mockTasks(workOrder: string): WorkOrderTask[] {
       createdAt: created.toISOString(),
       finishedAt,
       result: classifyTaskResult({ status, finishedAt, notes }),
+      // `lastModifyUser` en FSM: el usuario que cerró la tarea. Los usuarios
+      // reales tienen pinta de login de la operadora, no de nombre y apellido.
+      closedBy: finished ? rng.pick(TECHNICIAN_USERS) : null,
       notes,
     });
   }
@@ -506,8 +536,10 @@ export const fsmMock: FsmConnector = {
     const n = Math.min(opts.maxRows, rng.intBetween(2, 8));
     const naps: NearbyNap[] = [];
     for (let i = 0; i < n; i++) {
-      const total = rng.pick([8, 16] as const);
-      const occupied = rng.intBetween(0, total);
+      // Misma regla que en real: se sortean los ocupados y el total sale de
+      // ellos (8, o 16 si hay más de 8 ocupados).
+      const occupied = rng.intBetween(0, NAP_MAX_PORTS);
+      const total = inferNapTotalPorts(occupied);
       const distance = rng.floatBetween(10, Math.max(20, opts.meters), 1);
       const napId = rng.intBetween(10000, 19999);
       const nap: NearbyNap = {
@@ -531,7 +563,7 @@ export const fsmMock: FsmConnector = {
   async getNapPorts(napId, opts) {
     const rng = seededRng(`fsm:napports:${napId}`);
     const remembered = napRegistry.get(napId);
-    const total = remembered?.totalPorts ?? rng.pick([8, 16] as const);
+    const total = remembered?.totalPorts ?? NAP_MAX_PORTS;
     const rows: Array<{ portNumber: number; accountNumber: string; equipmentId: string }> = [];
     for (let i = 1; i <= total; i++) {
       if (!rng.bool(0.7)) continue;
@@ -559,7 +591,7 @@ export const fsmMock: FsmConnector = {
       ports: grid.ports,
       detailAvailable: true,
       occupiedPorts: grid.occupied,
-      totalPorts: grid.total ?? total,
+      totalPorts: grid.total,
       statusFanOut: {
         supported: true,
         pendingAccounts: grid.ports.filter((p) => p.statusPending).length,
@@ -700,6 +732,7 @@ export const fsmReal: FsmConnector = {
       createdAt: task.createdAt,
       finishedAt: task.finishedAt,
       result: task.result,
+      closedBy: task.closedBy,
       notes: task.notes.map(toWorkOrderNote),
     }));
     return { workOrder, brand: opts.brand, tasks };
@@ -728,6 +761,9 @@ export const fsmReal: FsmConnector = {
   },
 
   async getAccountsStatusBatch(accounts, opts) {
+    // "Lote" es interno: la operadora confirmó (2026-09-09) que NO hay endpoint
+    // de estado en lote, así que esto es una llamada por cuenta única, con el
+    // semáforo de FSM y el cache de 5 min por delante.
     const unique = dedupe(accounts);
     const limiter = createLimiter(env.FSM_API_MAX_CONCURRENCY);
 
@@ -807,6 +843,11 @@ export const fsmReal: FsmConnector = {
   async getNapPorts(napId, opts) {
     // UNA sola llamada. Los estados A/S/T/O/P son el paso 2 y los pide el
     // técnico explícitamente vía POST /accounts/status-batch.
+    //
+    // La operadora CONFIRMÓ el 2026-09-09 que NO existe un endpoint de estado
+    // en lote: hay que preguntar cuenta por cuenta. Por eso el lote es interno,
+    // está topado en `FSM_STATUS_BATCH_LIMIT` (12), se cachea 5 minutos y solo
+    // se dispara por un tap explícito del técnico — nunca en automático.
     const raw = await fetchNapAccounts(opts.brand, napId);
     if (raw === null) {
       throw ApiError.notFound(`FSM no encontró la NAP ${napId}.`);
@@ -825,14 +866,17 @@ export const fsmReal: FsmConnector = {
       applyStatuses(grid.ports, batch);
     }
 
-    const result: NapPorts = {
+    // La rejilla sale completa siempre: si no se pasó por `/naps/nearest`, el
+    // total lo da la regla 8/16 de la operadora (ver `buildPortGrid`). Ya no
+    // hay respuesta degradada por "no sé cuántos puertos tiene esta NAP".
+    return {
       napRef: String(napId),
       napId,
       napCode: remembered?.napCode ?? null,
       ports: grid.ports,
       detailAvailable: true,
       occupiedPorts: grid.occupied,
-      ...(grid.total !== null ? { totalPorts: grid.total } : {}),
+      totalPorts: grid.total,
       statusFanOut: {
         supported: true,
         pendingAccounts: grid.ports.filter((p) => p.statusPending).length,
@@ -840,17 +884,6 @@ export const fsmReal: FsmConnector = {
       },
       source: 'FSM',
     };
-
-    if (grid.total === null) {
-      result.degraded = {
-        reason: 'TRUNCATED',
-        message:
-          'No se pudo determinar cuántos puertos tiene la NAP: se muestran solo los ' +
-          'puertos conocidos. Consulta primero las NAPs cercanas para completar la rejilla.',
-      };
-    }
-
-    return result;
   },
 };
 

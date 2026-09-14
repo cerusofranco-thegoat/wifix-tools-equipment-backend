@@ -1,0 +1,32 @@
+{
+  "data": [
+    {
+      "accountId": 17412837,
+      "equipmentId": "STGU3C3B1A18",
+      "id": 35874,
+      "number": 2
+    },
+    {
+      "accountId": 33928054,
+      "equipmentId": "HWTCCB48FAAA",
+      "id": 35874,
+      "number": 3
+    },
+    {
+      "accountId": 102069038,
+      "equipmentId": "STGU3C3AC688",
+      "id": 35874,
+      "number": 4
+    },
+    {
+      "accountId": 108913107,
+      "equipmentId": "ZTEGD0BB7FA3",
+      "id": 35874,
+      "number": 6
+    }
+  ],
+  "errorCode": 0,
+  "externalTransactionId": null,
+  "internalTransactionId": "8df762b2-cb27-416c-ac79-778ac1db1ccd",
+  "message": "OK"
+}

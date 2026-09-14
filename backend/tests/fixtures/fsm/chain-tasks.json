@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "businessKey": "TASK/90932/2019",
+      "createDate": "2019-02-22 00:59:01",
+      "finishDate": "2019-02-22 14:54:13",
+      "lastModifyUser": "«REDACTADO:45»",
+      "notes": [
+        {
+          "content": "«REDACTADO:50»",
+          "createDate": "2019-02-22 12:19:59"
+        },
+        {
+          "content": "«REDACTADO:109»",
+          "createDate": "2019-02-22 12:19:37"
+        },
+        {
+          "content": "«REDACTADO:67»",
+          "createDate": "2019-02-22 01:00:02"
+        },
+        {
+          "content": "«REDACTADO:238»",
+          "createDate": "2019-02-22 00:59:59"
+        }
+      ],
+      "status": "Realizado",
+      "taskId": 2437136
+    }
+  ],
+  "errorCode": 0,
+  "externalTransactionId": "8f0039a2-e423-48f8-8392-5d5692a30388",
+  "internalTransactionId": "282958b9-b12c-46a1-a2b9-dc48f382d580",
+  "message": "OK"
+}

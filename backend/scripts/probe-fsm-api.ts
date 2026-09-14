@@ -24,8 +24,9 @@
  *                               tests usen datos reales sin volver a pegarle a
  *                               la operadora. Los fixtures se guardan SIEMPRE
  *                               redactados (nombres, teléfonos, correos,
- *                               direcciones y documentos): se commitean, y lo
- *                               que hace falta de ellos es la estructura.
+ *                               direcciones, documentos y el texto libre de las
+ *                               notas): se commitean, y lo que hace falta de
+ *                               ellos es la estructura.
  *
  * `token` funciona SIN RED y sin token configurado: informa MISSING.
  * Imprime el JSON crudo y la lista de claves de cada respuesta: es la única
@@ -96,6 +97,12 @@ function show(label: string, data: unknown): void {
  * Claves cuyo valor es dato personal del cliente. Los fixtures se commitean, y
  * lo que se necesita de ellos es la ESTRUCTURA (nombres de clave, tipos,
  * formato de fecha), no la identidad de nadie.
+ *
+ * Incluye el TEXTO LIBRE de las notas (`note` en account/process, `content` en
+ * `notes[]` de workorder/tasks): en producción viene con el nombre del cliente,
+ * teléfonos, correos y la dirección incrustados en la narrativa, así que hay
+ * que enmascararlo completo. `lastModifyUser` trae el nombre del técnico que
+ * cerró la tarea, que también es un dato personal.
  */
 const SENSITIVE_KEYS = [
   'name', 'names', 'nombre', 'nombres', 'clientname', 'fullname', 'apellido', 'apellidos',
@@ -103,6 +110,9 @@ const SENSITIVE_KEYS = [
   'email', 'correo', 'mail',
   'address', 'direccion', 'domicilio', 'referencia', 'referencias',
   'cedula', 'ruc', 'identification', 'identificacion', 'documento', 'dni', 'pasaporte',
+  // Texto libre con PII incrustada + usuario que cerró la tarea.
+  'note', 'nota', 'notas', 'observacion', 'observaciones', 'content', 'contenido',
+  'lastmodifyuser', 'lastmodifyusername',
 ];
 
 /** Enmascara un valor conservando tipo y longitud aproximada. */
@@ -141,7 +151,9 @@ function save(suffix: string, data: unknown): void {
   mkdirSync(FIXTURES_DIR, { recursive: true });
   const file = resolve(FIXTURES_DIR, `${saveName}${suffix}.json`);
   writeFileSync(file, `${JSON.stringify(redact(data), null, 2)}\n`, 'utf8');
-  console.log(`-- guardado en ${file} (nombres, teléfonos, correos y direcciones redactados)`);
+  console.log(
+    `-- guardado en ${file} (nombres, teléfonos, correos, direcciones y notas redactados)`,
+  );
 }
 
 /** `token`: decodifica lo configurado. CERO llamadas de red. */

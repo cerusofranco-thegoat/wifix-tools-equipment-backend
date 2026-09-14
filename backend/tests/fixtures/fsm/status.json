@@ -1,0 +1,11 @@
+{
+  "data": {
+    "accountId": 35070291,
+    "description": "Activo",
+    "status": "A"
+  },
+  "errorCode": 0,
+  "externalTransactionId": "6a102540-bcee-4a1e-b362-e0482c34c3a6",
+  "internalTransactionId": "918a801b-bf5a-4cff-92b4-667ecf005fbb",
+  "message": "OK"
+}

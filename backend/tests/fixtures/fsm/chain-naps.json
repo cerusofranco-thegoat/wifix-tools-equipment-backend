@@ -1,0 +1,38 @@
+{
+  "data": [
+    {
+      "distance": 28,
+      "id": 35874,
+      "lat": -2.076135,
+      "lng": -79.854035,
+      "name": "«REDACTADO:5»",
+      "network": "AR7S",
+      "ports": 8,
+      "used": 4
+    },
+    {
+      "distance": 78,
+      "id": 35876,
+      "lat": -2.076806,
+      "lng": -79.85386,
+      "name": "«REDACTADO:5»",
+      "network": "AR7S",
+      "ports": 8,
+      "used": 8
+    },
+    {
+      "distance": 90,
+      "id": 35873,
+      "lat": -2.07585,
+      "lng": -79.854553,
+      "name": "«REDACTADO:5»",
+      "network": "AR7S",
+      "ports": 8,
+      "used": 6
+    }
+  ],
+  "errorCode": 0,
+  "externalTransactionId": null,
+  "internalTransactionId": "3e88260c-28a4-40a7-8dc7-e73a1111605a",
+  "message": "OK"
+}

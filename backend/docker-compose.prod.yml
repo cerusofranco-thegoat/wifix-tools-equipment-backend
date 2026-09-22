@@ -89,13 +89,10 @@ services:
       retries: 5
 
   minio:
-    # Imagen propia: binario oficial estático sobre Alpine. Las imágenes
-    # oficiales (Docker Hub ya sin `latest`; quay.io con glibc RHEL 9) exigen
-    # x86-64-v2 y abortan en CPUs virtuales viejos como el del VPS Quasar.
-    build:
-      context: .
-      dockerfile: docker/minio.Dockerfile
-    image: wifix-minio:demo
+    # Release pineada y verificada en el VPS Quasar: las imágenes recientes
+    # (glibc RHEL 9) exigen x86-64-v2 y el QEMU Virtual CPU del VPS no lo tiene;
+    # Docker Hub (minio/minio) quedó inaccesible y dl.min.io devuelve 410.
+    image: quay.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
     container_name: wifix-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -112,8 +109,8 @@ services:
     networks:
       - wifix
     healthcheck:
-      # Alpine no trae curl; el wget de busybox alcanza.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9000/minio/health/live || exit 1"]
+      # La imagen no trae curl ni wget: chequeo TCP con el /dev/tcp de bash.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9000' || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

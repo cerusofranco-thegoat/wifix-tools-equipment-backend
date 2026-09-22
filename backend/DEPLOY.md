@@ -268,3 +268,28 @@ Los datos viven en los volúmenes `wifix-postgres-data` y `wifix-minio-data`: un
 | `502` con "no se encontró el directorio tests/fixtures/fsm" | La imagen se construyó sin los fixtures y FSM está en `fixture` |
 | Las fotos no se abren en el APK | `STORAGE_PUBLIC_BASE_URL` sin definir (apunta a `http://minio:9000`) o el proxy no enruta `/s3` |
 | La app no puede llamar a la API desde el APK | Falta `http://localhost` / `https://localhost` en `CORS_ORIGIN` |
+
+## 9. Política de privacidad (Google Play)
+
+Publicada en `https://api-wifix.portaltulpa.com/privacidad` (alias `/privacy`).
+Es la URL que se declara en Play Console → Política de privacidad y en el
+formulario de Data Safety.
+
+Cómo funciona: el HTML vive en el bucket público de MinIO
+(`wifix-media/legal/privacidad.html`, fuente en `/opt/wifix-cert/legal/`) y
+Traefik la sirve con una ruta `replacePath` definida en
+`/etc/dokploy/traefik/dynamic/wifix-cert.yml`.
+
+Para actualizarla: editar `/opt/wifix-cert/legal/privacidad.html` y re-subirla
+(mc directo, sin sh — ver el comentario del compose sobre x86-64-v2):
+
+```bash
+cd /opt/wifix-cert/backend
+A=$(grep '^STORAGE_ACCESS_KEY=' .env | cut -d= -f2-)
+S=$(grep '^STORAGE_SECRET_KEY=' .env | cut -d= -f2-)
+docker run --rm --network wifix \
+  -e MC_HOST_local="http://$A:$S@wifix-minio:9000" \
+  -v /opt/wifix-cert/legal:/legal:ro \
+  quay.io/minio/mc:RELEASE.2024-01-13T08-44-48Z \
+  cp /legal/privacidad.html local/wifix-media/legal/privacidad.html
+```

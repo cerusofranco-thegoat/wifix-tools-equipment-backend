@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# Wifix Certificate — backend en un VPS (demo).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Decisiones:
+#   - El backend escucha SOLO en 127.0.0.1:8080. El TLS y el dominio los pone el
+#     reverse proxy del VPS (Caddy / nginx / DokPloy); acá no hay nada de eso.
+#   - Postgres y MinIO NO publican puertos al host: solo se ven dentro de la red
+#     `wifix`. Si hace falta entrar a mirar, se usa `docker compose exec`.
+#   - Toda la configuración del backend viene de `.env` (ver
+#     `.env.production.example`). Este archivo no lleva ni un secreto.
+#   - Las migraciones NO se corren al arrancar: el servicio `migrate` (perfil
+#     `tools`) se ejecuta a mano y se va. Ver DEPLOY.md.
+# ---------------------------------------------------------------------------
+
+name: wifix-backend
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: wifix-backend:demo
+    container_name: wifix-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Lo que no debe depender del .env del operador.
+      NODE_ENV: production
+      PORT: "8080"
+    # Solo loopback: el reverse proxy del VPS hace el resto.
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - wifix
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # One-shot: migraciones, seed de catálogos y usuario admin.
+  #   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: tools
+    image: wifix-backend-tools:demo
+    profiles:
+      - tools
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wifix
+    restart: "no"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: wifix-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wifix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wifix_tools}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Sin `ports`: nadie llega a la base desde fuera del host.
+    networks:
+      - wifix
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wifix} -d ${POSTGRES_DB:-wifix_tools}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: wifix-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?define STORAGE_ACCESS_KEY en .env}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?define STORAGE_SECRET_KEY en .env}
+    volumes:
+      - minio-data:/data
+    # Sin `ports`. Las fotos se sirven a través del reverse proxy (ver
+    # STORAGE_PUBLIC_BASE_URL en .env.production.example). Para entrar a la
+    # consola de MinIO en una sesión de soporte, descomentar y usar un túnel SSH:
+    # ports:
+    #   - "127.0.0.1:9001:9001"
+    networks:
+      - wifix
+    healthcheck:
+      # La imagen de MinIO trae curl (comprobado en la del compose de dev).
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: crea el bucket y lo deja de lectura pública (las fotos se abren
+  # por URL desde la app). Se ejecuta en cada `up` y termina.
+  minio-bucket-init:
+    image: minio/mc:latest
+    container_name: wifix-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${STORAGE_ACCESS_KEY} $${STORAGE_SECRET_KEY} &&
+      (mc mb --ignore-existing local/$${STORAGE_BUCKET:-wifix-media}) &&
+      mc anonymous set download local/$${STORAGE_BUCKET:-wifix-media} &&
+      echo 'Bucket listo.'
+      "
+    networks:
+      - wifix
+    restart: "no"
+
+volumes:
+  postgres-data:
+    name: wifix-postgres-data
+  minio-data:
+    name: wifix-minio-data
+
+networks:
+  wifix:
+    name: wifix
+    driver: bridge

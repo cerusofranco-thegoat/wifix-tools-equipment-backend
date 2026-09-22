@@ -36,9 +36,18 @@ export interface UploadResult {
   sizeBytes: number;
 }
 
+/**
+ * URL con la que la app descarga el archivo.
+ *
+ * `STORAGE_ENDPOINT` es la ruta INTERNA del servidor hacia el almacenamiento
+ * (`http://minio:9000` dentro de docker compose) y no sirve como URL pública:
+ * el APK no puede resolver ese nombre. Cuando están desplegados por separado se
+ * define `STORAGE_PUBLIC_BASE_URL` con lo que publica el reverse proxy; si está
+ * vacía (desarrollo local) las dos coinciden y no cambia nada.
+ */
 function buildPublicUrl(storageKey: string): string {
-  const endpoint = env.STORAGE_ENDPOINT.replace(/\/+$/, '');
-  return `${endpoint}/${env.STORAGE_BUCKET}/${storageKey}`;
+  const base = (env.STORAGE_PUBLIC_BASE_URL || env.STORAGE_ENDPOINT).replace(/\/+$/, '');
+  return `${base}/${env.STORAGE_BUCKET}/${storageKey}`;
 }
 
 export async function uploadObject(input: UploadInput): Promise<UploadResult> {

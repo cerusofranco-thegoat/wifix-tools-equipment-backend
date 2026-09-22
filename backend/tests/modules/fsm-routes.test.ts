@@ -19,7 +19,7 @@ import {
   resetFsmTokenCache,
 } from '../../src/connectors/http/fsm-token.js';
 import { resetFsmLimiter } from '../../src/connectors/http/fsm-api.js';
-import { resetNapRegistry } from '../../src/connectors/fsm/index.js';
+import { getFsmConnector, resetNapRegistry } from '../../src/connectors/fsm/index.js';
 
 const PREFIX = '/herramientas/v1';
 
@@ -95,6 +95,9 @@ describe('CONNECTOR_MODE_FSM=mock — el frontend puede trabajar sin token', () 
     expect(body.mode).toBe('mock');
     expect(body.defaultBrand).toBe('telenews');
     expect(body.napsPrimarySource).toBe('tec');
+    // En mock no hace falta token: el banner de "FSM no disponible" no aplica.
+    expect(body.requiresToken).toBe(false);
+    expect(body.fixtureAccount).toBeNull();
     // Solo telenews: la operadora deshabilitó seteinfo el 2026-09-09.
     expect(body.brands.map((b: { brand: string }) => b.brand)).toEqual(['telenews']);
     for (const brand of body.brands) {
@@ -126,6 +129,26 @@ describe('CONNECTOR_MODE_FSM=mock — el frontend puede trabajar sin token', () 
     expect(body.sources.fullName).toBe('FSM');
     expect(body.sources.planName).toBe('MOCK');
     expect(body.sources.contractedDownloadMbps).toBe('MOCK');
+  });
+
+  it('client-profile sigue devolviendo 404 en mock cuando la cuenta no existe', async () => {
+    // Con datos simulados, "sin órdenes" SÍ significa cuenta desconocida (el
+    // mock inventa órdenes para cualquier cuenta con formato válido, así que hay
+    // que forzar la respuesta vacía para llegar a esa rama).
+    const spyOrders = vi.spyOn(getFsmConnector(), 'getAccountOrders').mockResolvedValue({
+      accountNumber: '00000000',
+      brand: 'telenews',
+      client: null,
+      orders: [],
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/00000000/client-profile`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().code).toBe('NOT_FOUND');
+    spyOrders.mockRestore();
   });
 
   it('PUT client-profile manda sobre FSM y se marca MOCK en sources', async () => {
@@ -416,6 +439,94 @@ describe('Precedencia de rutas (find-my-way)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Modo fixture — la demo del VPS: datos reales grabados, cero red
+// ---------------------------------------------------------------------------
+
+describe('CONNECTOR_MODE_FSM=fixture — las rutas sirven la captura real', () => {
+  beforeEach(() => {
+    Object.assign(env, { CONNECTOR_MODE_FSM: 'fixture' });
+    spy = installFetchSpy(() => ({ status: 500, raw: 'el modo fixture no puede usar la red' }));
+  });
+
+  it('/integrations/fsm/health informa mode=fixture y que no hace falta token', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/integrations/fsm/health`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.mode).toBe('fixture');
+    expect(body.requiresToken).toBe(false);
+    expect(body.fixtureAccount).toBe('35070291');
+  });
+
+  it('client-profile de la cuenta grabada compone FSM + plan del mock, sin placeholders', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/35070291/client-profile`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.fullName).toBe('María F. Zambrano C.');
+    expect(body.sources).toMatchObject({ fullName: 'FSM', address: 'FSM', planName: 'MOCK' });
+    expect(body.degraded).toBeUndefined();
+    expect(res.payload).not.toContain('REDACTADO');
+    expect(spy!.calls).toHaveLength(0);
+  });
+
+  it('previous-visits devuelve las 27 órdenes reales de la cuenta grabada', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/35070291/previous-visits`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.totalOrders).toBeGreaterThan(10);
+    expect(body.items.map((i: { workOrder: string }) => i.workOrder)).toContain('ORDER/73198/2019');
+    expect(res.payload).not.toContain('REDACTADO');
+  });
+
+  it('contract-status de la cuenta grabada sale ACTIVA (estado real A)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/35070291/contract-status`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().accounts[0]).toMatchObject({ status: 'ACTIVA', statusCode: 'A' });
+  });
+
+  it('otra cuenta sigue respondiendo con los datos del mock', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/71398253/client-profile`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().fullName).not.toBe('María F. Zambrano C.');
+    expect(spy!.calls).toHaveLength(0);
+  });
+
+  it('/naps/nearby con NAPS_PRIMARY_SOURCE=fsm sirve las NAPs grabadas', async () => {
+    Object.assign(env, { NAPS_PRIMARY_SOURCE: 'fsm' });
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/naps/nearby?lat=-2.0761&lng=-79.8537`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    const naps = res.json() as Array<{ napId: number; source: string; napCode: string }>;
+    expect(naps.map((n) => n.napId)).toContain(35874);
+    expect(naps.every((n) => n.source === 'FSM')).toBe(true);
+    expect(res.payload).not.toContain('REDACTADO');
+    expect(spy!.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Modo real — el fallo de FSM nunca es un 401
 // ---------------------------------------------------------------------------
 
@@ -626,16 +737,39 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(fetchSpy.calls).toHaveLength(1);
   });
 
-  it('client-profile devuelve 404 cuando FSM no conoce la cuenta', async () => {
+  it('client-profile NO devuelve 404 cuando FSM real responde vacío: 200 degradado', async () => {
+    // FSM devuelve `data: []` tanto para una cuenta inexistente como para una
+    // cuenta sin órdenes. Un 404 acá dejaba al técnico sin la pantalla de Datos
+    // Personales completa, así que se compone con el mock y se avisa.
     useRealFsm(() => ({ status: 200, body: { data: [] } }));
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/00000000/client-profile`,
       headers: authHeaders,
     });
-    expect(res.statusCode).toBe(404);
-    expect(res.json().code).toBe('NOT_FOUND');
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.accountNumber).toBe('00000000');
+    expect(body.degraded.reason).toBe('FSM_UNAVAILABLE');
+    expect(body.sources).toMatchObject({ fullName: 'MOCK', address: 'MOCK', phones: 'MOCK' });
+    const header = res.headers['x-wifix-degraded'];
+    expect(typeof header).toBe('string');
+    expect(JSON.parse(decodeURIComponent(String(header))).reason).toBe('FSM_UNAVAILABLE');
   });
+
+  it('client-profile con FSM caído (500) devuelve 503 UPSTREAM_UNAVAILABLE, no 404', async () => {
+    useRealFsm(() => ({ status: 500, raw: 'boom' }));
+    const res = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/35070291/client-profile`,
+      headers: authHeaders,
+    });
+    expect(res.statusCode).toBe(503);
+    const body = res.json();
+    expect(body.code).toBe('UPSTREAM_UNAVAILABLE');
+    expect(body.meta).toMatchObject({ integration: 'FSM', reason: 'UPSTREAM_ERROR', retryable: true });
+  });
+
 
   it('/naps/{napId}/ports hace UNA sola llamada y no consulta ningún estado', async () => {
     Object.assign(env, { NAPS_PRIMARY_SOURCE: 'fsm' });

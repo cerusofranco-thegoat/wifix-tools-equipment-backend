@@ -28,6 +28,23 @@ for (const brand of ['TELENEWS', 'SETEINFO']) {
   process.env[`FSM_API_TOKEN_${brand}`] = '';
 }
 
-// El conector FSM arranca siempre en mock: los tests que quieren el modo real
-// lo encienden explícitamente sobre `env`.
+// Las credenciales Digest de TEC / ISP Monitor son permanentes y viven en el
+// mismo `.env`. Con `CONNECTOR_MODE_ISPMONITOR=real` (que es el valor de
+// desarrollo) un test de integración saldría a `tec-api.grupotvcable.com`, que
+// también es producción — y desde una red sin la IP autorizada eso solo produce
+// fallos intermitentes que no dicen nada del código.
+for (const key of ['TEC_API_USERNAME', 'TEC_API_PASSWORD']) {
+  process.env[key] = '';
+}
+
+// TODOS los conectores arrancan en mock dentro de la suite. Los tests que
+// quieren el modo real lo encienden explícitamente sobre el objeto `env`
+// (`Object.assign(env, { CONNECTOR_MODE_TEC: 'real' })`) y siempre con un doble
+// de `fetch` instalado.
+process.env.CONNECTOR_MODE = 'mock';
 process.env.CONNECTOR_MODE_FSM = 'mock';
+process.env.CONNECTOR_MODE_TEC = 'mock';
+process.env.CONNECTOR_MODE_ISPMONITOR = 'mock';
+process.env.CONNECTOR_MODE_COMARCH = 'mock';
+process.env.CONNECTOR_MODE_ACS = 'mock';
+process.env.CONNECTOR_MODE_RMS = 'mock';

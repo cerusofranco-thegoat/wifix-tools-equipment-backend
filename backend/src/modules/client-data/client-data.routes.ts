@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { parseBody, parseParams, parseQuery } from '../../lib/validation.js';
 import { brandFromRequest } from '../../lib/brand.js';
+import { connectorMode } from '../../config/env.js';
 import { getAuthUser } from '../../middleware/authenticate.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import {
@@ -20,6 +21,7 @@ import {
   getFsmConnector,
   type AccountOrders,
   type ClientProfile,
+  type Degraded,
 } from '../../connectors/index.js';
 import type { FsmBrand } from '../../connectors/http/fsm-token.js';
 
@@ -104,14 +106,65 @@ function fetchFsmOrders(accountNumber: string, brand: FsmBrand): Promise<Account
   return getFsmConnector().getAccountOrders(accountNumber, { brand, estado: 'Todas' });
 }
 
+/**
+ * Órdenes de FSM tolerando la indisponibilidad del sistema de la operadora.
+ *
+ * - Fallo de token (503 `UPSTREAM_AUTH_ERROR`): se propaga tal cual, con su
+ *   `meta.reason` (MISSING / EXPIRED / REJECTED). NUNCA sale como 401 ni 404.
+ * - Timeout, error de red o 5xx de FSM (hoy 502 `CONNECTOR_ERROR`): se traduce a
+ *   503 `UPSTREAM_UNAVAILABLE`, también con `meta.reason`. Que la operadora no
+ *   conteste no significa que la cuenta no exista.
+ * - Cualquier otro error (validación, por ejemplo) se propaga sin tocar.
+ */
+async function fetchFsmOrdersOrUnavailable(
+  accountNumber: string,
+  brand: FsmBrand,
+): Promise<AccountOrders> {
+  try {
+    return await fetchFsmOrders(accountNumber, brand);
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'CONNECTOR_ERROR') {
+      throw ApiError.upstreamUnavailable({
+        integration: 'FSM',
+        brand,
+        reason: 'UPSTREAM_ERROR',
+        detail: err.message,
+      });
+    }
+    throw err;
+  }
+}
+
+/**
+ * Aviso de que el perfil se compuso SIN los datos de FSM: los campos de
+ * identidad salen del mock (ver `sources`). Es un 200 degradado a propósito —
+ * un 404 acá dejaba al técnico sin la pantalla completa de Datos Personales.
+ */
+function emptyFsmDegraded(accountNumber: string): Degraded {
+  return {
+    reason: 'FSM_UNAVAILABLE',
+    message:
+      `FSM no devolvió órdenes para la cuenta ${accountNumber}. Los datos del ` +
+      `cliente que se muestran son simulados: verifícalos antes de usarlos.`,
+  };
+}
+
 export async function registerClientDataRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/accounts/:accountNumber/client-profile', async (request) => {
+  app.get('/accounts/:accountNumber/client-profile', async (request, reply) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
     const { brand } = parseQuery(brandQuerySchema, request.query);
     const effectiveBrand = brandFromRequest(request, brand);
 
-    const fsm = await fetchFsmOrders(accountNumber, effectiveBrand);
-    if (fsm.client === null && fsm.orders.length === 0) {
+    const fsm = await fetchFsmOrdersOrUnavailable(accountNumber, effectiveBrand);
+    const withoutFsmData = fsm.client === null && fsm.orders.length === 0;
+
+    // Con datos simulados (mock/fixture) una respuesta vacía SÍ significa
+    // "cuenta desconocida": el mock inventa órdenes para cualquier cuenta con
+    // formato válido, así que si no hay nada es porque la cuenta no existe en
+    // ese universo. Contra FSM real no se puede concluir lo mismo: la operadora
+    // devuelve `data: []` tanto para una cuenta inexistente como para una cuenta
+    // sin órdenes registradas o cuando el proceso no está disponible.
+    if (withoutFsmData && connectorMode('fsm') !== 'real') {
       throw ApiError.notFound(
         `FSM no tiene órdenes para la cuenta ${accountNumber} (marca ${effectiveBrand}).`,
       );
@@ -119,11 +172,18 @@ export async function registerClientDataRoutes(app: FastifyInstance): Promise<vo
 
     const base = await getComarchConnector().getClientProfile(accountNumber);
     const override = getClientProfileOverrides(accountNumber);
-    return composeProfile(base, fsm, {
+    const profile = composeProfile(base, fsm, {
       fullName: override?.fullName !== undefined,
       address: override?.address !== undefined,
       phones: override?.phones !== undefined,
     });
+
+    if (withoutFsmData) {
+      const degraded = emptyFsmDegraded(accountNumber);
+      reply.header('X-Wifix-Degraded', encodeURIComponent(JSON.stringify(degraded)));
+      return { ...profile, degraded };
+    }
+    return profile;
   });
 
   app.put('/accounts/:accountNumber/client-profile', async (request) => {

@@ -9,6 +9,7 @@ export type ApiErrorCode =
   | 'MEDIA_NOT_FOUND'
   | 'CONNECTOR_ERROR'
   | 'UPSTREAM_AUTH_ERROR'
+  | 'UPSTREAM_UNAVAILABLE'
   | 'INTERNAL_ERROR';
 
 export interface ApiErrorDetail {
@@ -119,6 +120,39 @@ export class ApiError extends Error {
     if (detail) meta.detail = detail;
 
     return new ApiError('UPSTREAM_AUTH_ERROR', 503, message, undefined, meta);
+  }
+
+  /**
+   * La integración de un tercero (hoy FSM) está caída, no responde o devolvió
+   * un error propio. Es **503 y nunca 404**: una cuenta no deja de existir
+   * porque el sistema de la operadora no contesta, y un 404 en el perfil del
+   * cliente deja al técnico sin pantalla en medio de una visita.
+   *
+   * Mismo sobre que `upstreamAuth` (`meta.integration` / `meta.reason`) para que
+   * el frontend tenga un solo camino de "integración no disponible", con la
+   * diferencia de que esto SÍ es reintentable.
+   */
+  static upstreamUnavailable(opts: {
+    integration: string;
+    brand?: string;
+    reason: 'TIMEOUT' | 'UPSTREAM_ERROR' | 'NO_DATA';
+    message?: string;
+    detail?: string;
+  }): ApiError {
+    const { integration, brand, reason, detail } = opts;
+    const message =
+      opts.message ??
+      `${integration} no está respondiendo en este momento. ` +
+        `Los datos de la operadora no se pueden consultar; el resto de la app ` +
+        `funciona con normalidad.`;
+    const meta: Record<string, unknown> = {
+      integration,
+      reason,
+      retryable: true,
+    };
+    if (brand) meta.brand = brand;
+    if (detail) meta.detail = detail;
+    return new ApiError('UPSTREAM_UNAVAILABLE', 503, message, undefined, meta);
   }
 }
 

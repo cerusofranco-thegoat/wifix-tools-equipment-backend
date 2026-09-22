@@ -1,0 +1,13 @@
+# Contexto de build: solo lo que necesita el Dockerfile.
+node_modules
+dist
+.env
+.env.*
+!.env.production.example
+*.log
+dev-server.log
+.git
+.vscode
+.idea
+coverage
+scripts/*.log

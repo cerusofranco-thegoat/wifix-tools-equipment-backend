@@ -7,7 +7,7 @@
 // datos salen de tarjetas de CMTS o de puertos de OLT. RMS sigue en mock, así
 // que cuando haya credenciales habrá que confirmar qué agrupa realmente.
 
-import { env } from '../../config/env.js';
+import { connectorMode } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import { seededRng, notImplemented } from '../_shared.js';
 
@@ -71,12 +71,15 @@ export const rmsReal: RmsConnector = {
 };
 
 export function getRmsConnector(): RmsConnector {
-  switch (env.CONNECTOR_MODE) {
+  // Override propio (CONNECTOR_MODE_RMS): el real es un esqueleto y un
+  // `CONNECTOR_MODE=real` global lo dejaría devolviendo 502.
+  const mode = connectorMode('rms');
+  switch (mode) {
     case 'mock':
       return rmsMock;
     case 'real':
       return rmsReal;
     default:
-      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${env.CONNECTOR_MODE}`);
+      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${mode}`);
   }
 }

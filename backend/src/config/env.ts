@@ -19,9 +19,23 @@ const envSchema = z.object({
   CONNECTOR_MODE: z.enum(['mock', 'real']).default('mock'),
   // Overrides por conector: hoy solo TEC e ISP Monitor tienen credenciales
   // reales, el resto (Comarch, FSM, ACS, RMS) sigue en mock.
+  //
+  // TODOS los conectores leen su modo con `connectorMode(nombre)`, así que un
+  // `CONNECTOR_MODE=real` global afectaría también a los que solo tienen
+  // esqueleto (Comarch, ACS, RMS → `notImplemented()` → 502). Por eso cada uno
+  // tiene su override explícito: se puede poner el global en `real` sin tumbar
+  // las pantallas que hoy funcionan con datos simulados.
   CONNECTOR_MODE_TEC: z.enum(['mock', 'real']).optional(),
   CONNECTOR_MODE_ISPMONITOR: z.enum(['mock', 'real']).optional(),
-  CONNECTOR_MODE_FSM: z.enum(['mock', 'real']).optional(),
+  CONNECTOR_MODE_COMARCH: z.enum(['mock', 'real']).optional(),
+  CONNECTOR_MODE_ACS: z.enum(['mock', 'real']).optional(),
+  CONNECTOR_MODE_RMS: z.enum(['mock', 'real']).optional(),
+  // FSM admite un tercer modo, `fixture`: sirve las respuestas REALES de
+  // producción guardadas en `tests/fixtures/fsm/` (cuenta 35070291) pasándolas
+  // por el mismo pipeline de normalización que el modo real, con los campos de
+  // PII rehidratados con datos demo. Cero red: es el modo de la demo en un VPS
+  // sin IP autorizada (o sin token vigente). Cualquier otra cuenta cae al mock.
+  CONNECTOR_MODE_FSM: z.enum(['mock', 'real', 'fixture']).optional(),
   // --- API de TEC / ISP Monitor (Grupo TVCable) ---
   // Base de la API real de operadora. Autenticación HTTP Digest.
   TEC_API_BASE_URL: z.string().url().default('https://tec-api.grupotvcable.com'),
@@ -94,7 +108,15 @@ const envSchema = z.object({
   // Fuente primaria de NAPs para el campo 6 (ver ADR-04). Hoy: tec.
   NAPS_PRIMARY_SOURCE: z.enum(['fsm', 'tec']).default('tec'),
   // --- Almacenamiento ---
+  // Endpoint que usa el SDK de S3 desde DENTRO del servidor. En un despliegue
+  // con docker compose es el nombre del servicio (`http://minio:9000`).
   STORAGE_ENDPOINT: z.string().url().default('http://localhost:9000'),
+  // Base PÚBLICA de las URLs de media que se devuelven a la app. Si se deja
+  // vacía se usa `STORAGE_ENDPOINT`, que es lo correcto en desarrollo. En un VPS
+  // NO lo es: `http://minio:9000` solo resuelve dentro de la red de contenedores,
+  // así que acá va la URL que el reverse proxy publica (p. ej.
+  // `https://demo.example.com/s3`).
+  STORAGE_PUBLIC_BASE_URL: z.string().default(''),
   STORAGE_REGION: z.string().default('us-east-1'),
   STORAGE_BUCKET: z.string().default('wifix-media'),
   STORAGE_ACCESS_KEY: z.string().default('wifixminio'),
@@ -201,13 +223,35 @@ if (parsed.data.NODE_ENV === 'production') {
 export const env = parsed.data;
 export type Env = typeof env;
 
-/** Modo efectivo de un conector: su override si existe, si no el global. */
-export function connectorMode(connector: 'tec' | 'ispmonitor' | 'fsm'): 'mock' | 'real' {
-  const override =
-    connector === 'tec'
-      ? env.CONNECTOR_MODE_TEC
-      : connector === 'ispmonitor'
-        ? env.CONNECTOR_MODE_ISPMONITOR
-        : env.CONNECTOR_MODE_FSM;
+/** Modo de un conector corriente: simulado o contra la API de la operadora. */
+export type ConnectorMode = 'mock' | 'real';
+/** FSM añade `fixture`: respuestas reales grabadas, sin red (ver `fsm/fixture.ts`). */
+export type FsmMode = ConnectorMode | 'fixture';
+
+/** Conectores con override propio de modo. */
+export type ConnectorName = 'tec' | 'ispmonitor' | 'fsm' | 'comarch' | 'acs' | 'rms';
+
+const MODE_OVERRIDE_KEYS = {
+  tec: 'CONNECTOR_MODE_TEC',
+  ispmonitor: 'CONNECTOR_MODE_ISPMONITOR',
+  fsm: 'CONNECTOR_MODE_FSM',
+  comarch: 'CONNECTOR_MODE_COMARCH',
+  acs: 'CONNECTOR_MODE_ACS',
+  rms: 'CONNECTOR_MODE_RMS',
+} as const satisfies Record<ConnectorName, keyof Env>;
+
+/**
+ * Modo efectivo de un conector: su override si existe, si no el global.
+ *
+ * NINGÚN conector debe leer `env.CONNECTOR_MODE` directamente: los que solo
+ * tienen esqueleto real (`notImplemented()`) responderían 502 en cuanto alguien
+ * suba el global a `real`.
+ */
+export function connectorMode(connector: 'fsm'): FsmMode;
+export function connectorMode(
+  connector: 'tec' | 'ispmonitor' | 'comarch' | 'acs' | 'rms',
+): ConnectorMode;
+export function connectorMode(connector: ConnectorName): FsmMode {
+  const override = env[MODE_OVERRIDE_KEYS[connector]] as FsmMode | undefined;
   return override ?? env.CONNECTOR_MODE;
 }

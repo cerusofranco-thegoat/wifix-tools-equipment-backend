@@ -44,6 +44,10 @@ export default [
       ...tsPlugin.configs.recommended.rules,
       'no-unused-vars': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // La regla base no entiende las sobrecargas de función de TypeScript
+      // (`connectorMode` en config/env.ts) y las reporta como redeclaración.
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-redeclare': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/consistent-type-imports': 'warn',
     },

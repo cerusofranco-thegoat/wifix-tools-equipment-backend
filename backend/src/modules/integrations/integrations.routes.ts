@@ -18,6 +18,7 @@ import { parseBody } from '../../lib/validation.js';
 import { brandFromRequest } from '../../lib/brand.js';
 import { connectorMode, env } from '../../config/env.js';
 import { getFsmConnector } from '../../connectors/index.js';
+import { FIXTURE_ACCOUNT } from '../../connectors/fsm/fixture.js';
 import { fsmTokenStatus } from '../../connectors/http/fsm-token.js';
 
 function statusBatchSchema(): z.ZodTypeAny {
@@ -31,12 +32,23 @@ function statusBatchSchema(): z.ZodTypeAny {
 }
 
 export async function registerIntegrationsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/integrations/fsm/health', async () => ({
-    mode: connectorMode('fsm'),
-    defaultBrand: env.FSM_DEFAULT_BRAND,
-    brands: fsmTokenStatus(),
-    napsPrimarySource: env.NAPS_PRIMARY_SOURCE,
-  }));
+  app.get('/integrations/fsm/health', async () => {
+    const mode = connectorMode('fsm');
+    return {
+      mode,
+      defaultBrand: env.FSM_DEFAULT_BRAND,
+      brands: fsmTokenStatus(),
+      napsPrimarySource: env.NAPS_PRIMARY_SOURCE,
+      // `brands[].available` habla SOLO del token de la operadora. En `mock` y
+      // en `fixture` no hace falta ninguno, así que un `available: false` ahí no
+      // significa que las pantallas de FSM estén caídas: la UI debe mirar este
+      // campo antes de pintar el aviso de "integración no disponible".
+      requiresToken: mode === 'real',
+      // En modo `fixture` esta es la cuenta que devuelve datos reales grabados;
+      // cualquier otra responde con el mock. `null` en los demás modos.
+      fixtureAccount: mode === 'fixture' ? FIXTURE_ACCOUNT : null,
+    };
+  });
 
   app.post('/accounts/status-batch', async (request) => {
     const body = parseBody(statusBatchSchema(), request.body) as { accounts: string[] };

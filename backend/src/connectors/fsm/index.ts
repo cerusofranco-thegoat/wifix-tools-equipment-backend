@@ -1,10 +1,13 @@
 // ---------------------------------------------------------------------------
 // Conector hacia FSM (`fsm-data-ms`) — campos 1-3, 6, 7, 8, 15 y 16.
 //
-// Capas:  routes → este módulo (modelo interno, mock|real)
+// Capas:  routes → este módulo (modelo interno, mock|real|fixture)
 //                → http/fsm-api.ts (HTTP + caudal)
 //                → http/fsm-token.ts (Bearer por marca)
 // Ninguna ruta importa `http/fsm-api.ts` directamente.
+//
+// El modelo público y los helpers puros viven en `./shared.ts`; el modo
+// `fixture` (respuestas reales grabadas, sin red) en `./fixture.ts`.
 //
 // El mock NO se borra: es lo que permite al frontend trabajar sin token, y
 // devuelve exactamente los mismos shapes que el modo real.
@@ -12,7 +15,7 @@
 
 import { connectorMode, env } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
-import { seededRng, type Degraded } from '../_shared.js';
+import { seededRng } from '../_shared.js';
 import {
   fetchAccountProcess,
   fetchAccountStatus,
@@ -20,9 +23,9 @@ import {
   fetchNapsNearest,
   fetchWorkOrderTasks,
 } from '../http/fsm-api.js';
-import type { FsmBrand } from '../http/fsm-token.js';
 import { createLimiter } from '../http/throttle.js';
-import type { Coordinates, NapPort, NapPorts, NearbyNap } from '../tec/index.js';
+import type { NearbyNap } from '../tec/index.js';
+import { createFsmFixtureConnector } from './fixture.js';
 import {
   classifyTaskResult,
   inferNapTotalPorts,
@@ -40,293 +43,53 @@ import {
   type FsmStatusCode,
   type TaskResult,
 } from './normalize.js';
+import {
+  applyStatuses,
+  buildPortGrid,
+  dedupe,
+  finishedOrdersDesc,
+  isUpstreamAuthError,
+  orderToVisit,
+  recallNap,
+  rememberNap,
+  statusFanOut,
+  taskToClosedTask,
+  truncatedDegraded,
+  visitsDesc,
+  type AccountOrder,
+  type AccountOrdersClient,
+  type ClosedTask,
+  type FsmConnector,
+  type StatusBatchItem,
+  type WorkOrderTask,
+  type WorkOrderTaskNote,
+} from './shared.js';
 
 export type { TaskResult, FsmStatusCode, AccountStatusName };
 
-// --- Modelo público del conector -------------------------------------------
-
-export interface ClosedTask {
-  taskId: string;
-  /** Orden de trabajo a la que pertenece (`ORDER/424900/2026`). */
-  workOrder: string | null;
-  occurredAt: string;
-  reason: string;
-  closingNotes: string;
-  /**
-   * Técnico que cerró la tarea (`lastModifyUser` de `/workorder/tasks`,
-   * expuesto por la operadora el 2026-09-09). Sigue siendo `null` en las
-   * visitas de `/account/process`, que no abren las tareas: ese dato aparece al
-   * expandir la visita (`notesLoaded: true`).
-   */
-  technician: string | null;
-  result: TaskResult;
-  /** false mientras no se hayan cargado las notas de la orden (§9 del contrato). */
-  notesLoaded: boolean;
-}
-
-export interface PreviousVisitsResult {
-  items: ClosedTask[];
-  totalOrders: number;
-  brand: FsmBrand;
-  degraded?: Degraded;
-}
-
-export interface UnsatisfactoryTasksResult {
-  items: ClosedTask[];
-  scanned: number;
-  totalOrders: number;
-  truncated: boolean;
-  brand: FsmBrand;
-  degraded?: Degraded;
-}
-
-export interface AccountOrder {
-  workOrder: string;
-  task: string | null;
-  state: string | null;
-  externalProcess: string | null;
-  cpartyId: string | null;
-  createdAt: string | null;
-  endedAt: string | null;
-  finished: boolean;
-  note: string | null;
-  latitude: number | null;
-  longitude: number | null;
-  address: string | null;
-}
-
-export interface AccountOrdersClient {
-  names: string | null;
-  phoneNumber: string | null;
-  email: string | null;
-  address: string | null;
-  latitude: number | null;
-  longitude: number | null;
-}
-
-export interface AccountOrders {
-  accountNumber: string;
-  brand: FsmBrand;
-  client: AccountOrdersClient | null;
-  orders: AccountOrder[];
-}
-
-export interface AccountStatusResult {
-  accountNumber: string;
-  brand: FsmBrand;
-  status: AccountStatusName | null;
-  statusCode: FsmStatusCode | null;
-  statusDescription: string | null;
-}
-
-export interface StatusBatchItem {
-  accountNumber: string;
-  status: AccountStatusName | null;
-  statusCode: FsmStatusCode | null;
-  statusDescription: string | null;
-  error: string | null;
-}
-
-export interface StatusBatchResult {
-  brand: FsmBrand;
-  items: StatusBatchItem[];
-  requested: number;
-  resolved: number;
-  failed: number;
-}
-
-export interface WorkOrderTaskNote {
-  createdAt: string | null;
-  content: string;
-}
-
-export interface WorkOrderTask {
-  taskId: string;
-  status: string | null;
-  businessKey: string | null;
-  createdAt: string | null;
-  finishedAt: string | null;
-  result: TaskResult;
-  /** Técnico que cerró la tarea (`lastModifyUser`). */
-  closedBy: string | null;
-  notes: WorkOrderTaskNote[];
-}
-
-export interface WorkOrderTasks {
-  workOrder: string;
-  brand: FsmBrand;
-  tasks: WorkOrderTask[];
-}
-
-export interface BrandOptions {
-  brand: FsmBrand;
-}
-
-export interface UnsatisfactoryOptions extends BrandOptions {
-  /** Órdenes finalizadas más recientes que se abren para leer sus notas. */
-  limit: number;
-}
-
-export interface OrdersOptions extends BrandOptions {
-  estado: 'Todas' | 'Pendientes';
-}
-
-export interface NearbyNapsOptions extends BrandOptions {
-  meters: number;
-  maxRows: number;
-}
-
-export interface NapPortsOptions extends BrandOptions {
-  /**
-   * Resuelve además el estado de las cuentas del NAP. Existe SOLO para
-   * `probe-fsm-api.ts` y soporte: la webapp tiene prohibido enviarlo, porque
-   * dispara hasta `FSM_STATUS_BATCH_LIMIT` llamadas extra a producción.
-   */
-  withStatus: boolean;
-}
-
-export interface FsmConnector {
-  getUnsatisfactoryTasks(
-    accountNumber: string,
-    opts: UnsatisfactoryOptions,
-  ): Promise<UnsatisfactoryTasksResult>;
-  getPreviousVisits(accountNumber: string, opts: BrandOptions): Promise<PreviousVisitsResult>;
-  getAccountOrders(accountNumber: string, opts: OrdersOptions): Promise<AccountOrders>;
-  getAccountStatus(accountNumber: string, opts: BrandOptions): Promise<AccountStatusResult>;
-  getAccountsStatusBatch(accounts: string[], opts: BrandOptions): Promise<StatusBatchResult>;
-  getNearbyNaps(coords: Coordinates, opts: NearbyNapsOptions): Promise<NearbyNap[]>;
-  getNapPorts(napId: number, opts: NapPortsOptions): Promise<NapPorts>;
-  getWorkOrderTasks(workOrder: string, opts: BrandOptions): Promise<WorkOrderTasks>;
-}
-
-// --- Helpers compartidos por mock y real ------------------------------------
-
-/** Notas de una tarea concatenadas, listas para mostrar como cierre. */
-function joinNotes(notes: Array<{ content: string }>): string {
-  return notes
-    .map((n) => n.content.trim())
-    .filter((c) => c.length > 0)
-    .join(' · ');
-}
-
-/** Una orden de `/account/process` vista como visita (campo 16, sin notas). */
-function orderToVisit(order: AccountOrder): ClosedTask {
-  return {
-    taskId: order.workOrder,
-    workOrder: order.workOrder,
-    occurredAt: order.endedAt ?? order.createdAt ?? '',
-    reason: order.task ?? '',
-    closingNotes: '',
-    technician: null,
-    result: order.finished ? 'SATISFACTORIA' : 'PENDIENTE',
-    notesLoaded: false,
-  };
-}
-
-/** Una tarea de `/workorder/tasks` vista como visita cerrada (campo 15). */
-function taskToClosedTask(workOrder: string, task: WorkOrderTask): ClosedTask {
-  return {
-    taskId: task.taskId,
-    workOrder,
-    occurredAt: task.finishedAt ?? task.createdAt ?? '',
-    reason: task.status ?? '',
-    closingNotes: joinNotes(task.notes),
-    // `lastModifyUser`: quién cerró la tarea. Solo se conoce con las tareas
-    // abiertas, no con la orden desnuda de `/account/process`.
-    technician: task.closedBy,
-    result: task.result,
-    notesLoaded: true,
-  };
-}
-
-/** Visitas ordenadas de la más reciente a la más antigua. */
-function visitsDesc(items: ClosedTask[]): ClosedTask[] {
-  return [...items].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
-}
-
-/** Órdenes finalizadas, de la más reciente a la más antigua. */
-function finishedOrdersDesc(orders: AccountOrder[]): AccountOrder[] {
-  return orders
-    .filter((o) => o.finished)
-    .sort((a, b) =>
-      String(b.endedAt ?? b.createdAt ?? '').localeCompare(String(a.endedAt ?? a.createdAt ?? '')),
-    );
-}
-
-function truncatedDegraded(scanned: number, totalOrders: number): Degraded {
-  return {
-    reason: 'TRUNCATED',
-    message:
-      `Se revisaron las ${scanned} órdenes más recientes de ${totalOrders}. ` +
-      `Abre una visita concreta para ver sus notas.`,
-  };
-}
-
-/** Elimina duplicados conservando el orden de entrada. */
-function dedupe(values: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const value of values) {
-    const key = value.trim();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-  }
-  return out;
-}
-
-function isUpstreamAuthError(err: unknown): err is ApiError {
-  return err instanceof ApiError && err.code === 'UPSTREAM_AUTH_ERROR';
-}
-
-/**
- * Rejilla de puertos 1..totalPorts a partir de los registros de `/naps/accounts`.
- * Los puertos que no aparecen en la respuesta se consideran libres.
- *
- * `/naps/accounts` solo devuelve los puertos OCUPADOS. Cuando no se conoce el
- * total (porque no se pasó por `/naps/nearest`), se aplica la regla oficial de
- * la operadora (2026-09-09): 8 puertos base, 16 si hay más de 8 ocupados, con
- * 16 como máximo absoluto. La rejilla sale **siempre completa**: nunca se
- * devuelven solo los ocupados.
- */
-function buildPortGrid(
-  rows: Array<{ portNumber: number | null; accountNumber: string | null; equipmentId: string | null }>,
-  totalPorts: number | null,
-): { ports: NapPort[]; occupied: number; total: number } {
-  const byPort = new Map<number, { accountNumber: string | null; equipmentId: string | null }>();
-  let maxPort = 0;
-  for (const row of rows) {
-    if (row.portNumber === null || !Number.isFinite(row.portNumber)) continue;
-    const port = Math.trunc(row.portNumber);
-    if (port <= 0) continue;
-    maxPort = Math.max(maxPort, port);
-    byPort.set(port, { accountNumber: row.accountNumber, equipmentId: row.equipmentId });
-  }
-
-  // El número de puerto más alto también delata la ampliación: una NAP con el
-  // puerto 12 ocupado es de 16 aunque solo tenga 3 cuentas conectadas.
-  const evidence = Math.max(byPort.size, maxPort);
-  const declared = totalPorts && totalPorts > 0 ? totalPorts : 0;
-  const total = Math.min(
-    NAP_MAX_PORTS,
-    Math.max(declared, evidence, inferNapTotalPorts(evidence)),
-  );
-
-  const ports: NapPort[] = [];
-  for (let i = 1; i <= total; i++) {
-    const hit = byPort.get(i);
-    ports.push({
-      portNumber: i,
-      occupied: Boolean(hit),
-      clientAccountNumber: hit?.accountNumber ?? null,
-      equipmentId: hit?.equipmentId ?? null,
-      clientStatus: null,
-      statusPending: Boolean(hit?.accountNumber),
-    });
-  }
-
-  return { ports, occupied: byPort.size, total };
-}
+// El modelo público del conector se declara en `./shared.ts` y se re-exporta
+// desde acá: `connectors/index.ts` y las rutas siguen importando de este módulo.
+export type {
+  AccountOrder,
+  AccountOrders,
+  AccountOrdersClient,
+  AccountStatusResult,
+  BrandOptions,
+  ClosedTask,
+  FsmConnector,
+  NapPortsOptions,
+  NearbyNapsOptions,
+  OrdersOptions,
+  PreviousVisitsResult,
+  StatusBatchItem,
+  StatusBatchResult,
+  UnsatisfactoryOptions,
+  UnsatisfactoryTasksResult,
+  WorkOrderTask,
+  WorkOrderTaskNote,
+  WorkOrderTasks,
+} from './shared.js';
+export { resetNapRegistry } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Mock — datos deterministas por cuenta. Mismos shapes que el modo real.
@@ -562,7 +325,7 @@ export const fsmMock: FsmConnector = {
 
   async getNapPorts(napId, opts) {
     const rng = seededRng(`fsm:napports:${napId}`);
-    const remembered = napRegistry.get(napId);
+    const remembered = recallNap(napId);
     const total = remembered?.totalPorts ?? NAP_MAX_PORTS;
     const rows: Array<{ portNumber: number; accountNumber: string; equipmentId: string }> = [];
     for (let i = 1; i <= total; i++) {
@@ -592,11 +355,7 @@ export const fsmMock: FsmConnector = {
       detailAvailable: true,
       occupiedPorts: grid.occupied,
       totalPorts: grid.total,
-      statusFanOut: {
-        supported: true,
-        pendingAccounts: grid.ports.filter((p) => p.statusPending).length,
-        batchLimit: env.FSM_STATUS_BATCH_LIMIT,
-      },
+      statusFanOut: statusFanOut(grid.ports),
       source: 'FSM',
     };
   },
@@ -605,40 +364,6 @@ export const fsmMock: FsmConnector = {
 // ---------------------------------------------------------------------------
 // Real
 // ---------------------------------------------------------------------------
-
-/**
- * Cuántos puertos tiene cada NAP y con qué código, memorizado de la última
- * `/naps/nearest`. `/naps/accounts` solo devuelve los puertos OCUPADOS, así que
- * sin este dato no se puede dibujar la rejilla completa.
- */
-const napRegistry = new Map<number, { napCode: string; totalPorts: number }>();
-const NAP_REGISTRY_MAX = 500;
-
-function rememberNap(napId: number | null, napCode: string, totalPorts: number): void {
-  if (napId === null || !Number.isFinite(napId) || totalPorts <= 0) return;
-  if (napRegistry.size >= NAP_REGISTRY_MAX) {
-    const oldest = napRegistry.keys().next();
-    if (!oldest.done) napRegistry.delete(oldest.value);
-  }
-  napRegistry.set(napId, { napCode, totalPorts });
-}
-
-/** Solo para pruebas: olvida las NAPs memorizadas. */
-export function resetNapRegistry(): void {
-  napRegistry.clear();
-}
-
-/** Vuelca los estados de un lote sobre la rejilla de puertos. */
-function applyStatuses(ports: NapPort[], batch: StatusBatchResult): void {
-  const byAccount = new Map(batch.items.map((i) => [i.accountNumber, i]));
-  for (const port of ports) {
-    if (!port.clientAccountNumber) continue;
-    const hit = byAccount.get(port.clientAccountNumber);
-    if (!hit || hit.status === null) continue;
-    port.clientStatus = hit.statusCode;
-    port.statusPending = false;
-  }
-}
 
 function toAccountOrder(order: FsmOrder): AccountOrder {
   return { ...order };
@@ -854,7 +579,7 @@ export const fsmReal: FsmConnector = {
     }
 
     const rows = mapNapAccounts(raw);
-    const remembered = napRegistry.get(napId);
+    const remembered = recallNap(napId);
     const grid = buildPortGrid(rows, remembered?.totalPorts ?? null);
     const pending = grid.ports.filter((p) => p.statusPending);
 
@@ -877,15 +602,24 @@ export const fsmReal: FsmConnector = {
       detailAvailable: true,
       occupiedPorts: grid.occupied,
       totalPorts: grid.total,
-      statusFanOut: {
-        supported: true,
-        pendingAccounts: grid.ports.filter((p) => p.statusPending).length,
-        batchLimit: env.FSM_STATUS_BATCH_LIMIT,
-      },
+      statusFanOut: statusFanOut(grid.ports),
       source: 'FSM',
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Fixture — respuestas reales grabadas (cuenta 35070291), cero red.
+// Se construye una sola vez y usa el MOCK como respaldo para cualquier otra
+// cuenta / NAP / orden que no esté en los fixtures. Ver `./fixture.ts`.
+// ---------------------------------------------------------------------------
+
+let fsmFixture: FsmConnector | null = null;
+
+function getFsmFixture(): FsmConnector {
+  fsmFixture ??= createFsmFixtureConnector(fsmMock);
+  return fsmFixture;
+}
 
 export function getFsmConnector(): FsmConnector {
   const mode = connectorMode('fsm');
@@ -894,7 +628,9 @@ export function getFsmConnector(): FsmConnector {
       return fsmMock;
     case 'real':
       return fsmReal;
+    case 'fixture':
+      return getFsmFixture();
     default:
-      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${mode}`);
+      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${String(mode)}`);
   }
 }

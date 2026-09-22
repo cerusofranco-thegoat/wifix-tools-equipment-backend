@@ -61,6 +61,15 @@ curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/herramientas/v1/catalogs/equipment-models | head
 ```
 
+## Despliegue en un servidor
+
+Para levantar esto en un VPS (demo incluida) están `Dockerfile`,
+`docker-compose.prod.yml` y `.env.production.example`, con los pasos concretos
+en **[DEPLOY.md](./DEPLOY.md)**: migraciones con `prisma migrate deploy`, seed
+del usuario admin, rotación del token de FSM y checklist de variables. El
+`docker-compose.yml` de la raíz es SOLO para desarrollo local (expone Postgres
+en 5433 y MinIO en 9000/9001).
+
 ## Autenticación
 
 - `POST /auth/login` recibe `{ email, password }`, valida contra la tabla
@@ -90,9 +99,13 @@ conector define una **interfaz** y dos implementaciones:
   ya están implementados; el resto sigue siendo esqueleto que lanza
   `CONNECTOR_ERROR` (502) hasta que entreguen credenciales y URLs.
 
-`CONNECTOR_MODE=mock|real` fija el modo global; `CONNECTOR_MODE_TEC` y
-`CONNECTOR_MODE_ISPMONITOR` lo sobreescriben por conector, que es lo que
-permite tener TEC e ISP Monitor en real y el resto en mock.
+`CONNECTOR_MODE=mock|real` fija el modo global y **cada** conector tiene su
+override (`CONNECTOR_MODE_TEC`, `_ISPMONITOR`, `_FSM`, `_COMARCH`, `_ACS`,
+`_RMS`), que es lo que permite tener TEC e ISP Monitor en real y el resto en
+mock. Todos se resuelven con `connectorMode(nombre)` de `config/env.ts`: ningún
+conector lee `env.CONNECTOR_MODE` directamente, porque los que solo tienen
+esqueleto real (Comarch, ACS, RMS) empezarían a responder 502 en cuanto alguien
+suba el global a `real`.
 
 | Conector | Sistema real | Campos | Estado |
 |----------|--------------|--------|--------|
@@ -103,9 +116,22 @@ permite tener TEC e ISP Monitor en real y el resto en mock.
 | `tec` | TEC / registro GPON | 6, 8 (respaldo) | **real** |
 | `rms` | RMS | 14 | mock |
 
-`CONNECTOR_MODE_FSM` controla FSM aparte. Se despliega en `mock` hasta que haya
-un token vigente de la operadora: en `mock` todas las rutas devuelven los shapes
-completos del contrato, así que el frontend se construye y se prueba sin token.
+`CONNECTOR_MODE_FSM` controla FSM aparte y admite **tres** valores:
+
+- `mock` — datos sembrados. Todas las rutas devuelven los shapes completos del
+  contrato, así que el frontend se construye y se prueba sin token.
+- `real` — API de la operadora (`apix.grupotvcable.com`). Necesita IP autorizada
+  y token vigente.
+- `fixture` — sirve las respuestas **reales** grabadas en `tests/fixtures/fsm/`
+  (cuenta `35070291`, capturadas con `scripts/probe-fsm-api.ts`) por el MISMO
+  pipeline de `normalize.ts` que el modo real, sin una sola petición saliente.
+  La PII de esos JSON está redactada (`«REDACTADO:97»`) y el conector la
+  rehidrata con datos demo ecuatorianos deterministas — nunca con datos de una
+  persona real, y sin generar cédulas ni RUC. Cualquier cuenta distinta de la del
+  fixture se delega al mock. Ver `src/connectors/fsm/fixture.ts`.
+
+`fixture` es el modo con el que se despliega la demo: no depende del token de
+24 h ni de que la IP del servidor esté autorizada. Ver [DEPLOY.md](./DEPLOY.md).
 
 ### API de operadora (TEC / ISP Monitor)
 
@@ -503,6 +529,7 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 | `MEDIA_NOT_FOUND` | 404 | `barcodePhotoId` inexistente |
 | `CONNECTOR_ERROR` | 502 | Fallo de un sistema externo (modo real) |
 | `UPSTREAM_AUTH_ERROR` | 503 | Token de FSM ausente, vencido o rechazado |
+| `UPSTREAM_UNAVAILABLE` | 503 | FSM no responde / devolvió error propio (reintentable) |
 | `INTERNAL_ERROR` | 500 | Error no controlado |
 
 `UNAUTHORIZED` (401) es **solo** para el JWT propio de Wifix: ningún fallo de
@@ -510,6 +537,19 @@ FSM puede producir un 401, porque la webapp cierra la sesión del técnico ante
 cualquiera. `UPSTREAM_AUTH_ERROR` trae un bloque `meta` con
 `{ integration, brand, reason, tokenExpiresAt, retryable }`; el cliente pinta un
 banner no bloqueante y **no** cierra sesión.
+
+`UPSTREAM_UNAVAILABLE` es el hermano reintentable: FSM está caído, no responde o
+devolvió un error propio. Mismo sobre (`meta.integration`, `meta.reason`,
+`retryable: true`) para que el cliente tenga un solo camino de "integración no
+disponible". Se usa en `GET client-profile`: antes un FSM que no contestaba
+terminaba en 404 y dejaba al técnico sin la pantalla de Datos Personales. Una
+cuenta no deja de existir porque el sistema de la operadora no conteste, así que
+ese 404 quedó reservado para los modos con datos simulados (`mock` / `fixture`),
+donde "sin órdenes" sí significa "cuenta desconocida". Con FSM en `real` y una
+respuesta vacía, el perfil se compone con el mock y se responde **200 con
+`degraded.reason: 'FSM_UNAVAILABLE'`** (y el header `X-Wifix-Degraded`), porque
+la operadora devuelve `data: []` tanto para una cuenta inexistente como para una
+cuenta sin órdenes registradas.
 
 Mensajes (`message`) en español; códigos en inglés.
 
@@ -563,6 +603,11 @@ y devuelve `{ id, url, contentType, sizeBytes, createdAt }`.
   acceso público de lectura creado automáticamente).
 - En producción: AWS S3 u otro compatible (cambiar `STORAGE_*` en env).
 - Tipos permitidos: `image/jpeg`, `image/png`. Tamaño máximo: 10 MB.
+- `STORAGE_ENDPOINT` es la ruta **interna** (la que usa el SDK de S3) y
+  `STORAGE_PUBLIC_BASE_URL` la base de las URLs que se devuelven a la app. En
+  local son la misma y la segunda se deja vacía; en un despliegue con docker
+  compose no lo son: `http://minio:9000` solo resuelve dentro de la red de
+  contenedores y el APK nunca podría abrir esa foto.
 
 ## Variables de entorno
 
@@ -572,8 +617,11 @@ el proceso aborta con un mensaje claro. Las relevantes:
 - `JWT_SECRET`, `JWT_EXPIRES_IN` — emisión y vigencia del token.
 - `SEED_USER_EMAIL`, `SEED_USER_PASSWORD`, `SEED_USER_NAME` — usuario inicial.
 - `CONNECTOR_MODE` — `mock` o `real` (modo global de los conectores).
-- `CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`, `CONNECTOR_MODE_FSM` —
-  override por conector.
+- `CONNECTOR_MODE_TEC`, `CONNECTOR_MODE_ISPMONITOR`, `CONNECTOR_MODE_FSM`,
+  `CONNECTOR_MODE_COMARCH`, `CONNECTOR_MODE_ACS`, `CONNECTOR_MODE_RMS` —
+  override por conector. Solo FSM admite además `fixture`.
+- `STORAGE_ENDPOINT` / `STORAGE_PUBLIC_BASE_URL` — endpoint interno del
+  almacenamiento y base pública de las URLs de media (ver más arriba).
 - `TEC_API_BASE_URL`, `TEC_API_USERNAME`, `TEC_API_PASSWORD`,
   `TEC_API_TIMEOUT_MS` — API de operadora (Digest). Obligatorias si alguno
   de esos dos conectores está en `real`; el arranque aborta si faltan.

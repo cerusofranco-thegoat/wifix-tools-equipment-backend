@@ -1,8 +1,9 @@
 // Conector hacia Comarch / TYTAN — campos 1, 2, 3, 4, 5, 7.
 // Implementaciones: mock determinista por accountNumber y esqueleto real
-// con TODO. Selección por CONNECTOR_MODE (env).
+// con TODO. Selección por `connectorMode('comarch')`
+// (CONNECTOR_MODE_COMARCH, con el global CONNECTOR_MODE como default).
 
-import { env } from '../../config/env.js';
+import { connectorMode } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import { seededRng, notImplemented, type AccountStatusName } from '../_shared.js';
 
@@ -173,12 +174,16 @@ export const comarchReal: ComarchConnector = {
 };
 
 export function getComarchConnector(): ComarchConnector {
-  switch (env.CONNECTOR_MODE) {
+  // `connectorMode('comarch')` y NO `env.CONNECTOR_MODE`: el conector real es
+  // un esqueleto (`notImplemented()` → 502), así que un `CONNECTOR_MODE=real`
+  // global no puede arrastrarlo. Se enciende solo con CONNECTOR_MODE_COMARCH.
+  const mode = connectorMode('comarch');
+  switch (mode) {
     case 'mock':
       return comarchMock;
     case 'real':
       return comarchReal;
     default:
-      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${env.CONNECTOR_MODE}`);
+      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${mode}`);
   }
 }

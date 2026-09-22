@@ -1,6 +1,6 @@
 // Conector hacia ACS (TR-069) — campos 19, 20, 21 (red local y WiFi).
 
-import { env } from '../../config/env.js';
+import { connectorMode } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import { seededRng, notImplemented } from '../_shared.js';
 
@@ -166,12 +166,15 @@ export const acsReal: AcsConnector = {
 };
 
 export function getAcsConnector(): AcsConnector {
-  switch (env.CONNECTOR_MODE) {
+  // Override propio (CONNECTOR_MODE_ACS): el real es un esqueleto y un
+  // `CONNECTOR_MODE=real` global lo dejaría devolviendo 502.
+  const mode = connectorMode('acs');
+  switch (mode) {
     case 'mock':
       return acsMock;
     case 'real':
       return acsReal;
     default:
-      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${env.CONNECTOR_MODE}`);
+      throw ApiError.connectorError(`CONNECTOR_MODE desconocido: ${mode}`);
   }
 }

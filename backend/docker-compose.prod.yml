@@ -89,7 +89,8 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Registry oficial de MinIO: en Docker Hub el tag `latest` dejó de publicarse.
+    image: quay.io/minio/minio:latest
     container_name: wifix-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -115,7 +116,7 @@ services:
   # One-shot: crea el bucket y lo deja de lectura pública (las fotos se abren
   # por URL desde la app). Se ejecuta en cada `up` y termina.
   minio-bucket-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: wifix-minio-init
     depends_on:
       minio:

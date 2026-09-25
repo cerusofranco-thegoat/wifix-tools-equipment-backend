@@ -46,6 +46,7 @@ import {
 import {
   applyStatuses,
   buildPortGrid,
+  buildVisits,
   dedupe,
   finishedOrdersDesc,
   isUpstreamAuthError,
@@ -85,6 +86,9 @@ export type {
   StatusBatchResult,
   UnsatisfactoryOptions,
   UnsatisfactoryTasksResult,
+  VisitItem,
+  VisitResult,
+  VisitsResult,
   WorkOrderTask,
   WorkOrderTaskNote,
   WorkOrderTasks,
@@ -120,7 +124,14 @@ const NOTES_BAD = [
   'Reincidencia: el mismo daño se reportó la semana pasada.',
 ];
 
-/** Órdenes simuladas de una cuenta, estables entre llamadas. */
+/**
+ * Órdenes simuladas de una cuenta, estables entre llamadas.
+ *
+ * Respeta la regla de FSM: una cuenta tiene como mucho UNA orden sin terminar,
+ * y si la tiene es la más reciente (la próxima visita). Algunas cuentas salen
+ * sin pendiente y otras con una. El resto está finalizado ("Realizado") o
+ * cancelado ("Cancelado"), con los mismos `state` que devuelve la operadora.
+ */
 function mockOrders(accountNumber: string): AccountOrder[] {
   const rng = seededRng(`fsm:orders:${accountNumber}`);
   const n = rng.intBetween(1, 12);
@@ -129,24 +140,34 @@ function mockOrders(accountNumber: string): AccountOrder[] {
     const created = new Date();
     created.setDate(created.getDate() - rng.intBetween(1, 300));
     created.setHours(rng.intBetween(8, 17), rng.intBetween(0, 59), 0, 0);
-    const finished = rng.bool(0.8);
+    const cancelled = rng.bool(0.15);
     const ended = new Date(created.getTime() + rng.intBetween(40, 240) * 60_000);
     orders.push({
       workOrder: `ORDER/${rng.intBetween(100000, 999999)}/${created.getFullYear()}`,
       task: rng.pick(REASONS),
-      state: finished ? 'FINALIZADA' : 'EN PROCESO',
+      state: cancelled ? 'Cancelado' : 'Realizado',
       externalProcess: `PROC-${rng.intBetween(1000, 9999)}`,
       cpartyId: `CP-${rng.intBetween(10000, 99999)}`,
       createdAt: created.toISOString(),
-      endedAt: finished ? ended.toISOString() : null,
-      finished,
+      endedAt: ended.toISOString(),
+      finished: true,
       note: rng.pick(NOTES_OK),
       latitude: -2.247946 + rng.floatBetween(-0.01, 0.01, 6),
       longitude: -79.904161 + rng.floatBetween(-0.01, 0.01, 6),
       address: `Av. Amazonas N${rng.intBetween(100, 9999)}, Guayaquil`,
     });
   }
-  return orders.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  orders.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
+  // Solo la más reciente puede quedar pendiente (semilla aparte para no mover
+  // el resto de los datos sembrados).
+  const newest = orders[0];
+  if (newest && seededRng(`fsm:orders:pending:${accountNumber}`).bool(0.4)) {
+    newest.state = 'Pendiente';
+    newest.endedAt = null;
+    newest.finished = false;
+  }
+  return orders;
 }
 
 function mockClient(accountNumber: string): AccountOrdersClient {
@@ -267,6 +288,14 @@ export const fsmMock: FsmConnector = {
       brand: opts.brand,
       ...(truncated ? { degraded: truncatedDegraded(scanned, orders.length) } : {}),
     };
+  },
+
+  async getVisits(accountNumber, opts) {
+    return buildVisits(accountNumber, mockOrders(accountNumber), opts, async (workOrder) => ({
+      workOrder,
+      brand: opts.brand,
+      tasks: mockTasks(workOrder),
+    }));
   },
 
   async getWorkOrderTasks(workOrder, opts) {
@@ -443,6 +472,23 @@ export const fsmReal: FsmConnector = {
       brand: opts.brand,
       ...(truncated ? { degraded: truncatedDegraded(scanned, orders.length) } : {}),
     };
+  },
+
+  async getVisits(accountNumber, opts) {
+    // 1 llamada a /account/process + como mucho `limit` a /workorder/tasks,
+    // con el mismo semáforo que el resto de FSM.
+    const { orders } = await this.getAccountOrders(accountNumber, {
+      brand: opts.brand,
+      estado: 'Todas',
+    });
+    const limiter = createLimiter(env.FSM_API_MAX_CONCURRENCY);
+    return buildVisits(
+      accountNumber,
+      orders,
+      opts,
+      (workOrder) => this.getWorkOrderTasks(workOrder, { brand: opts.brand }),
+      limiter,
+    );
   },
 
   async getWorkOrderTasks(workOrder, opts) {

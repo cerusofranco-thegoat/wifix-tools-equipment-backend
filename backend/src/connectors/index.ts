@@ -26,6 +26,9 @@ export {
   type WorkOrderTask,
   type PreviousVisitsResult,
   type UnsatisfactoryTasksResult,
+  type VisitItem,
+  type VisitResult,
+  type VisitsResult,
 } from './fsm/index.js';
 
 export type { FsmBrand } from './http/fsm-token.js';

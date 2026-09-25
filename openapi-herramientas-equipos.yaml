@@ -1300,11 +1300,77 @@ paths:
   # TAREAS Y VISITAS (campos 15-16)
   # ====================================================================
 
+  /accounts/{accountNumber}/visits:
+    get:
+      tags: [Tareas y Visitas]
+      summary: Visitas de la cuenta con su resultado (lista unificada)
+      description: >
+        Todas las órdenes de trabajo de la cuenta, **una entrada por orden**,
+        cada una etiquetada con su resultado. Reemplaza a
+        `unsatisfactory-tasks` y `previous-visits`.
+
+
+        Orden de `items`: primero las `PENDIENTE` (orden sin terminar, fecha de
+        creación desc) y después el resto por `occurredAt` desc. En FSM una
+        cuenta tiene como mucho UNA orden pendiente —la próxima visita—;
+        `pendingCount` informa cuántas llegaron (si llega más de una se
+        muestran todas y el backend lo registra como anomalía).
+
+
+        Clasificación:
+
+        - `CANCELADA`: `state` de la orden es "Cancelado" (sin distinguir
+          mayúsculas ni tildes). No se abren sus tareas.
+
+        - `PENDIENTE`: la orden no terminó (`endDate` nulo).
+
+        - `INSATISFACTORIA` / `SATISFACTORIA`: las `FSM_ORDERS_MAX_FANOUT`
+          (5) órdenes finalizadas no canceladas más recientes se abren con
+          `/workorder/tasks`. INSATISFACTORIA si alguna tarea lo es (notas =
+          las de esas tareas); si no, SATISFACTORIA (notas = las de la última
+          tarea cerrada). `technician` = `lastModifyUser` de esa tarea.
+          `notesLoaded: true`.
+
+        - `REALIZADA`: finalizada pero sin verificar — quedó fuera del
+          fan-out, o la lectura de sus tareas falló. `notesLoaded: false`; el
+          cliente puede pedir las notas con `GET /workorders/tasks?workOrder=`.
+
+
+        **1 + ≤5 llamadas upstream**, concurrencia `FSM_API_MAX_CONCURRENCY`.
+        Un fallo de token en cualquier llamada es 503 `UPSTREAM_AUTH_ERROR`
+        (nunca 401).
+      operationId: getVisits
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
+      responses:
+        '200':
+          description: >-
+            OK. Una cuenta sin órdenes devuelve `items` vacío.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitsResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
+
   /accounts/{accountNumber}/unsatisfactory-tasks:
     get:
       tags: [Tareas y Visitas]
       summary: Observaciones de cierre de tareas insatisfactorias
       description: >
+        **DEPRECADO** — reemplazado por `GET /accounts/{accountNumber}/visits`,
+        que une este panel con el de visitas anteriores. Se mantiene sin cambios
+        para el APK ya instalado; los clientes nuevos no deben usarlo.
+
+
         Tareas insatisfactorias previas con fecha/hora, motivo y observación de
         cierre (campo 15). Origen: FSM `POST /account/process` +
         `POST /workorder/tasks` sobre como mucho `limit` órdenes **finalizadas
@@ -1355,6 +1421,12 @@ paths:
       tags: [Tareas y Visitas]
       summary: Motivos y observaciones de visitas anteriores
       description: >
+        **DEPRECADO** — reemplazado por `GET /accounts/{accountNumber}/visits`.
+        Se mantiene sin cambios para el APK ya instalado (aquí una orden
+        cancelada sigue saliendo como `SATISFACTORIA`; `/visits` la marca
+        `CANCELADA`).
+
+
         Visitas anteriores con fecha/hora y motivo (campo 16). Origen: FSM
         `POST /account/process` con `estado:"Todas"`. **1 sola llamada
         upstream, sin notas**: `closingNotes` viene vacío y `notesLoaded` en
@@ -3397,6 +3469,83 @@ components:
         truncated:
           type: boolean
           description: true cuando `totalOrders > scanned`.
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+        degraded:
+          $ref: '#/components/schemas/Degraded'
+
+    VisitItem:
+      type: object
+      description: Una orden de trabajo de la cuenta vista como visita, con su resultado.
+      required:
+        [taskId, workOrder, occurredAt, reason, closingNotes, technician, result, notesLoaded]
+      properties:
+        taskId:
+          type: string
+          description: Igual a `workOrder` (la lista es por orden, no por tarea).
+          example: ORDER/73198/2019
+        workOrder:
+          type: string
+          example: ORDER/73198/2019
+        occurredAt:
+          type: string
+          format: date-time
+          description: >
+            `PENDIENTE`: fecha de creación de la orden. Resto: fecha de fin (o
+            de creación si FSM no trajo fin). ISO-8601 UTC.
+        reason:
+          type: string
+          description: Campo `task` de la orden. `""` si la operadora no lo trajo.
+        closingNotes:
+          type: string
+          description: >
+            Notas unidas por " · ". INSATISFACTORIA: las de las tareas
+            insatisfactorias; SATISFACTORIA: las de la última tarea cerrada.
+            `""` cuando `notesLoaded` es false.
+        technician:
+          type: string
+          nullable: true
+          description: >
+            `lastModifyUser` de la tarea de la que salen las notas. `null`
+            cuando `notesLoaded` es false.
+        result:
+          type: string
+          enum: [PENDIENTE, SATISFACTORIA, INSATISFACTORIA, CANCELADA, REALIZADA]
+          description: >
+            Ver la descripción de `GET /accounts/{accountNumber}/visits`.
+            SATISFACTORIA/INSATISFACTORIA son **inferidos** de las notas
+            (`FSM_UNSATISFACTORY_KEYWORDS`); REALIZADA = finalizada sin
+            verificar.
+        notesLoaded:
+          type: boolean
+          description: >
+            true solo en SATISFACTORIA/INSATISFACTORIA. En el resto el cliente
+            puede pedir las notas con `GET /workorders/tasks?workOrder=`.
+
+    VisitsResult:
+      type: object
+      required: [items, pendingCount, totalOrders, scanned, truncated, brand]
+      properties:
+        items:
+          type: array
+          description: Pendientes primero (fecha desc), luego el resto por `occurredAt` desc.
+          items:
+            $ref: '#/components/schemas/VisitItem'
+        pendingCount:
+          type: integer
+          description: Órdenes sin terminar recibidas. Lo esperado es 0 o 1.
+        totalOrders:
+          type: integer
+          description: Órdenes totales de la cuenta.
+        scanned:
+          type: integer
+          description: Órdenes finalizadas (no canceladas) cuyas tareas se abrieron.
+        truncated:
+          type: boolean
+          description: >
+            true cuando hay órdenes finalizadas no canceladas que quedaron fuera
+            del fan-out (es decir, hay al menos un item `REALIZADA` por límite).
         brand:
           type: string
           enum: [telenews, seteinfo]

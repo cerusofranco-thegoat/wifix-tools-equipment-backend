@@ -58,6 +58,7 @@ import {
 import {
   applyStatuses,
   buildPortGrid,
+  buildVisits,
   dedupe,
   finishedOrdersDesc,
   orderToVisit,
@@ -493,6 +494,19 @@ export function createFsmFixtureConnector(fallback: FsmConnector): FsmConnector 
         brand: opts.brand,
         ...(truncated ? { degraded: truncatedDegraded(scanned, orders.length) } : {}),
       };
+    },
+
+    async getVisits(accountNumber, opts) {
+      if (!isFixtureAccount(accountNumber)) return fallback.getVisits(accountNumber, opts);
+      const { orders } = await this.getAccountOrders(accountNumber, {
+        brand: opts.brand,
+        estado: 'Todas',
+      });
+      // Igual que getUnsatisfactoryTasks: la orden con tareas grabadas devuelve
+      // las reales; las demás caen al mock. Sin red ni semáforo.
+      return buildVisits(accountNumber, orders, opts, (workOrder) =>
+        this.getWorkOrderTasks(workOrder, { brand: opts.brand }),
+      );
     },
 
     async getWorkOrderTasks(workOrder, opts) {

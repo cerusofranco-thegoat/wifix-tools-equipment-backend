@@ -4,6 +4,8 @@
 //   previous-visits      → 1 llamada, sin notas (`notesLoaded:false`).
 //   workorders/tasks     → 1 llamada, al expandir una visita concreta.
 //   unsatisfactory-tasks → 1 + como mucho `FSM_ORDERS_MAX_FANOUT` llamadas.
+//   visits               → 1 + como mucho `FSM_ORDERS_MAX_FANOUT` llamadas
+//                          (lista unificada; reemplaza a las dos primeras).
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -42,6 +44,7 @@ const workOrderQuerySchema = brandQuerySchema.extend({
 
 export async function registerTasksVisitsRoutes(app: FastifyInstance): Promise<void> {
   // --- Campo 15: tareas cerradas de forma insatisfactoria -------------------
+  // DEPRECADO: lo reemplaza /visits. Se mantiene para el APK ya instalado.
   app.get('/accounts/:accountNumber/unsatisfactory-tasks', async (request) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
     const { brand, limit } = parseQuery(unsatisfactoryQuerySchema, request.query);
@@ -51,7 +54,20 @@ export async function registerTasksVisitsRoutes(app: FastifyInstance): Promise<v
     });
   });
 
+  // --- Campos 15+16 unificados: todas las visitas de la cuenta ---------------
+  // Una entrada por orden, con su resultado. La pendiente (la próxima visita)
+  // va primero. 1 + como mucho `FSM_ORDERS_MAX_FANOUT` llamadas.
+  app.get('/accounts/:accountNumber/visits', async (request) => {
+    const { accountNumber } = parseParams(accountParamsSchema, request.params);
+    const { brand } = parseQuery(brandQuerySchema, request.query);
+    return getFsmConnector().getVisits(accountNumber, {
+      brand: brandFromRequest(request, brand),
+      limit: env.FSM_ORDERS_MAX_FANOUT,
+    });
+  });
+
   // --- Campo 16: visitas anteriores (sin notas) -----------------------------
+  // DEPRECADO: lo reemplaza /visits. Se mantiene para el APK ya instalado.
   app.get('/accounts/:accountNumber/previous-visits', async (request) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
     const { brand } = parseQuery(brandQuerySchema, request.query);

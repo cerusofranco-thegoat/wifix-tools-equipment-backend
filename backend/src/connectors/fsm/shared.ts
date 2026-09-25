@@ -59,6 +59,49 @@ export interface UnsatisfactoryTasksResult {
   degraded?: Degraded;
 }
 
+/**
+ * Resultado de una visita en la lista unificada (`GET /accounts/{n}/visits`).
+ *
+ * - `PENDIENTE`: la orden no ha terminado (la próxima visita; FSM admite una sola).
+ * - `CANCELADA`: `state` de la orden es "Cancelado".
+ * - `SATISFACTORIA` / `INSATISFACTORIA`: verificado abriendo las tareas.
+ * - `REALIZADA`: finalizada pero sin verificar (fuera del fan-out o su lectura
+ *   falló); el técnico puede pedir las notas bajo demanda.
+ */
+export type VisitResult =
+  | 'PENDIENTE'
+  | 'SATISFACTORIA'
+  | 'INSATISFACTORIA'
+  | 'CANCELADA'
+  | 'REALIZADA';
+
+/** Una ORDEN de la cuenta vista como visita (una entrada por orden). */
+export interface VisitItem {
+  /** Igual a `workOrder`: la lista es por orden, no por tarea. */
+  taskId: string;
+  workOrder: string;
+  occurredAt: string;
+  reason: string;
+  closingNotes: string;
+  technician: string | null;
+  result: VisitResult;
+  notesLoaded: boolean;
+}
+
+export interface VisitsResult {
+  /** Pendientes primero (fecha desc), luego el resto por `occurredAt` desc. */
+  items: VisitItem[];
+  /** Órdenes sin terminar recibidas (lo esperado es 0 o 1). */
+  pendingCount: number;
+  totalOrders: number;
+  /** Órdenes cerradas cuyas tareas se abrieron (fan-out). */
+  scanned: number;
+  /** Hay órdenes finalizadas que quedaron fuera del fan-out (`REALIZADA`). */
+  truncated: boolean;
+  brand: FsmBrand;
+  degraded?: Degraded;
+}
+
 export interface AccountOrder {
   workOrder: string;
   task: string | null;
@@ -170,6 +213,8 @@ export interface FsmConnector {
     opts: UnsatisfactoryOptions,
   ): Promise<UnsatisfactoryTasksResult>;
   getPreviousVisits(accountNumber: string, opts: BrandOptions): Promise<PreviousVisitsResult>;
+  /** Lista unificada de visitas (reemplaza a previous-visits + unsatisfactory-tasks). */
+  getVisits(accountNumber: string, opts: UnsatisfactoryOptions): Promise<VisitsResult>;
   getAccountOrders(accountNumber: string, opts: OrdersOptions): Promise<AccountOrders>;
   getAccountStatus(accountNumber: string, opts: BrandOptions): Promise<AccountStatusResult>;
   getAccountsStatusBatch(accounts: string[], opts: BrandOptions): Promise<StatusBatchResult>;
@@ -238,6 +283,161 @@ export function truncatedDegraded(scanned: number, totalOrders: number): Degrade
     message:
       `Se revisaron las ${scanned} órdenes más recientes de ${totalOrders}. ` +
       `Abre una visita concreta para ver sus notas.`,
+  };
+}
+
+// --- Lista unificada de visitas (GET /accounts/{n}/visits) -------------------
+
+/** `state` de la orden es "Cancelado" (sin distinguir mayúsculas ni tildes). */
+export function isCancelledOrder(order: Pick<AccountOrder, 'state'>): boolean {
+  if (!order.state) return false;
+  const normalized = order.state
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  return /\bcancelad[oa]s?\b/.test(normalized);
+}
+
+/** Fecha de una orden cerrada: fin si lo hay, si no creación. */
+function closedOrderDate(order: AccountOrder): string {
+  return order.endedAt ?? order.createdAt ?? '';
+}
+
+function byDateDesc<T>(date: (item: T) => string): (a: T, b: T) => number {
+  return (a, b) => date(b).localeCompare(date(a));
+}
+
+function orderVisit(
+  order: AccountOrder,
+  result: VisitResult,
+  occurredAt: string,
+  extra: Partial<Pick<VisitItem, 'closingNotes' | 'technician' | 'notesLoaded'>> = {},
+): VisitItem {
+  return {
+    taskId: order.workOrder,
+    workOrder: order.workOrder,
+    occurredAt,
+    reason: order.task ?? '',
+    closingNotes: extra.closingNotes ?? '',
+    technician: extra.technician ?? null,
+    result,
+    notesLoaded: extra.notesLoaded ?? false,
+  };
+}
+
+/** La tarea más reciente (por cierre, o por creación si no cerró). */
+function latestTask(tasks: WorkOrderTask[]): WorkOrderTask | undefined {
+  return [...tasks].sort(byDateDesc((t) => t.finishedAt ?? t.createdAt ?? ''))[0];
+}
+
+/**
+ * Visita verificada a partir de las tareas de su orden: `INSATISFACTORIA` si
+ * alguna tarea lo es (notas = las de esas tareas), si no `SATISFACTORIA`
+ * (notas = las de la última tarea cerrada).
+ */
+export function verifiedVisit(order: AccountOrder, tasks: WorkOrderTask[]): VisitItem {
+  const occurredAt = closedOrderDate(order);
+  const bad = tasks.filter((t) => t.result === 'INSATISFACTORIA');
+  if (bad.length > 0) {
+    return orderVisit(order, 'INSATISFACTORIA', occurredAt, {
+      closingNotes: bad
+        .map((t) => joinNotes(t.notes))
+        .filter((n) => n.length > 0)
+        .join(' · '),
+      technician: latestTask(bad)?.closedBy ?? null,
+      notesLoaded: true,
+    });
+  }
+  const closed = tasks.filter((t) => t.finishedAt !== null);
+  const last = latestTask(closed.length > 0 ? closed : tasks);
+  return orderVisit(order, 'SATISFACTORIA', occurredAt, {
+    closingNotes: last ? joinNotes(last.notes) : '',
+    technician: last?.closedBy ?? null,
+    notesLoaded: true,
+  });
+}
+
+/** Ejecuta una tarea asíncrona (el modo real le pasa el semáforo de FSM). */
+export type TaskScheduler = <T>(task: () => Promise<T>) => Promise<T>;
+
+const runNow: TaskScheduler = (task) => task();
+
+/**
+ * Construye la lista unificada de visitas de una cuenta. Compartido por los
+ * modos real, mock y fixture: cada uno aporta solo cómo leer las tareas de una
+ * orden (`fetchTasks`) y, opcionalmente, el semáforo (`schedule`).
+ *
+ * Reglas (una entrada por ORDEN):
+ *   - Cancelada (`state` ~ "Cancelado") → `CANCELADA`, sin abrir tareas.
+ *   - Sin terminar → `PENDIENTE`, arriba de todo. FSM admite UNA sola; si
+ *     llegan más se conservan todas y se deja un aviso en el log.
+ *   - Las `limit` finalizadas más recientes → se abren sus tareas:
+ *     `INSATISFACTORIA` / `SATISFACTORIA`. Si la lectura de UNA orden falla
+ *     (salvo error de token, que tumba la consulta) → `REALIZADA`.
+ *   - El resto de finalizadas → `REALIZADA` (`notesLoaded: false`).
+ */
+export async function buildVisits(
+  accountNumber: string,
+  orders: AccountOrder[],
+  opts: UnsatisfactoryOptions,
+  fetchTasks: (workOrder: string) => Promise<WorkOrderTasks>,
+  schedule: TaskScheduler = runNow,
+): Promise<VisitsResult> {
+  const cancelled = orders.filter((o) => isCancelledOrder(o));
+  const pending = orders
+    .filter((o) => !o.finished && !isCancelledOrder(o))
+    .sort(byDateDesc((o) => o.createdAt ?? ''));
+  const done = orders
+    .filter((o) => o.finished && !isCancelledOrder(o))
+    .sort(byDateDesc(closedOrderDate));
+
+  if (pending.length > 1) {
+    console.warn(
+      `[FSM] La cuenta ${accountNumber} tiene ${pending.length} órdenes sin terminar; ` +
+        `FSM debería admitir una sola. Se muestran todas.`,
+    );
+  }
+
+  const slice = done.slice(0, Math.max(0, opts.limit));
+  const beyond = done.slice(slice.length);
+
+  // Fan-out acotado: como mucho `limit` lecturas de tareas.
+  const settled = await Promise.allSettled(
+    slice.map((order) => schedule(() => fetchTasks(order.workOrder))),
+  );
+
+  const closedItems: VisitItem[] = [];
+  slice.forEach((order, i) => {
+    const result = settled[i];
+    if (result && result.status === 'fulfilled') {
+      closedItems.push(verifiedVisit(order, result.value.tasks));
+      return;
+    }
+    // Un fallo de token afecta a toda la consulta; cualquier otro fallo deja
+    // esa orden sin verificar, igual que las que quedan fuera del fan-out.
+    if (result && isUpstreamAuthError(result.reason)) throw result.reason;
+    closedItems.push(orderVisit(order, 'REALIZADA', closedOrderDate(order)));
+  });
+  for (const order of beyond) {
+    closedItems.push(orderVisit(order, 'REALIZADA', closedOrderDate(order)));
+  }
+  for (const order of cancelled) {
+    closedItems.push(orderVisit(order, 'CANCELADA', closedOrderDate(order)));
+  }
+  closedItems.sort(byDateDesc((v) => v.occurredAt));
+
+  const pendingItems = pending.map((o) => orderVisit(o, 'PENDIENTE', o.createdAt ?? ''));
+
+  const scanned = slice.length;
+  const truncated = done.length > scanned;
+  return {
+    items: [...pendingItems, ...closedItems],
+    pendingCount: pending.length,
+    totalOrders: orders.length,
+    scanned,
+    truncated,
+    brand: opts.brand,
+    ...(truncated ? { degraded: truncatedDegraded(scanned, orders.length) } : {}),
   };
 }
 

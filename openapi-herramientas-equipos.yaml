@@ -1048,6 +1048,138 @@ paths:
         '503':
           $ref: '#/components/responses/UpstreamAuthUnavailable'
 
+  /accounts/{accountNumber}/current-nap:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: NAP y puerto en los que está conectada la cuenta
+      description: >
+        Identifica la NAP, el puerto y el equipo GPON de la cuenta por
+        **búsqueda inversa**: FSM no expone el dato directo.
+
+
+        Algoritmo:
+
+        1. Coordenada: `lat`/`lng` de override si vienen; si no, la del cliente
+           en FSM `/account/process` (mismo camino y cache que client-profile).
+           Sin coordenada → `found:false, reason:NO_COORDS`.
+
+        2. FSM `/naps/nearest` con `meters=150`, `maxRows=3`.
+
+        3. FSM `/naps/accounts?id=` de cada NAP, **secuencial y por cercanía**,
+           cortando en cuanto aparece la cuenta (comparación normalizada como
+           string). Si no aparece en ninguna → `reason:NOT_FOUND`.
+
+        4. Si se encontró: estado de la cuenta por el mismo camino que
+           `POST /accounts/status-batch` (`/account/status`, cache 5 min). Si
+           ESA consulta falla, igual se responde `found:true` con
+           `clientStatus:null` y un bloque `degraded` (`FSM_UNAVAILABLE`).
+
+
+        **Presupuesto upstream: [1 process] + 1 nearest + ≤3 accounts + [1
+        status]** (máximo 6; 4 con override de coordenada y hallazgo en la
+        primera NAP). El resultado completo se cachea **10 minutos** por marca
+        y cuenta (y por coordenada redondeada si vino override); las respuestas
+        con `degraded` no se cachean.
+
+
+        Con `NAPS_PRIMARY_SOURCE=tec` responde `found:false,
+        reason:NOT_SUPPORTED` sin ninguna llamada: TEC no expone las cuentas de
+        una NAP. Un fallo de token de FSM es **503 `UPSTREAM_AUTH_ERROR`**
+        (nunca 401) y no cae a TEC; un 5xx/timeout de FSM al leer la
+        coordenada es 503 `UPSTREAM_UNAVAILABLE`, y en `/naps/*` 502
+        `CONNECTOR_ERROR`, igual que las rutas vecinas.
+
+
+        En `CONNECTOR_MODE_FSM=mock` las cuentas `35070291` (2ª NAP más
+        cercana) y `40123456` (la más cercana) se encuentran; cualquier otra
+        sale `NOT_FOUND`. En `fixture`, `35070291` sale `NOT_FOUND` (no está en
+        la NAP grabada).
+      operationId: getCurrentNap
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+        - name: lat
+          in: query
+          required: false
+          description: >
+            Override de la latitud (p. ej. GPS del técnico). Va junto con
+            `lng`: enviar solo uno de los dos es 400.
+          schema:
+            type: number
+            format: double
+            minimum: -90
+            maximum: 90
+        - name: lng
+          in: query
+          required: false
+          description: Override de la longitud. Va junto con `lat`.
+          schema:
+            type: number
+            format: double
+            minimum: -180
+            maximum: 180
+        - $ref: '#/components/parameters/BrandHeader'
+        - $ref: '#/components/parameters/BrandQuery'
+      responses:
+        '200':
+          description: >
+            OK. `found:false` NO es un error: `reason` dice por qué.
+          headers:
+            X-Wifix-Degraded:
+              description: >
+                Presente solo si la respuesta trae `degraded` (mismo JSON,
+                URL-encoded).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentNap'
+              examples:
+                found:
+                  summary: Encontrada (mock, cuenta 35070291)
+                  value:
+                    accountNumber: '35070291'
+                    found: true
+                    nap:
+                      napId: 11197
+                      napCode: PL53KD8
+                      networkName: OLT-GYE-06/1/2
+                      latitude: -2.243528
+                      longitude: -79.906654
+                      distanceMeters: 98.1
+                      occupiedPorts: 15
+                      totalPorts: 16
+                      freePorts: 1
+                      source: FSM
+                    portNumber: 7
+                    equipmentId: ZTEGD434832
+                    clientStatus:
+                      code: A
+                      name: ACTIVA
+                      description: Activo
+                    searchedNaps: 2
+                    brand: telenews
+                notFound:
+                  summary: No encontrada en las NAPs cercanas
+                  value:
+                    accountNumber: '12345678'
+                    found: false
+                    nap: null
+                    portNumber: null
+                    equipmentId: null
+                    clientStatus: null
+                    searchedNaps: 3
+                    reason: NOT_FOUND
+                    brand: telenews
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/ConnectorError'
+        '503':
+          $ref: '#/components/responses/UpstreamAuthUnavailable'
+
   /terminals/{id}:
     get:
       tags: [Diagnóstico de Red]
@@ -2769,6 +2901,68 @@ components:
           type: string
           enum: [FSM, TEC]
           description: De dónde salió la fila (ver `NAPS_PRIMARY_SOURCE`, ADR-04).
+
+    CurrentNap:
+      type: object
+      description: >
+        NAP y puerto en los que está conectada la cuenta
+        (`GET /accounts/{accountNumber}/current-nap`).
+      required:
+        [accountNumber, found, nap, portNumber, equipmentId, clientStatus, searchedNaps, brand]
+      properties:
+        accountNumber:
+          type: string
+          example: '35070291'
+        found:
+          type: boolean
+        nap:
+          allOf:
+            - $ref: '#/components/schemas/NearbyNap'
+          nullable: true
+          description: NAP donde apareció la cuenta; `null` si `found:false`.
+        portNumber:
+          type: integer
+          nullable: true
+          example: 7
+        equipmentId:
+          type: string
+          nullable: true
+          description: Serial/ID GPON del equipo en ese puerto, si FSM lo trae.
+          example: ZTEGD434832
+        clientStatus:
+          type: object
+          nullable: true
+          description: >
+            Estado de la cuenta. `null` si no se encontró la NAP o si la
+            consulta de estado falló (en ese caso viene `degraded`).
+          required: [code, name, description]
+          properties:
+            code:
+              $ref: '#/components/schemas/AccountStatusCode'
+            name:
+              $ref: '#/components/schemas/AccountStatus'
+            description:
+              type: string
+              nullable: true
+              description: Texto literal de la operadora ("Activo", "Suspendido"…).
+        searchedNaps:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: NAPs cuyo `/naps/accounts` se consultó antes de cortar.
+        reason:
+          type: string
+          enum: [NOT_FOUND, NO_COORDS, NOT_SUPPORTED]
+          description: >
+            Solo con `found:false`. `NOT_FOUND`: no está en las NAPs a ≤150 m.
+            `NO_COORDS`: el cliente no tiene coordenada en FSM y no se envió
+            override. `NOT_SUPPORTED`: la fuente de NAPs es TEC.
+        brand:
+          type: string
+          enum: [telenews, seteinfo]
+          description: Marca efectivamente usada en la consulta.
+        degraded:
+          $ref: '#/components/schemas/Degraded'
 
     NapPort:
       type: object

@@ -558,6 +558,14 @@ export function recallNap(napId: number): { napCode: string; totalPorts: number 
   return napRegistry.get(napId);
 }
 
+/**
+ * Radio y filas con los que `GET /accounts/{n}/current-nap` busca la NAP del
+ * cliente alrededor de su domicilio. Fijos a propósito: la operadora pidió
+ * pedir solo las NAPs más cercanas al cliente, y cada NAP devuelta puede costar
+ * una llamada más a `/naps/accounts` (máximo 1 + `maxRows`).
+ */
+export const CURRENT_NAP_SEARCH = { meters: 150, maxRows: 3 } as const;
+
 /** Solo para pruebas: olvida las NAPs memorizadas. */
 export function resetNapRegistry(): void {
   napRegistry.clear();

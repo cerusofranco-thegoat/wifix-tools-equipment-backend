@@ -24,7 +24,7 @@ import {
   fetchWorkOrderTasks,
 } from '../http/fsm-api.js';
 import { createLimiter } from '../http/throttle.js';
-import type { NearbyNap } from '../tec/index.js';
+import type { Coordinates, NearbyNap } from '../tec/index.js';
 import { createFsmFixtureConnector } from './fixture.js';
 import {
   classifyTaskResult,
@@ -47,6 +47,7 @@ import {
   applyStatuses,
   buildPortGrid,
   buildVisits,
+  CURRENT_NAP_SEARCH,
   dedupe,
   finishedOrdersDesc,
   isUpstreamAuthError,
@@ -93,7 +94,7 @@ export type {
   WorkOrderTaskNote,
   WorkOrderTasks,
 } from './shared.js';
-export { resetNapRegistry } from './shared.js';
+export { CURRENT_NAP_SEARCH, resetNapRegistry } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Mock — datos deterministas por cuenta. Mismos shapes que el modo real.
@@ -243,6 +244,96 @@ function mockStatus(accountNumber: string): {
   return { statusCode: code, status, statusDescription: descriptions[code] };
 }
 
+/**
+ * NAPs simuladas alrededor de una coordenada. Pura (no memoriza nada): la usan
+ * `getNearbyNaps` del mock y el sembrado de `MOCK_CONNECTED_ACCOUNTS`.
+ */
+function mockNearbyNaps(
+  coords: Coordinates,
+  opts: { meters: number; maxRows: number },
+): NearbyNap[] {
+  const seed = `fsm:naps:${coords.latitude.toFixed(4)},${coords.longitude.toFixed(4)}`;
+  const rng = seededRng(seed);
+  const n = Math.min(opts.maxRows, rng.intBetween(2, 8));
+  const naps: NearbyNap[] = [];
+  for (let i = 0; i < n; i++) {
+    // Misma regla que en real: se sortean los ocupados y el total sale de
+    // ellos (8, o 16 si hay más de 8 ocupados).
+    const occupied = rng.intBetween(0, NAP_MAX_PORTS);
+    const total = inferNapTotalPorts(occupied);
+    const distance = rng.floatBetween(10, Math.max(20, opts.meters), 1);
+    const napId = rng.intBetween(10000, 19999);
+    naps.push({
+      napId,
+      napCode: `PL${rng.intBetween(10, 99)}${rng.pick(['KD', 'AB', 'XR', 'MN'])}${rng.intBetween(1, 9)}`,
+      networkName: `OLT-GYE-${String(rng.intBetween(1, 9)).padStart(2, '0')}/1/${rng.intBetween(1, 8)}`,
+      latitude: coords.latitude + rng.floatBetween(-0.002, 0.002, 6),
+      longitude: coords.longitude + rng.floatBetween(-0.002, 0.002, 6),
+      distanceMeters: distance,
+      occupiedPorts: occupied,
+      totalPorts: total,
+      freePorts: Math.max(0, total - occupied),
+      source: 'FSM',
+    });
+  }
+  return naps.sort((a, b) => a.distanceMeters - b.distanceMeters);
+}
+
+/**
+ * Cuentas del mock que SÍ aparecen conectadas a una NAP cercana a su domicilio,
+ * para que el frontend pueda probar `GET /accounts/{n}/current-nap` con
+ * resultado encontrado. Cualquier otra cuenta sale `NOT_FOUND` (los puertos
+ * del mock tienen cuentas aleatorias).
+ *
+ * - `35070291` → en la SEGUNDA NAP más cercana (`searchedNaps: 2`).
+ * - `40123456` → en la NAP más cercana (`searchedNaps: 1`).
+ *
+ * Solo aplica si la búsqueda parte del domicilio mock de la cuenta (sin
+ * `lat`/`lng` de override) y con `CURRENT_NAP_SEARCH`.
+ */
+export const MOCK_CONNECTED_ACCOUNTS: ReadonlyArray<{ accountNumber: string; napIndex: number }> = [
+  { accountNumber: '35070291', napIndex: 1 },
+  { accountNumber: '40123456', napIndex: 0 },
+];
+
+interface PlantedPort {
+  portNumber: number;
+  accountNumber: string;
+  equipmentId: string;
+}
+
+let plantedPorts: Map<number, PlantedPort[]> | null = null;
+
+/**
+ * napId → puertos sembrados. Determinista y sin depender del orden de las
+ * llamadas: cuenta → domicilio mock → NAPs mock de ese domicilio → NAP elegida.
+ */
+function mockPlantedPorts(): Map<number, PlantedPort[]> {
+  if (plantedPorts) return plantedPorts;
+  const map = new Map<number, PlantedPort[]>();
+  for (const { accountNumber, napIndex } of MOCK_CONNECTED_ACCOUNTS) {
+    const client = mockClient(accountNumber);
+    if (client.latitude === null || client.longitude === null) continue;
+    const naps = mockNearbyNaps(
+      { latitude: client.latitude, longitude: client.longitude },
+      CURRENT_NAP_SEARCH,
+    );
+    const target = naps[Math.min(napIndex, naps.length - 1)];
+    if (!target || target.napId === null) continue;
+    const rng = seededRng(`fsm:planted:${accountNumber}`);
+    const list = map.get(target.napId) ?? [];
+    list.push({
+      // Puertos 1-8: válidos tanto en NAPs de 8 como de 16.
+      portNumber: rng.intBetween(1, 8),
+      accountNumber,
+      equipmentId: `ZTEGD${rng.intBetween(100000, 999999)}`,
+    });
+    map.set(target.napId, list);
+  }
+  plantedPorts = map;
+  return map;
+}
+
 export const fsmMock: FsmConnector = {
   async getAccountOrders(accountNumber, opts) {
     const orders = mockOrders(accountNumber);
@@ -323,40 +414,16 @@ export const fsmMock: FsmConnector = {
   },
 
   async getNearbyNaps(coords, opts) {
-    const seed = `fsm:naps:${coords.latitude.toFixed(4)},${coords.longitude.toFixed(4)}`;
-    const rng = seededRng(seed);
-    const n = Math.min(opts.maxRows, rng.intBetween(2, 8));
-    const naps: NearbyNap[] = [];
-    for (let i = 0; i < n; i++) {
-      // Misma regla que en real: se sortean los ocupados y el total sale de
-      // ellos (8, o 16 si hay más de 8 ocupados).
-      const occupied = rng.intBetween(0, NAP_MAX_PORTS);
-      const total = inferNapTotalPorts(occupied);
-      const distance = rng.floatBetween(10, Math.max(20, opts.meters), 1);
-      const napId = rng.intBetween(10000, 19999);
-      const nap: NearbyNap = {
-        napId,
-        napCode: `PL${rng.intBetween(10, 99)}${rng.pick(['KD', 'AB', 'XR', 'MN'])}${rng.intBetween(1, 9)}`,
-        networkName: `OLT-GYE-${String(rng.intBetween(1, 9)).padStart(2, '0')}/1/${rng.intBetween(1, 8)}`,
-        latitude: coords.latitude + rng.floatBetween(-0.002, 0.002, 6),
-        longitude: coords.longitude + rng.floatBetween(-0.002, 0.002, 6),
-        distanceMeters: distance,
-        occupiedPorts: occupied,
-        totalPorts: total,
-        freePorts: Math.max(0, total - occupied),
-        source: 'FSM',
-      };
-      naps.push(nap);
-      rememberNap(napId, nap.napCode, total);
-    }
-    return naps.sort((a, b) => a.distanceMeters - b.distanceMeters);
+    const naps = mockNearbyNaps(coords, opts);
+    for (const nap of naps) rememberNap(nap.napId, nap.napCode, nap.totalPorts);
+    return naps;
   },
 
   async getNapPorts(napId, opts) {
     const rng = seededRng(`fsm:napports:${napId}`);
     const remembered = recallNap(napId);
     const total = remembered?.totalPorts ?? NAP_MAX_PORTS;
-    const rows: Array<{ portNumber: number; accountNumber: string; equipmentId: string }> = [];
+    let rows: Array<{ portNumber: number; accountNumber: string; equipmentId: string }> = [];
     for (let i = 1; i <= total; i++) {
       if (!rng.bool(0.7)) continue;
       rows.push({
@@ -364,6 +431,15 @@ export const fsmMock: FsmConnector = {
         accountNumber: String(rng.intBetween(30000000, 79999999)),
         equipmentId: `ZTEGD${rng.intBetween(100000, 999999)}`,
       });
+    }
+    // Cuentas sembradas (`MOCK_CONNECTED_ACCOUNTS`): reemplazan lo que hubiera
+    // en su puerto, así `current-nap` las encuentra de forma determinista.
+    const planted = mockPlantedPorts().get(napId) ?? [];
+    if (planted.length > 0) {
+      const taken = new Set(planted.map((p) => p.portNumber));
+      rows = [...rows.filter((r) => !taken.has(r.portNumber)), ...planted].sort(
+        (a, b) => a.portNumber - b.portNumber,
+      );
     }
     const grid = buildPortGrid(rows, total);
     const pending = grid.ports.filter((p) => p.statusPending);

@@ -10,6 +10,7 @@ import {
   getNearbyNaps,
   getNapPortsByRef,
 } from '../../connectors/index.js';
+import { findCurrentNap } from './current-nap.service.js';
 
 const accountParamsSchema = z.object({
   accountNumber: z.string().min(1, 'accountNumber es obligatorio.'),
@@ -48,6 +49,31 @@ const coordsQuerySchema = z.object({
   maxRows: z.coerce.number().int().gte(1).lte(25).optional(),
   brand: z.string().optional(),
 });
+
+/**
+ * `lat`/`lng` opcionales: override de la coordenada (GPS del técnico). Van
+ * juntos; sin ellos se usa la del cliente en FSM.
+ */
+/** `?lat=` vacío cuenta como ausente: `z.coerce.number('')` daría 0, no un error. */
+const blankAsUndefined = (value: unknown): unknown =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+
+const currentNapQuerySchema = z
+  .object({
+    lat: z.preprocess(blankAsUndefined, z.coerce.number().gte(-90).lte(90).optional()),
+    lng: z.preprocess(blankAsUndefined, z.coerce.number().gte(-180).lte(180).optional()),
+    brand: z.string().optional(),
+  })
+  .refine((q) => (q.lat === undefined) === (q.lng === undefined), {
+    message: 'lat y lng van juntos: envía ambos o ninguno.',
+    path: ['lat'],
+  })
+  // (0,0) es el "vacío" de los sistemas legados, no un GPS válido (ver
+  // `isUsableCoord` en current-nap.service.ts).
+  .refine((q) => !(q.lat === 0 && q.lng === 0), {
+    message: 'La coordenada (0,0) no es válida.',
+    path: ['lat'],
+  });
 
 /** Radio y número de NAPs que se piden si el cliente no especifica nada. */
 const NEARBY_NAPS_DEFAULTS = { meters: 100, maxRows: 3 } as const;
@@ -112,6 +138,24 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
       brand: brandFromRequest(request, brand),
       withStatus: withStatus === '1',
     });
+  });
+
+  // --- NAP y puerto actuales de la cuenta (búsqueda inversa) -----------------
+  // FSM no expone el dato: nearest (150 m, 3 filas) + `/naps/accounts` NAP por
+  // NAP hasta encontrarla. Ver `current-nap.service.ts` para el presupuesto.
+  app.get('/accounts/:accountNumber/current-nap', async (request, reply) => {
+    const { accountNumber } = parseParams(accountParamsSchema, request.params);
+    const { lat, lng, brand } = parseQuery(currentNapQuerySchema, request.query);
+    const result = await findCurrentNap(accountNumber, {
+      brand: brandFromRequest(request, brand),
+      ...(lat !== undefined && lng !== undefined
+        ? { coords: { latitude: lat, longitude: lng } }
+        : {}),
+    });
+    if (result.degraded) {
+      reply.header('X-Wifix-Degraded', encodeURIComponent(JSON.stringify(result.degraded)));
+    }
+    return result;
   });
 
   // --- Campos 9-13: ISP Monitor por serial GPON / MAC HFC -------------------

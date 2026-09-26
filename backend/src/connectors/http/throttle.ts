@@ -37,12 +37,26 @@ function prune(now: number): void {
   }
 }
 
+export interface CachedFetchOptions<T> {
+  /**
+   * Decide si un resultado EXITOSO se guarda. Por defecto todos. Sirve para no
+   * fijar durante todo el TTL una respuesta degradada (p. ej. un aviso de
+   * token caído) que dentro de un minuto ya podría resolverse bien.
+   */
+  cacheIf?: (value: T) => boolean;
+}
+
 /**
  * Ejecuta `loader` deduplicando peticiones en vuelo y cacheando el resultado
  * `ttlMs` milisegundos. Los errores NO se cachean: un fallo puntual no debe
  * dejar al técnico sin datos hasta que venza la entrada.
  */
-export function cachedFetch<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
+export function cachedFetch<T>(
+  key: string,
+  ttlMs: number,
+  loader: () => Promise<T>,
+  opts: CachedFetchOptions<T> = {},
+): Promise<T> {
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && hit.expiresAt > now) return Promise.resolve(hit.value as T);
@@ -52,7 +66,7 @@ export function cachedFetch<T>(key: string, ttlMs: number, loader: () => Promise
 
   const promise = loader()
     .then((value) => {
-      if (ttlMs > 0) {
+      if (ttlMs > 0 && (opts.cacheIf?.(value) ?? true)) {
         cache.set(key, { expiresAt: Date.now() + ttlMs, value });
         if (cache.size > MAX_CACHE_ENTRIES) prune(Date.now());
       }

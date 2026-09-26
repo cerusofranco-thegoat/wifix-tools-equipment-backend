@@ -293,3 +293,96 @@ docker run --rm --network wifix \
   quay.io/minio/mc:RELEASE.2024-01-13T08-44-48Z \
   cp /legal/privacidad.html local/wifix-media/legal/privacidad.html
 ```
+
+## 10. Whitelist de clientes
+
+Lista de cuentas reales de Xtrim contra la que la app valida "Confirmar cuenta"
+(`GET /herramientas/v1/accounts/{n}/whitelist`). Se **reemplaza completa** en
+cada refresco.
+
+**Datos personales (LOPDP).** Las planillas de la operadora
+(`CLIENTESSALDOSAS.xlsx`, `CLIENTESPRODUCTOSAS.xlsx`) traen nombre, dirección,
+coordenadas y saldo de ~300k clientes: **nunca** suben al servidor ni al repo
+(`.gitignore` y `.dockerignore` bloquean `*.xlsx` y `whitelist*.csv`). En local
+se reducen a un CSV minimizado con solo: cuenta, cédula/RUC normalizada, estado,
+ciudad, nodo, tipo de negocio, tipo de cuenta, tipo de acceso y CPARTY_ID. La
+cédula/RUC se guarda en la base pero la API **no la devuelve nunca**.
+
+### 10.1 Construir el CSV (en local, fuera del repo)
+
+```bash
+cd backend
+npx tsx scripts/whitelist-build.ts \
+  "C:/Users/<usuario>/Downloads/CLIENTESSALDOSAS.xlsx" \
+  "C:/Users/<usuario>/Downloads/CLIENTESPRODUCTOSAS.xlsx" \
+  --out "C:/Users/<usuario>/wifix-privado/whitelist.csv"
+```
+
+Lee en streaming (~15 s), imprime **solo conteos agregados** (cuentas, por
+estado, documentos normalizados…) y escribe el CSV (~34 MB). Reglas:
+
+- Base = SALDOS (1 fila por cuenta); PRODUCTOS aporta tipo de cuenta y de acceso.
+- Estado con varios productos: ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE; los
+  tipos salen del producto de mayor prioridad.
+- Cédula de 9 dígitos → 10 con cero inicial; RUC de 12 → 13. Otros largos
+  (7-8 dígitos, pasaportes) quedan tal cual con `documentNormalized=false`.
+- ACCOUNT_ID sin ceros a la izquierda (la ruta normaliza igual lo que se teclea).
+
+Si el script dice que "guarda las hojas antes de sharedStrings.xml", abrir la
+planilla en Excel y guardarla de nuevo.
+
+### 10.2 Subir e importar en el servidor
+
+```bash
+# Desde local: subir con permisos restringidos.
+scp "C:/Users/<usuario>/wifix-privado/whitelist.csv" <usuario>@<vps>:~/whitelist.csv
+```
+
+```bash
+# En el VPS
+chmod 600 ~/whitelist.csv
+cd /opt/wifix-cert/backend
+git pull
+
+# La imagen `tools` debe incluir el script: `up --build backend` NO la reconstruye.
+docker compose -f docker-compose.prod.yml --profile tools build migrate
+# Migración de las tablas (idempotente si ya estaba aplicada).
+docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+
+# Import: el CSV entra por stdin (-T), no se monta ni se copia a la imagen.
+docker compose -f docker-compose.prod.yml --profile tools run --rm -T \
+  migrate npx tsx prisma/import-whitelist.ts - < ~/whitelist.csv
+
+# Borrar el CSV del servidor en cuanto el import dice OK.
+shred -u ~/whitelist.csv
+```
+
+El import valida el CSV **completo** antes de tocar la base y hace DELETE +
+INSERT por lotes de 5.000 + registro en `whitelist_imports`, todo en una
+transacción (~20 s para 304k cuentas): si algo falla, queda la lista anterior, y
+mientras corre la API sigue respondiendo con la anterior. Es idempotente.
+Salvaguarda: si la lista nueva tiene **menos de la mitad** de cuentas que la
+vigente, aborta (CSV truncado); si es correcto, repetir con `--force`. El
+backend no necesita reiniciarse.
+
+### 10.3 Variables y verificación
+
+| Variable | Defecto | Efecto |
+|---|---|---|
+| `WHITELIST_ENFORCE` | `false` | `true`: la app bloquea cuentas no listadas. `false`: solo avisa. |
+| `WHITELIST_EXTRA_ACCOUNTS` | vacío | Cuentas demo (p. ej. `40123456`) que responden `listed:true, status:ACTIVO, source:EXTRA`. |
+
+Cambiarlas exige recrear el backend (`up -d --force-recreate backend`).
+
+```bash
+curl -s https://<dominio>/herramientas/v1/accounts/35070291/whitelist \
+  -H "Authorization: Bearer $TOKEN"
+# {"accountNumber":"35070291","listed":true,"source":"IMPORT","status":"ACTIVO",...}
+
+# Último import (solo conteos)
+docker compose -f docker-compose.prod.yml exec postgres psql -U wifix -d wifix_tools \
+  -c "select imported_at, accounts, by_status from whitelist_imports order by imported_at desc limit 3"
+```
+
+Sin ningún import la ruta responde `listed:null, reason:WHITELIST_EMPTY,
+enforce:false`: la app no bloquea a nadie hasta que haya lista.

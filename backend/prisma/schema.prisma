@@ -376,3 +376,60 @@ model RetiredEquipment {
   @@index([retiredAt])
   @@map("retired_equipment")
 }
+
+// ===========================================================================
+// WHITELIST DE CLIENTES (cuentas reales de la operadora)
+// ===========================================================================
+//
+// Lista de cuentas válidas para "Confirmar cuenta". Se REEMPLAZA completa en
+// cada import (`prisma/import-whitelist.ts`), a partir de un CSV minimizado que
+// se construye en local (`scripts/whitelist-build.ts`).
+//
+// MINIMIZACIÓN (LOPDP): solo lo imprescindible para validar la cuenta. NADA de
+// nombre, dirección, coordenadas ni saldo. `documentId` se guarda para una
+// futura verificación cruzada y NUNCA sale en una respuesta de la API.
+
+enum WhitelistStatus {
+  ACTIVO
+  SUSPENDIDO
+  ORDENADO
+  PENDIENTE
+
+  @@map("whitelist_status")
+}
+
+model CustomerWhitelist {
+  /// ACCOUNT_ID normalizado (string, sin ceros a la izquierda si es numérico).
+  accountNumber      String          @id @map("account_number")
+  /// Cédula (10) / RUC (13) con el cero inicial restituido. Nunca se expone.
+  documentId         String          @map("document_id")
+  /// `false` si el documento no pudo llevarse a 10/13 dígitos (se guarda tal cual).
+  documentNormalized Boolean         @map("document_normalized")
+  cpartyId           String?         @map("cparty_id")
+  status             WhitelistStatus
+  city               String?
+  node               String?
+  businessType       String?         @map("business_type")
+  accountType        String?         @map("account_type")
+  accessType         String?         @map("access_type")
+  importedAt         DateTime        @map("imported_at") @db.Timestamptz(6)
+
+  @@index([documentId])
+  @@map("customer_whitelist")
+}
+
+model WhitelistImport {
+  id          String   @id @default(uuid()) @db.Uuid
+  importedAt  DateTime @default(now()) @map("imported_at") @db.Timestamptz(6)
+  /// Nombres (sin ruta) de los archivos de origen.
+  sourceFiles String[] @map("source_files")
+  /// Filas de datos leídas del CSV.
+  rows        Int
+  /// Cuentas insertadas.
+  accounts    Int
+  /// Conteo por estado: { "ACTIVO": n, "SUSPENDIDO": n, ... }
+  byStatus    Json     @map("by_status")
+
+  @@index([importedAt])
+  @@map("whitelist_imports")
+}

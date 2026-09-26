@@ -18,6 +18,7 @@ import { registerClientDataRoutes } from './modules/client-data/client-data.rout
 import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/network-diagnostics.routes.js';
 import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
 import { registerIntegrationsRoutes } from './modules/integrations/integrations.routes.js';
+import { registerWhitelistRoutes } from './modules/whitelist/whitelist.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -107,6 +108,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerNetworkDiagnosticsRoutes(api);
       await registerTasksVisitsRoutes(api);
       await registerIntegrationsRoutes(api);
+      await registerWhitelistRoutes(api);
     },
     { prefix: API_PREFIX },
   );

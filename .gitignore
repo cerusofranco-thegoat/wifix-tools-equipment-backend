@@ -24,3 +24,11 @@ Thumbs.db
 
 # Paquetes de entrega comprimidos (no van al repo)
 *.zip
+
+# Datos personales de clientes (whitelist Xtrim, LOPDP): planillas de origen y
+# CSV minimizados. NUNCA van al repo. Ver backend/DEPLOY.md "Whitelist de clientes".
+*.xlsx
+*.xls
+*.xlsm
+whitelist*.csv
+backend/data/

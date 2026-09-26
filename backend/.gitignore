@@ -23,3 +23,10 @@ prisma/migrations/dev.db*
 
 # Volúmenes locales de docker-compose
 .docker-data/
+
+# Datos personales de clientes (whitelist, LOPDP): planillas y CSV minimizados.
+*.xlsx
+*.xls
+*.xlsm
+whitelist*.csv
+data/

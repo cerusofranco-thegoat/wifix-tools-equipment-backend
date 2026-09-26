@@ -1180,6 +1180,97 @@ paths:
         '503':
           $ref: '#/components/responses/UpstreamAuthUnavailable'
 
+  /accounts/{accountNumber}/whitelist:
+    get:
+      tags: [Datos del Cliente]
+      summary: ¿La cuenta está en la whitelist de clientes reales?
+      description: >
+        Valida la cuenta en "Confirmar cuenta" contra la lista de clientes de la
+        operadora, importada por completo con `prisma/import-whitelist.ts` (ver
+        DEPLOY.md §10). Solo lee la base propia: cero llamadas a sistemas
+        externos.
+
+
+        El número de cuenta se normaliza (recorte de espacios; si es numérico,
+        sin ceros a la izquierda: `035070291` → `35070291`) y la respuesta trae
+        el valor normalizado.
+
+
+        Orden de resolución:
+
+        1. Cuenta en `WHITELIST_EXTRA_ACCOUNTS` (demo) → `listed:true`,
+           `source:EXTRA`, `status:ACTIVO`, resto de campos `null`.
+
+        2. Cuenta en la lista importada → `listed:true`, `source:IMPORT`.
+
+        3. Lista importada alguna vez pero sin la cuenta → `listed:false`.
+
+        4. Nunca se importó nada → `listed:null`, `reason:WHITELIST_EMPTY` y
+           `enforce:false` sin importar la configuración.
+
+
+        `enforce` refleja `WHITELIST_ENFORCE`: `true` → la app debe bloquear
+        las cuentas `listed:false`; `false` → solo avisar. La cédula/RUC se
+        guarda en la base pero **nunca** se devuelve.
+      operationId: getAccountWhitelist
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK. `listed:false` / `listed:null` NO son errores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhitelistCheck'
+              examples:
+                listed:
+                  summary: Listada (lista importada)
+                  value:
+                    accountNumber: '35070291'
+                    listed: true
+                    source: IMPORT
+                    status: ACTIVO
+                    city: GUAYAQUIL
+                    node: AR7S
+                    businessType: Combo Tv - Int
+                    accountType: Residencial
+                    accessType: Sin Registro
+                    importedAt: '2026-09-26T21:15:56.833Z'
+                    enforce: false
+                extra:
+                  summary: Cuenta demo (WHITELIST_EXTRA_ACCOUNTS)
+                  value:
+                    accountNumber: '40123456'
+                    listed: true
+                    source: EXTRA
+                    status: ACTIVO
+                    city: null
+                    node: null
+                    businessType: null
+                    accountType: null
+                    accessType: null
+                    importedAt: '2026-09-26T21:15:56.833Z'
+                    enforce: false
+                notListed:
+                  summary: No listada
+                  value:
+                    accountNumber: '12345678'
+                    listed: false
+                    importedAt: '2026-09-26T21:15:56.833Z'
+                    enforce: true
+                empty:
+                  summary: Sin lista importada
+                  value:
+                    accountNumber: '12345678'
+                    listed: null
+                    reason: WHITELIST_EMPTY
+                    importedAt: null
+                    enforce: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /terminals/{id}:
     get:
       tags: [Diagnóstico de Red]
@@ -2963,6 +3054,81 @@ components:
           description: Marca efectivamente usada en la consulta.
         degraded:
           $ref: '#/components/schemas/Degraded'
+
+    WhitelistCheck:
+      type: object
+      description: >
+        Resultado de `GET /accounts/{accountNumber}/whitelist`. Tres formas
+        según `listed`: `true` (con `source`, `status` y datos de la lista),
+        `false` (solo `importedAt` y `enforce`) y `null` (lista vacía, con
+        `reason`). Nunca incluye la cédula/RUC.
+      required: [accountNumber, listed, importedAt, enforce]
+      properties:
+        accountNumber:
+          type: string
+          description: Número de cuenta normalizado.
+          example: '35070291'
+        listed:
+          type: boolean
+          nullable: true
+          description: >
+            `true` listada, `false` no listada, `null` no hay lista importada.
+        source:
+          type: string
+          enum: [IMPORT, EXTRA]
+          description: >
+            Solo con `listed:true`. `IMPORT`: lista importada. `EXTRA`:
+            `WHITELIST_EXTRA_ACCOUNTS` (cuentas demo).
+        status:
+          type: string
+          enum: [ACTIVO, SUSPENDIDO, ORDENADO, PENDIENTE]
+          description: >
+            Solo con `listed:true`. Con varios productos, el de mayor
+            prioridad (ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE). `EXTRA`
+            siempre es `ACTIVO`.
+        city:
+          type: string
+          nullable: true
+          description: Solo con `listed:true` (CIUDAD_MATRICES). `null` en `EXTRA`.
+          example: GUAYAQUIL
+        node:
+          type: string
+          nullable: true
+          description: Solo con `listed:true` (NODO). `null` en `EXTRA`.
+          example: AR7S
+        businessType:
+          type: string
+          nullable: true
+          description: Solo con `listed:true` (TIPO_DE_NEGOCIO).
+          example: Internet CM
+        accountType:
+          type: string
+          nullable: true
+          description: >
+            Solo con `listed:true` (TIPO_CUENTA del producto). `null` si la
+            cuenta no tiene productos en la planilla o es `EXTRA`.
+          example: Residencial
+        accessType:
+          type: string
+          nullable: true
+          description: >
+            Solo con `listed:true` (TIPO_ACCESO del producto de mayor
+            prioridad). `null` si no hay productos o es `EXTRA`.
+          example: Acceso Completo
+        importedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Fecha del último import; `null` si nunca se importó.
+        enforce:
+          type: boolean
+          description: >
+            `WHITELIST_ENFORCE`. `true`: la app bloquea `listed:false`. Siempre
+            `false` con `listed:null`.
+        reason:
+          type: string
+          enum: [WHITELIST_EMPTY]
+          description: Solo con `listed:null`.
 
     NapPort:
       type: object

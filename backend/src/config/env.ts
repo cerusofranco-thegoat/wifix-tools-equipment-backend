@@ -107,6 +107,25 @@ const envSchema = z.object({
   FSM_TOKEN_KEY_SETEINFO: z.string().default(''),
   // Fuente primaria de NAPs para el campo 6 (ver ADR-04). Hoy: tec.
   NAPS_PRIMARY_SOURCE: z.enum(['fsm', 'tec']).default('tec'),
+  // --- Whitelist de clientes (Confirmar cuenta) ---
+  // `true` → la app BLOQUEA las cuentas que no están en la lista; `false` (por
+  // defecto) → solo avisa. Se lee como texto: `z.coerce.boolean()` convertiría
+  // "false" en true.
+  WHITELIST_ENFORCE: z
+    .string()
+    .default('false')
+    .transform((val) => ['true', '1', 'yes', 'on'].includes(val.trim().toLowerCase())),
+  // Cuentas que responden `listed:true, status:ACTIVO, source:EXTRA` aunque no
+  // estén en la lista importada (cuentas demo, p. ej. 40123456). Separadas por comas.
+  WHITELIST_EXTRA_ACCOUNTS: z
+    .string()
+    .default('')
+    .transform((val) =>
+      val
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
   // --- Almacenamiento ---
   // Endpoint que usa el SDK de S3 desde DENTRO del servidor. En un despliegue
   // con docker compose es el nombre del servicio (`http://minio:9000`).

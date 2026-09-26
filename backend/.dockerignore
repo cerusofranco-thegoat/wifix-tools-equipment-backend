@@ -11,3 +11,9 @@ dev-server.log
 .idea
 coverage
 scripts/*.log
+# Datos personales de clientes: nunca dentro de una imagen.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+data

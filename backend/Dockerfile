@@ -33,6 +33,10 @@ COPY src ./src
 # `tsconfig.json` incluye `tests/**` y el conector en modo `fixture` lee los JSON
 # de tests/fixtures/fsm: los tests viajan al builder a propósito.
 COPY tests ./tests
+# `scripts/` también entra en `tsconfig.json` y los tests de la whitelist
+# importan `scripts/whitelist-build.ts`. Solo código: las planillas y CSV de
+# clientes los excluye `.dockerignore`.
+COPY scripts ./scripts
 RUN npm run build
 
 # --- tools (migraciones, seeds, admin) -------------------------------------

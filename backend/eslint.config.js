@@ -8,7 +8,7 @@ export default [
   },
   js.configs.recommended,
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts', 'prisma/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'prisma/**/*.ts', 'scripts/**/*.ts'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

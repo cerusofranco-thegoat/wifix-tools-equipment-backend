@@ -11,7 +11,9 @@
 //   prioridad (ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE, contando también el
 //   de SALDOS) y TIPO_CUENTA / TIPO_ACCESO salen del producto de mayor prioridad.
 // - MINIMIZACIÓN (LOPDP): solo salen las columnas de WHITELIST_CSV_COLUMNS.
-//   Nombre, dirección, coordenadas, saldo, etc. ni siquiera se leen a memoria.
+//   El nombre (FULLNAME de SALDOS, o de PRODUCTOS si falta) es lo único
+//   personal además del documento: respaldo de client-profile cuando FSM no
+//   trae identidad. Dirección, coordenadas, saldo, etc. ni se leen a memoria.
 // - Por consola SOLO conteos agregados: nunca una fila.
 import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
@@ -136,14 +138,23 @@ const SALDOS_COLUMNS = [
   'CIUDAD_MATRICES',
   'NODO',
   'TIPO_DE_NEGOCIO',
+  'FULLNAME',
 ] as const;
 
-const PRODUCTOS_COLUMNS = ['ACCOUNT_ID', 'ESTADO_PRODUCTO', 'TIPO_CUENTA', 'TIPO_ACCESO'] as const;
+const PRODUCTOS_COLUMNS = [
+  'ACCOUNT_ID',
+  'ESTADO_PRODUCTO',
+  'TIPO_CUENTA',
+  'TIPO_ACCESO',
+  'FULLNAME',
+] as const;
 
 interface ProductAggregate {
   status: WhitelistStatusValue;
   accountType: string | null;
   accessType: string | null;
+  /** Primer FULLNAME no vacío, prefiriendo el del producto de mayor prioridad. */
+  fullName: string | null;
   distinctStatuses: Set<WhitelistStatusValue>;
 }
 
@@ -169,6 +180,7 @@ export interface WhitelistBuildStats {
   accountsWithProducts: number;
   accountsWithoutProducts: number;
   statusUpgradedByProducts: number;
+  fullName: { withName: number; withoutName: number; fromProductos: number };
 }
 
 export interface WhitelistBuildOptions {
@@ -204,6 +216,7 @@ export async function buildWhitelistCsv(
     accountsWithProducts: 0,
     accountsWithoutProducts: 0,
     statusUpgradedByProducts: 0,
+    fullName: { withName: 0, withoutName: 0, fromProductos: 0 },
   };
 
   // 1. PRODUCTOS → agregado por cuenta (solo estado y los dos tipos).
@@ -222,12 +235,14 @@ export async function buildWhitelistCsv(
     }
     const accountType = cleanText(r.TIPO_CUENTA);
     const accessType = cleanText(r.TIPO_ACCESO);
+    const fullName = cleanText(r.FULLNAME);
     const current = products.get(account);
     if (!current) {
       products.set(account, {
         status,
         accountType,
         accessType,
+        fullName,
         distinctStatuses: new Set([status]),
       });
       continue;
@@ -237,10 +252,14 @@ export async function buildWhitelistCsv(
       current.status = status;
       current.accountType = accountType;
       current.accessType = accessType;
+      current.fullName = fullName ?? current.fullName;
     } else if (status === current.status) {
       // Mismo estado: se completan huecos, sin pisar lo que ya había.
       current.accountType ??= accountType;
       current.accessType ??= accessType;
+      current.fullName ??= fullName;
+    } else {
+      current.fullName ??= fullName;
     }
   }
   stats.productos.accounts = products.size;
@@ -251,6 +270,7 @@ export async function buildWhitelistCsv(
   // 2. SALDOS → base. Se acumula en memoria (~300k filas chicas) para poder
   //    resolver duplicados antes de escribir.
   const rows = new Map<string, WhitelistRow>();
+  const fromProductos = new Set<string>();
   for await (const r of readSheetRows(options.saldosPath, SALDOS_COLUMNS, 'SALDOS')) {
     stats.saldos.rows += 1;
     const account = normalizeAccountNumber(r.ACCOUNT_ID);
@@ -268,6 +288,7 @@ export async function buildWhitelistCsv(
       continue;
     }
     const doc = normalizeDocumentId(r.CEDULA_RUC);
+    const saldoName = cleanText(r.FULLNAME);
     const row: WhitelistRow = {
       accountNumber: account,
       documentId: doc.documentId,
@@ -279,6 +300,7 @@ export async function buildWhitelistCsv(
       businessType: cleanText(r.TIPO_DE_NEGOCIO),
       accountType: product?.accountType ?? null,
       accessType: product?.accessType ?? null,
+      fullName: saldoName ?? product?.fullName ?? null,
     };
     const existing = rows.get(account);
     if (existing) {
@@ -286,6 +308,8 @@ export async function buildWhitelistCsv(
       if (!outranks(row.status, existing.status)) continue;
     }
     rows.set(account, row);
+    if (!saldoName && row.fullName) fromProductos.add(account);
+    else fromProductos.delete(account);
     if (product && saldoStatus && status !== saldoStatus && !existing) {
       stats.statusUpgradedByProducts += 1;
     }
@@ -321,6 +345,9 @@ export async function buildWhitelistCsv(
       if (row.documentId.length === 10) stats.documents.paddedCedula += 1;
       else stats.documents.paddedRuc += 1;
     }
+    if (row.fullName) stats.fullName.withName += 1;
+    else stats.fullName.withoutName += 1;
+    if (row.fullName && fromProductos.has(row.accountNumber)) stats.fullName.fromProductos += 1;
     if (products.has(row.accountNumber)) stats.accountsWithProducts += 1;
     else stats.accountsWithoutProducts += 1;
 

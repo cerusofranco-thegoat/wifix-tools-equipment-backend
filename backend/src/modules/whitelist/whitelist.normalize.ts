@@ -158,8 +158,11 @@ export function normalizeDocumentId(raw: unknown): NormalizedDocument {
 // CSV minimizado (formato de intercambio build → import)
 // ---------------------------------------------------------------------------
 
-/** Columnas permitidas, en orden. NADA más sale de la planilla. */
-export const WHITELIST_CSV_COLUMNS = [
+/**
+ * Columnas del formato v1 (sin nombre). El import lo sigue aceptando: esas
+ * cuentas quedan con `fullName` null.
+ */
+export const WHITELIST_CSV_COLUMNS_V1 = [
   'accountNumber',
   'documentId',
   'documentNormalized',
@@ -172,7 +175,15 @@ export const WHITELIST_CSV_COLUMNS = [
   'accessType',
 ] as const;
 
+/**
+ * Columnas permitidas del formato vigente (v2), en orden. NADA más sale de la
+ * planilla: v2 solo agrega el nombre (respaldo de client-profile cuando FSM no
+ * trae identidad). Ni dirección, ni coordenadas, ni saldo.
+ */
+export const WHITELIST_CSV_COLUMNS = [...WHITELIST_CSV_COLUMNS_V1, 'fullName'] as const;
+
 export type WhitelistCsvColumn = (typeof WHITELIST_CSV_COLUMNS)[number];
+export type WhitelistCsvVersion = 1 | 2;
 
 export interface WhitelistRow {
   accountNumber: string;
@@ -185,10 +196,14 @@ export interface WhitelistRow {
   businessType: string | null;
   accountType: string | null;
   accessType: string | null;
+  /** FULLNAME de la planilla (v2). `null` si no vino o el CSV es v1. */
+  fullName: string | null;
 }
 
 /** Prefijo de la línea de metadatos (primera línea del CSV). */
-export const WHITELIST_CSV_META_PREFIX = '#wifix-whitelist v1';
+export const WHITELIST_CSV_META_PREFIX = '#wifix-whitelist v2';
+/** Reconoce la línea de metadatos de cualquier versión. */
+export const WHITELIST_CSV_META_RE = /^#wifix-whitelist v\d+/;
 
 function csvField(value: string | null): string {
   if (value === null) return '';
@@ -207,6 +222,7 @@ export function whitelistRowToCsv(row: WhitelistRow): string {
     csvField(row.businessType),
     csvField(row.accountType),
     csvField(row.accessType),
+    csvField(row.fullName),
   ].join(',');
 }
 
@@ -270,10 +286,14 @@ export function parseCsvLine(line: string): Array<string | null> {
  * CSV → fila validada. Lanza `Error` con un mensaje SIN el contenido de la
  * fila (los mensajes terminan en logs del servidor).
  */
-export function csvLineToWhitelistRow(line: string): WhitelistRow {
+export function csvLineToWhitelistRow(
+  line: string,
+  version: WhitelistCsvVersion = 2,
+): WhitelistRow {
   const fields = parseCsvLine(line);
-  if (fields.length !== WHITELIST_CSV_COLUMNS.length) {
-    throw new Error(`se esperaban ${WHITELIST_CSV_COLUMNS.length} columnas y hay ${fields.length}`);
+  const expected = version === 1 ? WHITELIST_CSV_COLUMNS_V1.length : WHITELIST_CSV_COLUMNS.length;
+  if (fields.length !== expected) {
+    throw new Error(`se esperaban ${expected} columnas y hay ${fields.length}`);
   }
   const [
     accountNumber,
@@ -286,6 +306,7 @@ export function csvLineToWhitelistRow(line: string): WhitelistRow {
     businessType,
     accountType,
     accessType,
+    fullName,
   ] = fields;
 
   const account = normalizeAccountNumber(accountNumber);
@@ -308,5 +329,6 @@ export function csvLineToWhitelistRow(line: string): WhitelistRow {
     businessType: businessType ?? null,
     accountType: accountType ?? null,
     accessType: accessType ?? null,
+    fullName: version === 1 ? null : cleanText(fullName),
   };
 }

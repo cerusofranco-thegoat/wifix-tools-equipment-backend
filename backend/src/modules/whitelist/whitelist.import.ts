@@ -12,14 +12,16 @@ import type { Readable } from 'node:stream';
 import type { Prisma } from '@prisma/client';
 import {
   WHITELIST_CSV_COLUMNS,
-  WHITELIST_CSV_META_PREFIX,
+  WHITELIST_CSV_COLUMNS_V1,
+  WHITELIST_CSV_META_RE,
+  type WhitelistCsvVersion,
   WHITELIST_STATUSES,
   csvLineToWhitelistRow,
   type WhitelistRow,
   type WhitelistStatusValue,
 } from './whitelist.normalize.js';
 
-/** 5.000 filas × 11 columnas = 55.000 parámetros (< 65.535 de Postgres). */
+/** 5.000 filas × 12 columnas = 60.000 parámetros (< 65.535 de Postgres). */
 export const IMPORT_BATCH_SIZE = 5000;
 
 export interface ParsedWhitelistCsv {
@@ -27,6 +29,10 @@ export interface ParsedWhitelistCsv {
   /** Filas de datos leídas (sin cabecera ni metadatos). */
   dataLines: number;
   sourceFiles: string[];
+  /** 2 = con nombre; 1 = formato anterior, sin nombre (fullName queda null). */
+  version: WhitelistCsvVersion;
+  /** Cuentas con fullName no vacío. */
+  withFullName: number;
 }
 
 export class WhitelistCsvError extends Error {}
@@ -41,6 +47,7 @@ export async function parseWhitelistCsv(input: Readable): Promise<ParsedWhitelis
   const seen = new Set<string>();
   let sourceFiles: string[] = [];
   let headerSeen = false;
+  let version: WhitelistCsvVersion = 2;
   let lineNo = 0;
   let dataLines = 0;
   const errors: string[] = [];
@@ -51,14 +58,18 @@ export async function parseWhitelistCsv(input: Readable): Promise<ParsedWhitelis
     const line = lineNo === 1 && rawLine.charCodeAt(0) === 0xfeff ? rawLine.slice(1) : rawLine;
     if (line.trim() === '') continue;
     if (line.startsWith('#')) {
-      if (line.startsWith(WHITELIST_CSV_META_PREFIX)) {
+      if (WHITELIST_CSV_META_RE.test(line)) {
         const match = /sources=([^;]*)/.exec(line);
         if (match?.[1]) sourceFiles = match[1].split('|').filter((s) => s.length > 0);
       }
       continue;
     }
     if (!headerSeen) {
-      if (line.trim() !== WHITELIST_CSV_COLUMNS.join(',')) {
+      // La cabecera decide el formato: v2 (con fullName) o v1 (sin nombre).
+      const header = line.trim();
+      if (header === WHITELIST_CSV_COLUMNS.join(',')) version = 2;
+      else if (header === WHITELIST_CSV_COLUMNS_V1.join(',')) version = 1;
+      else {
         throw new WhitelistCsvError(
           `Cabecera inesperada en la línea ${lineNo}. Se esperaba: ${WHITELIST_CSV_COLUMNS.join(',')}`,
         );
@@ -68,7 +79,7 @@ export async function parseWhitelistCsv(input: Readable): Promise<ParsedWhitelis
     }
     dataLines += 1;
     try {
-      const row = csvLineToWhitelistRow(line);
+      const row = csvLineToWhitelistRow(line, version);
       if (seen.has(row.accountNumber)) throw new Error('accountNumber duplicado');
       seen.add(row.accountNumber);
       rows.push(row);
@@ -82,7 +93,8 @@ export async function parseWhitelistCsv(input: Readable): Promise<ParsedWhitelis
   if (errors.length > 0) {
     throw new WhitelistCsvError(`El CSV tiene filas inválidas:\n  ${errors.join('\n  ')}`);
   }
-  return { rows, dataLines, sourceFiles };
+  const withFullName = rows.reduce((n, r) => n + (r.fullName ? 1 : 0), 0);
+  return { rows, dataLines, sourceFiles, version, withFullName };
 }
 
 export function readWhitelistCsvFile(path: string): Promise<ParsedWhitelistCsv> {

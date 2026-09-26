@@ -31,6 +31,7 @@ function row(n: number, status: WhitelistRow['status'] = 'ACTIVO'): WhitelistRow
     businessType: 'Internet CM',
     accountType: null,
     accessType: null,
+    fullName: n % 2 === 0 ? `NOMBRE SINTETICO ${n}` : null,
   };
 }
 

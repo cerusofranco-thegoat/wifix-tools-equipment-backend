@@ -85,6 +85,7 @@ function saldo(o: {
   negocio?: string;
   city?: string;
   node?: Cell;
+  name?: Cell;
 }): Cell[] {
   return [
     o.negocio ?? 'Internet CM',
@@ -99,11 +100,17 @@ function saldo(o: {
     FAKE_SALDO,
     'Simple',
     'INTERNET',
-    FAKE_NAME,
+    o.name === undefined ? FAKE_NAME : o.name,
   ];
 }
 
-function producto(o: { account: number; status: string; access?: string; tipo?: string }): Cell[] {
+function producto(o: {
+  account: number;
+  status: string;
+  access?: string;
+  tipo?: string;
+  name?: Cell;
+}): Cell[] {
   return [
     1,
     o.account,
@@ -114,7 +121,7 @@ function producto(o: { account: number; status: string; access?: string; tipo?: 
     o.status,
     'Simple',
     'INTERNET',
-    FAKE_NAME,
+    o.name === undefined ? FAKE_NAME : o.name,
     'VAR',
     o.access ?? 'Acceso Completo',
     'NO',
@@ -141,7 +148,7 @@ beforeAll(async () => {
     // Cédula de 9 dígitos (perdió el 0) — un producto ACTIVO.
     saldo({ account: 90000001, doc: 912345678, status: 'ACTIVO' }),
     // Estado de SALDOS SUSPENDIDO, pero tiene un producto ACTIVO → ACTIVO.
-    saldo({ account: 90000002, doc: 990000000001, status: 'SUSPENDIDO' }),
+    saldo({ account: 90000002, doc: 990000000001, status: 'SUSPENDIDO', name: null }),
     // Sin productos; documento de 8 dígitos → no normalizado; encoding roto.
     saldo({
       account: 90000003,
@@ -149,6 +156,7 @@ beforeAll(async () => {
       status: 'ORDENADO',
       negocio: `Telefon${BROKEN}a Locutorio`,
       node: 4321,
+      name: '  Persona   Con\tEspacios ',
     }),
     // Estado desconocido y sin productos → se descarta.
     saldo({ account: 90000004, doc: 1712345678, status: 'RARO' }),
@@ -168,7 +176,13 @@ beforeAll(async () => {
       access: 'Sin Registro',
       tipo: 'Empresarial',
     }),
-    producto({ account: 90000002, status: 'ACTIVO', access: 'Mora Dia 31', tipo: 'Hoteles' }),
+    producto({
+      account: 90000002,
+      status: 'ACTIVO',
+      access: 'Mora Dia 31',
+      tipo: 'Hoteles',
+      name: 'NOMBRE PRODUCTO ACTIVO',
+    }),
     producto({ account: 90000002, status: 'SUSPENDIDO', access: 'Suspendido', tipo: 'TDD' }),
   ]);
 
@@ -192,15 +206,15 @@ describe('whitelist-build', () => {
   it('cabecera = exactamente las columnas permitidas; metadatos solo con nombres de archivo', () => {
     const lines = csv.trimEnd().split('\n');
     expect(lines[0]).toMatch(
-      /^#wifix-whitelist v1; sources=SALDOS_SINTETICO\.xlsx\|PRODUCTOS_SINTETICO\.xlsx; builtAt=2026-01-01T00:00:00\.000Z$/,
+      /^#wifix-whitelist v2; sources=SALDOS_SINTETICO\.xlsx\|PRODUCTOS_SINTETICO\.xlsx; builtAt=2026-01-01T00:00:00\.000Z$/,
     );
     expect(lines[1]).toBe(WHITELIST_CSV_COLUMNS.join(','));
     expect(csv).not.toContain(dir); // nunca rutas locales
     expect(sourceFiles).toEqual(['SALDOS_SINTETICO.xlsx', 'PRODUCTOS_SINTETICO.xlsx']);
   });
 
-  it('MINIMIZACIÓN: ni nombre, ni dirección, ni saldo, ni coordenadas', () => {
-    expect(csv).not.toContain(FAKE_NAME);
+  it('MINIMIZACIÓN: el nombre sí (v2), pero ni dirección, ni saldo, ni coordenadas', () => {
+    expect(csv).toContain(FAKE_NAME);
     expect(csv).not.toContain(FAKE_ADDRESS);
     expect(csv).not.toContain(String(FAKE_SALDO));
     expect(csv).not.toContain(String(FAKE_COORD));
@@ -218,7 +232,17 @@ describe('whitelist-build', () => {
       businessType: 'Internet CM',
       accountType: 'Residencial',
       accessType: 'Acceso Completo',
+      fullName: FAKE_NAME,
     });
+  });
+
+  it('FULLNAME: SALDOS primero; si falta, el del producto de mayor prioridad', () => {
+    expect(rows.get('90000002')?.fullName).toBe('NOMBRE PRODUCTO ACTIVO');
+    expect(stats.fullName).toEqual({ withName: 3, withoutName: 0, fromProductos: 1 });
+  });
+
+  it('FULLNAME: se limpia (trim, espacios colapsados, sin caracteres de control)', () => {
+    expect(rows.get('90000003')?.fullName).toBe('Persona Con Espacios');
   });
 
   it('varios productos: estado por prioridad y tipos del producto de mayor prioridad', () => {

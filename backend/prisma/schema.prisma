@@ -385,8 +385,9 @@ model RetiredEquipment {
 // cada import (`prisma/import-whitelist.ts`), a partir de un CSV minimizado que
 // se construye en local (`scripts/whitelist-build.ts`).
 //
-// MINIMIZACIÓN (LOPDP): solo lo imprescindible para validar la cuenta. NADA de
-// nombre, dirección, coordenadas ni saldo. `documentId` se guarda para una
+// MINIMIZACIÓN (LOPDP): solo lo imprescindible para validar la cuenta y, desde
+// 2026-09-26 (decisión de Franco), el nombre como respaldo de client-profile.
+// NADA de dirección, coordenadas ni saldo. `documentId` se guarda para una
 // futura verificación cruzada y NUNCA sale en una respuesta de la API.
 
 enum WhitelistStatus {
@@ -412,6 +413,9 @@ model CustomerWhitelist {
   businessType       String?         @map("business_type")
   accountType        String?         @map("account_type")
   accessType         String?         @map("access_type")
+  /// FULLNAME de la planilla. Solo respaldo de client-profile cuando FSM no
+  /// trae identidad; la ruta /accounts/:n/whitelist NO lo expone.
+  fullName           String?         @map("full_name")
   importedAt         DateTime        @map("imported_at") @db.Timestamptz(6)
 
   @@index([documentId])

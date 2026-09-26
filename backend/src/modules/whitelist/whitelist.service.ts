@@ -2,6 +2,8 @@
 //
 // La lista se REEMPLAZA completa con `prisma/import-whitelist.ts`. Esta capa
 // solo lee, y NUNCA devuelve `documentId`: el repositorio ni siquiera lo trae.
+// El nombre (`fullName`) tampoco sale por esta ruta: solo lo consume
+// client-profile como respaldo (`findWhitelistFullName`).
 
 import { prisma } from '../../db/prisma.js';
 import { env } from '../../config/env.js';
@@ -22,6 +24,8 @@ export interface WhitelistRepository {
   findEntry(accountNumber: string): Promise<WhitelistEntry | null>;
   /** Fecha del último import; `null` si nunca se importó. */
   latestImportAt(): Promise<Date | null>;
+  /** Nombre del cliente según la planilla; `null` si no está o no tiene. */
+  findFullName(accountNumber: string): Promise<string | null>;
 }
 
 export const prismaWhitelistRepository: WhitelistRepository = {
@@ -47,6 +51,13 @@ export const prismaWhitelistRepository: WhitelistRepository = {
       select: { importedAt: true },
     });
     return last?.importedAt ?? null;
+  },
+  async findFullName(accountNumber) {
+    const row = await prisma.customerWhitelist.findUnique({
+      where: { accountNumber },
+      select: { fullName: true },
+    });
+    return row?.fullName ?? null;
   },
 };
 
@@ -145,4 +156,24 @@ export async function checkWhitelist(accountNumber: string): Promise<WhitelistCh
     };
   }
   return { accountNumber, listed: false, importedAt: importedAt.toISOString(), enforce };
+}
+
+/**
+ * Nombre de respaldo para client-profile (FSM sin identidad). Normaliza la
+ * cuenta igual que el import. Si la base falla devuelve `null`: el respaldo
+ * nunca puede tumbar la pantalla de Datos Personales.
+ */
+export async function findWhitelistFullName(
+  accountNumber: string,
+  onError?: (err: unknown) => void,
+): Promise<string | null> {
+  const account = normalizeAccountNumber(accountNumber);
+  if (!account) return null;
+  try {
+    const name = await repository.findFullName(account);
+    return name && name.trim().length > 0 ? name.trim() : null;
+  } catch (err) {
+    onError?.(err);
+    return null;
+  }
 }

@@ -134,6 +134,7 @@ describe('CSV', () => {
     businessType: 'Internet CM',
     accountType: 'Residencial',
     accessType: null,
+    fullName: 'NOMBRE, "SINTÉTICO"',
   };
 
   it('ida y vuelta conserva comas, comillas y nulls', () => {
@@ -151,5 +152,14 @@ describe('CSV', () => {
     );
     expect(() => csvLineToWhitelistRow(base.replace('SUSPENDIDO', 'CANCELADO'))).toThrow(/status/);
     expect(() => csvLineToWhitelistRow(`${base},"extra"`)).toThrow(/columnas/);
+  });
+
+  it('formato v1 (sin fullName) sigue siendo legible: fullName null', () => {
+    // v1 = la misma fila sin la última columna (fullName vacío deja una coma final).
+    const v1 = whitelistRowToCsv({ ...row, fullName: null }).slice(0, -1);
+    expect(csvLineToWhitelistRow(v1, 1)).toEqual({ ...row, fullName: null });
+    // Una fila v1 leída como v2 (o al revés) falla por número de columnas.
+    expect(() => csvLineToWhitelistRow(v1, 2)).toThrow(/columnas/);
+    expect(() => csvLineToWhitelistRow(whitelistRowToCsv(row), 1)).toThrow(/columnas/);
   });
 });

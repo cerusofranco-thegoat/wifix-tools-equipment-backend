@@ -806,6 +806,17 @@ paths:
         siguen viniendo del mock de Comarch, porque `fsm-data-ms` no los expone.
         El bloque `sources` dice, campo por campo, de dónde salió cada dato.
         Lo editado con el PUT manda sobre FSM y se marca como `MOCK`.
+
+
+        **Con `CONNECTOR_MODE_FSM=real` la identidad nunca se inventa**
+        (2026-09-26): lo que FSM no trae va `null` con `sources.<campo>: NONE`.
+        El nombre tiene respaldo en la whitelist de clientes Xtrim
+        (`sources.fullName: WHITELIST`). Si FSM no trajo identidad alguna, la
+        respuesta es 200 con `degraded.reason: FSM_NO_DATA` (también en el
+        header `X-Wifix-Degraded`) y mensaje `Sin datos en FSM para esta
+        cuenta.` o `Sin datos en FSM para esta cuenta; nombre tomado de la base
+        de clientes Xtrim.`. Plan y velocidad siguen `MOCK`. En `mock` y
+        `fixture` no cambia nada (404 si la cuenta no tiene órdenes).
       operationId: getClientProfile
       parameters:
         - $ref: '#/components/parameters/BrandHeader'
@@ -817,12 +828,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientProfile'
+              examples:
+                fsmNoDataWhitelist:
+                  summary: FSM real sin órdenes, nombre desde la whitelist
+                  value:
+                    accountNumber: '105450235'
+                    fullName: NOMBRE DEL CLIENTE
+                    address: null
+                    phones: null
+                    planName: Plan Hogar 300
+                    contractedDownloadMbps: 300
+                    contractedUploadMbps: 150
+                    email: null
+                    latitude: null
+                    longitude: null
+                    sources:
+                      fullName: WHITELIST
+                      address: NONE
+                      phones: NONE
+                      email: NONE
+                      latitude: NONE
+                      longitude: NONE
+                      planName: MOCK
+                      contractedDownloadMbps: MOCK
+                      contractedUploadMbps: MOCK
+                    degraded:
+                      reason: FSM_NO_DATA
+                      message: Sin datos en FSM para esta cuenta; nombre tomado de la base de clientes Xtrim.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: >-
-            La cuenta no existe en FSM (`/account/process` devolvió una lista
-            de órdenes vacía).
+            Solo en `mock`/`fixture`: la cuenta no existe en FSM
+            (`/account/process` devolvió una lista de órdenes vacía). Con FSM
+            `real` nunca es 404 (ver `FSM_NO_DATA`).
           content:
             application/json:
               schema:
@@ -838,7 +877,10 @@ paths:
         Módulo de actualización de datos (campo 4). **No cambia con la
         integración FSM**: `fsm-data-ms` es de solo lectura, así que la edición
         se guarda en Comarch y el cambio NO viaja a la operadora. Devuelve el
-        mismo shape que el GET, con `sources` en `MOCK` para lo editado.
+        mismo shape que el GET, con `sources` en `MOCK` para lo editado. Con
+        FSM `real`, lo no editado se compone como en el GET (FSM → whitelist
+        para el nombre → `null`/`NONE`), nunca con el mock; si FSM falla, lo no
+        editado va `null` y el guardado no falla.
       operationId: updateClientProfile
       requestBody:
         required: true
@@ -2100,7 +2142,11 @@ components:
       properties:
         reason:
           type: string
-          enum: [FSM_AUTH, FSM_UNAVAILABLE, SOURCE_FALLBACK, TRUNCATED]
+          enum: [FSM_AUTH, FSM_UNAVAILABLE, FSM_NO_DATA, SOURCE_FALLBACK, TRUNCATED]
+          description: >
+            `FSM_NO_DATA` (client-profile con FSM real): FSM no trajo identidad
+            para la cuenta; los campos de identidad van `null` (`sources`
+            `NONE`) o, el nombre, desde la whitelist (`WHITELIST`).
         message:
           type: string
           description: Texto en español, listo para mostrar.
@@ -2820,13 +2866,22 @@ components:
           type: string
         fullName:
           type: string
-          description: Nombres y apellidos (campo 1).
+          nullable: true
+          description: >
+            Nombres y apellidos (campo 1). Con FSM `real` puede venir de la
+            whitelist de clientes (`sources.fullName: WHITELIST`) o ser `null`
+            (`NONE`) si ni FSM ni la whitelist lo tienen. En `mock`/`fixture`
+            nunca es null.
         address:
           type: string
-          description: Dirección (campo 2).
+          nullable: true
+          description: Dirección (campo 2). `null` con FSM `real` sin dato (`NONE`).
         phones:
           type: array
-          description: Teléfonos (campo 3).
+          nullable: true
+          description: >
+            Teléfonos (campo 3). `null` con FSM `real` sin dato (`NONE`); en
+            `mock`/`fixture` siempre es un array.
           items:
             type: string
         planName:
@@ -2859,12 +2914,15 @@ components:
           type: object
           description: >
             De dónde salió cada campo. `FSM` = dato real de la operadora,
-            `MOCK` = simulado (o editado a mano con el PUT), `COMARCH` = TYTAN.
-            La UI marca visualmente lo que no es `FSM`. Aditivo: quien lo ignore
-            sigue funcionando.
+            `MOCK` = simulado (o editado a mano con el PUT), `COMARCH` = TYTAN,
+            `WHITELIST` = base de clientes Xtrim importada (solo `fullName`,
+            con FSM `real` sin nombre), `NONE` = sin dato: el campo va `null`
+            (solo con FSM `real`, que nunca inventa identidad). La UI marca
+            visualmente lo que no es `FSM`. Aditivo: quien lo ignore sigue
+            funcionando.
           additionalProperties:
             type: string
-            enum: [FSM, MOCK, COMARCH]
+            enum: [FSM, MOCK, COMARCH, WHITELIST, NONE]
           example:
             fullName: FSM
             address: FSM
@@ -2875,6 +2933,8 @@ components:
             planName: MOCK
             contractedDownloadMbps: MOCK
             contractedUploadMbps: MOCK
+        degraded:
+          $ref: '#/components/schemas/Degraded'
 
     ClientProfileUpdate:
       type: object
@@ -2912,7 +2972,17 @@ components:
       properties:
         clientName:
           type: string
-          description: Nombre del cliente según la orden más reciente. `""` si FSM no lo trajo.
+          description: >
+            Nombre del cliente según la orden más reciente de FSM. Con FSM
+            `real`, si FSM no lo trae se usa el de la whitelist de clientes
+            Xtrim (mismo respaldo que client-profile). `""` si no hay ninguno
+            (nunca el nombre simulado del mock).
+        clientNameSource:
+          type: string
+          enum: [FSM, WHITELIST, NONE]
+          description: >
+            De dónde salió `clientName`. `WHITELIST` solo con FSM `real`;
+            `NONE` ⇔ `clientName` es `""`.
         accounts:
           type: array
           items:

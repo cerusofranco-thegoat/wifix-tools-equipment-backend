@@ -23,7 +23,7 @@ const originalEnv = {
 
 /** Doble del repositorio. Guarda un documentId para probar que NUNCA sale. */
 function fakeRepo(
-  entries: Array<WhitelistEntry & { documentId: string }>,
+  entries: Array<WhitelistEntry & { documentId: string; fullName?: string }>,
   importedAt: Date | null,
 ): WhitelistRepository & { lookups: string[] } {
   const lookups: string[] = [];
@@ -36,6 +36,9 @@ function fakeRepo(
     },
     async latestImportAt() {
       return importedAt;
+    },
+    async findFullName(accountNumber) {
+      return entries.find((e) => e.accountNumber === accountNumber)?.fullName ?? null;
     },
   };
 }
@@ -50,6 +53,8 @@ const LISTED = {
   accountType: 'Residencial',
   accessType: 'Mora Dia 31',
   importedAt: IMPORTED_AT,
+  // El repositorio podría traerlo: la ruta NO debe exponerlo.
+  fullName: 'NOMBRE OCULTO SINTETICO',
 };
 
 async function check(account: string, headers: Record<string, string> = authHeaders) {
@@ -102,6 +107,8 @@ describe('GET /accounts/:n/whitelist', () => {
     });
     expect(res.body).not.toHaveProperty('documentId');
     expect(res.raw).not.toContain('0900000001');
+    expect(res.body).not.toHaveProperty('fullName');
+    expect(res.raw).not.toContain('NOMBRE OCULTO SINTETICO');
   });
 
   it('normaliza la cuenta: espacios y ceros a la izquierda', async () => {

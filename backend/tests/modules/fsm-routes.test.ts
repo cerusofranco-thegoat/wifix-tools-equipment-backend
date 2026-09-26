@@ -20,6 +20,7 @@ import {
 } from '../../src/connectors/http/fsm-token.js';
 import { resetFsmLimiter } from '../../src/connectors/http/fsm-api.js';
 import { getFsmConnector, resetNapRegistry } from '../../src/connectors/fsm/index.js';
+import { setWhitelistRepository } from '../../src/modules/whitelist/whitelist.service.js';
 
 const PREFIX = '/herramientas/v1';
 
@@ -35,6 +36,12 @@ const originalEnv = {
 };
 
 beforeAll(async () => {
+  // Sin base de datos: la whitelist (respaldo de nombre en FSM real) va vacía.
+  setWhitelistRepository({
+    findEntry: async () => null,
+    latestImportAt: async () => null,
+    findFullName: async () => null,
+  });
   const ctx = await buildFsmTestApp();
   app = ctx.app;
   authHeaders = ctx.authHeaders;
@@ -43,6 +50,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
   Object.assign(env, originalEnv);
+  setWhitelistRepository(null);
 });
 
 beforeEach(() => {
@@ -1090,10 +1098,10 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(fetchSpy.calls).toHaveLength(1);
   });
 
-  it('client-profile NO devuelve 404 cuando FSM real responde vacío: 200 degradado', async () => {
+  it('client-profile NO devuelve 404 cuando FSM real responde vacío: 200 degradado sin identidad inventada', async () => {
     // FSM devuelve `data: []` tanto para una cuenta inexistente como para una
     // cuenta sin órdenes. Un 404 acá dejaba al técnico sin la pantalla de Datos
-    // Personales completa, así que se compone con el mock y se avisa.
+    // Personales completa: 200 con identidad `null` (NUNCA el mock) y aviso.
     useRealFsm(() => ({ status: 200, body: { data: [] } }));
     const res = await app.inject({
       method: 'GET',
@@ -1103,11 +1111,22 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.accountNumber).toBe('00000000');
-    expect(body.degraded.reason).toBe('FSM_UNAVAILABLE');
-    expect(body.sources).toMatchObject({ fullName: 'MOCK', address: 'MOCK', phones: 'MOCK' });
+    expect(body.degraded).toEqual({
+      reason: 'FSM_NO_DATA',
+      message: 'Sin datos en FSM para esta cuenta.',
+    });
+    expect(body).toMatchObject({
+      fullName: null,
+      address: null,
+      phones: null,
+      email: null,
+      latitude: null,
+      longitude: null,
+    });
+    expect(body.sources).toMatchObject({ fullName: 'NONE', address: 'NONE', phones: 'NONE', planName: 'MOCK' });
     const header = res.headers['x-wifix-degraded'];
     expect(typeof header).toBe('string');
-    expect(JSON.parse(decodeURIComponent(String(header))).reason).toBe('FSM_UNAVAILABLE');
+    expect(JSON.parse(decodeURIComponent(String(header))).reason).toBe('FSM_NO_DATA');
   });
 
   it('client-profile con FSM caído (500) devuelve 503 UPSTREAM_UNAVAILABLE, no 404', async () => {

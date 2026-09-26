@@ -7,7 +7,8 @@
 // En el servidor corre en el contenedor `migrate` (perfil tools); el CSV entra
 // por stdin para no tener que montarlo (ver DEPLOY.md, "Whitelist de clientes").
 //
-// El CSV lo genera `scripts/whitelist-build.ts` en local. Se valida COMPLETO
+// El CSV lo genera `scripts/whitelist-build.ts` en local (formato v2, con
+// nombre). También acepta el formato v1 (sin nombre): avisa y deja fullName null. Se valida COMPLETO
 // antes de tocar la base; luego DELETE + INSERT por lotes + registro en
 // `whitelist_imports`, todo en una transacción. Idempotente.
 //
@@ -41,8 +42,15 @@ async function main(): Promise<void> {
     file === '-' ? await parseWhitelistCsv(process.stdin) : await readWhitelistCsvFile(file);
   console.log(
     `[whitelist] CSV válido: ${parsed.dataLines} filas, ${parsed.rows.length} cuentas ` +
-      `(origen: ${parsed.sourceFiles.join(', ') || 'sin metadatos'}).`,
+      `(origen: ${parsed.sourceFiles.join(', ') || 'sin metadatos'}; formato v${parsed.version}, ` +
+      `${parsed.withFullName} con nombre).`,
   );
+  if (parsed.version === 1) {
+    console.warn(
+      '[whitelist] AVISO: CSV v1 (sin nombre). Las cuentas quedan con fullName null y ' +
+        'client-profile no tendrá nombre de respaldo. Regenerar con scripts/whitelist-build.ts.',
+    );
+  }
   if (parsed.rows.length === 0) {
     console.error('[whitelist] El CSV no tiene cuentas: no se reemplaza la lista.');
     process.exit(1);

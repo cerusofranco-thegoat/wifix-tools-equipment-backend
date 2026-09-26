@@ -16,7 +16,12 @@ export type AccountStatusName =
   | 'PENDIENTE'
   | 'DESCONOCIDA';
 
-export type DegradedReason = 'FSM_AUTH' | 'FSM_UNAVAILABLE' | 'SOURCE_FALLBACK' | 'TRUNCATED';
+export type DegradedReason =
+  | 'FSM_AUTH'
+  | 'FSM_UNAVAILABLE'
+  | 'FSM_NO_DATA'
+  | 'SOURCE_FALLBACK'
+  | 'TRUNCATED';
 
 /**
  * Aviso de respuesta servida con una fuente alternativa o incompleta. NO es un

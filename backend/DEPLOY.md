@@ -305,8 +305,11 @@ cada refresco.
 coordenadas y saldo de ~300k clientes: **nunca** suben al servidor ni al repo
 (`.gitignore` y `.dockerignore` bloquean `*.xlsx` y `whitelist*.csv`). En local
 se reducen a un CSV minimizado con solo: cuenta, cédula/RUC normalizada, estado,
-ciudad, nodo, tipo de negocio, tipo de cuenta, tipo de acceso y CPARTY_ID. La
-cédula/RUC se guarda en la base pero la API **no la devuelve nunca**.
+ciudad, nodo, tipo de negocio, tipo de cuenta, tipo de acceso, CPARTY_ID y
+**nombre** (desde el formato v2, 2026-09-26). Nada de dirección, coordenadas ni
+saldo. La cédula/RUC se guarda en la base pero la API **no la devuelve nunca**;
+el nombre tampoco sale por `/whitelist`: solo lo usa client-profile como
+respaldo (ver 10.4).
 
 ### 10.1 Construir el CSV (en local, fuera del repo)
 
@@ -318,8 +321,8 @@ npx tsx scripts/whitelist-build.ts \
   --out "C:/Users/<usuario>/wifix-privado/whitelist.csv"
 ```
 
-Lee en streaming (~15 s), imprime **solo conteos agregados** (cuentas, por
-estado, documentos normalizados…) y escribe el CSV (~34 MB). Reglas:
+Lee en streaming (~15-30 s), imprime **solo conteos agregados** (cuentas, por
+estado, documentos normalizados, con nombre…) y escribe el CSV. Reglas:
 
 - Base = SALDOS (1 fila por cuenta); PRODUCTOS aporta tipo de cuenta y de acceso.
 - Estado con varios productos: ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE; los
@@ -327,6 +330,11 @@ estado, documentos normalizados…) y escribe el CSV (~34 MB). Reglas:
 - Cédula de 9 dígitos → 10 con cero inicial; RUC de 12 → 13. Otros largos
   (7-8 dígitos, pasaportes) quedan tal cual con `documentNormalized=false`.
 - ACCOUNT_ID sin ceros a la izquierda (la ruta normaliza igual lo que se teclea).
+- Nombre: FULLNAME de SALDOS; si viene vacío, el del producto de mayor
+  prioridad. Se limpia igual que el resto del texto (encoding, espacios
+  colapsados, sin caracteres de control).
+- Formato **v2** (columna final `fullName`). El import también acepta el v1
+  (sin nombre) pero avisa: esas cuentas quedan sin nombre de respaldo.
 
 Si el script dice que "guarda las hojas antes de sharedStrings.xml", abrir la
 planilla en Excel y guardarla de nuevo.
@@ -386,3 +394,15 @@ docker compose -f docker-compose.prod.yml exec postgres psql -U wifix -d wifix_t
 
 Sin ningún import la ruta responde `listed:null, reason:WHITELIST_EMPTY,
 enforce:false`: la app no bloquea a nadie hasta que haya lista.
+
+### 10.4 Nombre de respaldo en client-profile (FSM `real`)
+
+Con `CONNECTOR_MODE_FSM=real`, `GET /accounts/{n}/client-profile` **nunca**
+devuelve identidad inventada: lo que FSM no trae va `null` con
+`sources.<campo>='NONE'`. Si FSM no trae nombre y la cuenta está en la
+whitelist con nombre, `fullName` sale de ahí (`sources.fullName='WHITELIST'`).
+Cuando FSM no devolvió identidad, la respuesta trae
+`degraded:{reason:'FSM_NO_DATA', …}`. Plan y velocidad siguen del mock.
+
+Requiere haber aplicado la migración `20260926150000_add_whitelist_full_name`
+**y** haber importado un CSV v2 (con un import v1 no hay nombre de respaldo).

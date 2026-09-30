@@ -288,8 +288,24 @@ describe('otros modos y consumidores', () => {
       headers: authHeaders,
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ found: false, reason: 'NO_COORDS', nap: null });
+    // NAP asignada siempre: la de relleno es SIMULADA y lo dice; nunca pasa por real.
+    expect(res.json()).toMatchObject({
+      found: true,
+      simulated: true,
+      source: 'SIMULATED',
+      simulationReason: 'NO_COORDS',
+      nap: { source: 'SIMULATED', napId: null },
+      equipmentId: null,
+    });
     expect(fetchSpy.calls.every((c) => c.url.includes('/account/process'))).toBe(true);
+
+    // Estricto (`fallback=none`): igual que antes, sin inventar nada.
+    const strict = await app.inject({
+      method: 'GET',
+      url: `${PREFIX}/accounts/${ACCOUNT}/current-nap?fallback=none`,
+      headers: authHeaders,
+    });
+    expect(strict.json()).toMatchObject({ found: false, reason: 'NO_COORDS', nap: null });
   });
 
   async function contractStatus(account: string, processBody: unknown) {

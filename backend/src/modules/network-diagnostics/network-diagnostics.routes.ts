@@ -63,6 +63,9 @@ const currentNapQuerySchema = z
     lat: z.preprocess(blankAsUndefined, z.coerce.number().gte(-90).lte(90).optional()),
     lng: z.preprocess(blankAsUndefined, z.coerce.number().gte(-180).lte(180).optional()),
     brand: z.string().optional(),
+    // `simulated` (default): si no se identifica la NAP real, la asignada
+    // simulada. `none`: comportamiento estricto (found:false / 503).
+    fallback: z.preprocess(blankAsUndefined, z.enum(['simulated', 'none']).optional()),
   })
   .refine((q) => (q.lat === undefined) === (q.lng === undefined), {
     message: 'lat y lng van juntos: envía ambos o ninguno.',
@@ -167,9 +170,10 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
   // NAP hasta encontrarla. Ver `current-nap.service.ts` para el presupuesto.
   app.get('/accounts/:accountNumber/current-nap', async (request, reply) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
-    const { lat, lng, brand } = parseQuery(currentNapQuerySchema, request.query);
+    const { lat, lng, brand, fallback } = parseQuery(currentNapQuerySchema, request.query);
     const result = await findCurrentNap(accountNumber, {
       brand: brandFromRequest(request, brand),
+      fallback: fallback ?? 'simulated',
       ...(lat !== undefined && lng !== undefined
         ? { coords: { latitude: lat, longitude: lng } }
         : {}),

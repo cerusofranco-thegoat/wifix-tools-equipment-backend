@@ -7,6 +7,9 @@
 //   3. Fuente TEC → NOT_SUPPORTED sin gastar una sola llamada.
 //   4. Un fallo de token es 503 UPSTREAM_AUTH_ERROR, NUNCA 401.
 //   5. En mock hay cuentas que se encuentran y cuentas que no.
+//   6. NAP ASIGNADA SIEMPRE: si no se identifica o FSM falla, NAP simulada
+//      determinística por cuenta (`simulated:true`, `source:'SIMULATED'`) sin
+//      llamadas extra. `?fallback=none` conserva el comportamiento estricto.
 //
 // No se usa base de datos y NUNCA se sale a la red: `fetch` está reemplazado.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
@@ -27,6 +30,7 @@ import { resetNapRegistry } from '../../src/connectors/fsm/index.js';
 import {
   currentNapCacheKey,
   normalizeAccount,
+  simulatedCurrentNap,
 } from '../../src/modules/network-diagnostics/current-nap.service.js';
 
 const PREFIX = '/herramientas/v1';
@@ -179,9 +183,13 @@ describe('GET /accounts/{n}/current-nap — real', () => {
       clientStatus: { code: 'S', name: 'SUSPENDIDA', description: 'Suspendido' },
       searchedNaps: 1,
       brand: 'telenews',
+      source: 'FSM',
+      simulated: false,
+      assignment: 'CONTRACTED',
     });
     expect(body.reason).toBeUndefined();
     expect(body.degraded).toBeUndefined();
+    expect(body.simulationReason).toBeUndefined();
 
     // process + nearest + accounts(35874) + status. Ni 35876 ni 35873.
     const called = paths(fetchSpy);
@@ -202,9 +210,9 @@ describe('GET /accounts/{n}/current-nap — real', () => {
     ]);
   });
 
-  it('no encontrada: 1 + 1 + 3 llamadas, reason NOT_FOUND y sin consultar estado', async () => {
+  it('no encontrada (fallback=none): 1 + 1 + 3 llamadas, reason NOT_FOUND y sin consultar estado', async () => {
     const fetchSpy = useRealFsm(responder({ targetNap: null }));
-    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=none`);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
@@ -217,14 +225,17 @@ describe('GET /accounts/{n}/current-nap — real', () => {
       searchedNaps: 3,
       reason: 'NOT_FOUND',
       brand: 'telenews',
+      source: null,
+      simulated: false,
+      assignment: null,
     });
     expect(fetchSpy.calls).toHaveLength(5);
     expect(fetchSpy.calls.some((c) => c.url.includes('/account/status'))).toBe(false);
   });
 
-  it('sin coordenadas del cliente: NO_COORDS tras UNA sola llamada', async () => {
+  it('sin coordenadas del cliente (fallback=none): NO_COORDS tras UNA sola llamada', async () => {
     const fetchSpy = useRealFsm(responder({ process: PROCESS_NO_COORDS }));
-    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=none`);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ found: false, reason: 'NO_COORDS', searchedNaps: 0, nap: null });
@@ -305,11 +316,11 @@ describe('GET /accounts/{n}/current-nap — real', () => {
     expect(after).toBeGreaterThan(before);
   });
 
-  it('token rechazado: 503 UPSTREAM_AUTH_ERROR, nunca 401 (con y sin override)', async () => {
+  it('token rechazado (fallback=none): 503 UPSTREAM_AUTH_ERROR, nunca 401 (con y sin override)', async () => {
     useRealFsm(() => ({ status: 401, raw: 'Unauthorized' }));
     for (const url of [
-      `/accounts/${ACCOUNT}/current-nap`,
-      `/accounts/${ACCOUNT}/current-nap?lat=-2.1&lng=-79.9`,
+      `/accounts/${ACCOUNT}/current-nap?fallback=none`,
+      `/accounts/${ACCOUNT}/current-nap?lat=-2.1&lng=-79.9&fallback=none`,
     ]) {
       resetHttpCache();
       resetFsmTokenCache();
@@ -321,11 +332,11 @@ describe('GET /accounts/{n}/current-nap — real', () => {
     }
   });
 
-  it('sin token configurado: 503 MISSING y CERO llamadas', async () => {
+  it('sin token configurado (fallback=none): 503 MISSING y CERO llamadas', async () => {
     Object.assign(env, { CONNECTOR_MODE_FSM: 'real' });
     resetFsmTokenCache();
     spy = installFetchSpy(() => ({ status: 200, body: { data: [] } }));
-    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=none`);
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: 'UPSTREAM_AUTH_ERROR', meta: { reason: 'MISSING' } });
     expect(spy.calls).toHaveLength(0);
@@ -333,10 +344,10 @@ describe('GET /accounts/{n}/current-nap — real', () => {
 });
 
 describe('GET /accounts/{n}/current-nap — fuente TEC', () => {
-  it('NAPS_PRIMARY_SOURCE=tec: NOT_SUPPORTED sin una sola llamada', async () => {
+  it('NAPS_PRIMARY_SOURCE=tec (fallback=none): NOT_SUPPORTED sin una sola llamada', async () => {
     Object.assign(env, { NAPS_PRIMARY_SOURCE: 'tec' });
     const fetchSpy = useRealFsm(responder({ targetNap: 35874 }));
-    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=none`);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
@@ -349,6 +360,23 @@ describe('GET /accounts/{n}/current-nap — fuente TEC', () => {
       searchedNaps: 0,
       reason: 'NOT_SUPPORTED',
       brand: 'telenews',
+      source: null,
+      simulated: false,
+      assignment: null,
+    });
+    expect(fetchSpy.calls).toHaveLength(0);
+  });
+
+  it('NAPS_PRIMARY_SOURCE=tec (default): NAP simulada NOT_SUPPORTED, sin una sola llamada', async () => {
+    Object.assign(env, { NAPS_PRIMARY_SOURCE: 'tec' });
+    const fetchSpy = useRealFsm(responder({ targetNap: 35874 }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      found: true,
+      simulated: true,
+      source: 'SIMULATED',
+      simulationReason: 'NOT_SUPPORTED',
     });
     expect(fetchSpy.calls).toHaveLength(0);
   });
@@ -379,8 +407,8 @@ describe('GET /accounts/{n}/current-nap — mock', () => {
     expect(res.json()).toMatchObject({ found: true, searchedNaps: 1 });
   });
 
-  it('otra cuenta no se encuentra: NOT_FOUND tras revisar las NAPs cercanas', async () => {
-    const res = await get('/accounts/12345678/current-nap');
+  it('otra cuenta no se encuentra (fallback=none): NOT_FOUND tras revisar las NAPs cercanas', async () => {
+    const res = await get('/accounts/12345678/current-nap?fallback=none');
     const body = res.json();
     expect(body).toMatchObject({ found: false, reason: 'NOT_FOUND', nap: null, clientStatus: null });
     expect(body.searchedNaps).toBeGreaterThanOrEqual(2);
@@ -413,12 +441,140 @@ describe('GET /accounts/{n}/current-nap — mock', () => {
 });
 
 describe('GET /accounts/{n}/current-nap — fixture', () => {
-  it('35070291 no está en chain-nap-accounts.json: NOT_FOUND, sin red', async () => {
+  it('35070291 no está en chain-nap-accounts.json (fallback=none): NOT_FOUND, sin red', async () => {
     Object.assign(env, { CONNECTOR_MODE_FSM: 'fixture' });
     spy = installFetchSpy(() => ({ status: 500, raw: 'el modo fixture no puede usar la red' }));
-    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=none`);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ found: false, reason: 'NOT_FOUND', searchedNaps: 3 });
     expect(spy.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NAP asignada SIEMPRE: simulada determinística cuando no hay real
+// ---------------------------------------------------------------------------
+
+function haversine(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }): number {
+  const R = 6_371_000;
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+describe('GET /accounts/{n}/current-nap — NAP asignada simulada', () => {
+  it('real NOT_FOUND: NAP simulada cerca del domicilio, SIN llamadas extra', async () => {
+    const fetchSpy = useRealFsm(responder({ targetNap: null }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toMatchObject({
+      accountNumber: ACCOUNT,
+      found: true,
+      simulated: true,
+      source: 'SIMULATED',
+      assignment: 'CONTRACTED',
+      simulationReason: 'NOT_FOUND',
+      equipmentId: null,
+      searchedNaps: 0,
+      brand: 'telenews',
+      clientStatus: { code: 'A', name: 'ACTIVA' },
+      nap: { napId: null, source: 'SIMULATED' },
+    });
+    expect(body.reason).toBeUndefined();
+    expect(body.degraded).toBeUndefined();
+    expect(body.nap.napCode).toMatch(/^PL\d{2}(KD|AB|XR|MN)\d$/);
+    expect(body.portNumber).toBeGreaterThanOrEqual(1);
+    expect(body.portNumber).toBeLessThanOrEqual(body.nap.occupiedPorts);
+    expect(body.nap.totalPorts).toBe(body.nap.occupiedPorts > 8 ? 16 : 8);
+    expect(body.nap.freePorts).toBe(body.nap.totalPorts - body.nap.occupiedPorts);
+    // Cerca del domicilio que devolvió FSM (15-120 m).
+    const d = haversine(
+      { latitude: PROCESS.data[0]!.latitude, longitude: PROCESS.data[0]!.longitude },
+      { latitude: body.nap.latitude, longitude: body.nap.longitude },
+    );
+    expect(d).toBeGreaterThan(10);
+    expect(d).toBeLessThan(125);
+    // Mismo presupuesto que la búsqueda real: process + nearest + 3 accounts.
+    expect(fetchSpy.calls).toHaveLength(5);
+  });
+
+  it('determinística: misma cuenta → misma NAP (y 0035070291 == 35070291)', async () => {
+    const a = await get('/accounts/12345678/current-nap');
+    resetHttpCache();
+    const b = await get('/accounts/12345678/current-nap');
+    expect(a.json()).toEqual(b.json());
+    expect(a.json()).toMatchObject({ simulated: true, simulationReason: 'NOT_FOUND' });
+
+    const x = simulatedCurrentNap('35070291', 'telenews', null, 'NO_COORDS');
+    const y = simulatedCurrentNap('0035070291', 'telenews', null, 'NO_COORDS');
+    expect(y.nap).toEqual(x.nap);
+    expect(y.portNumber).toBe(x.portNumber);
+    const other = simulatedCurrentNap('99887766', 'telenews', null, 'NO_COORDS');
+    expect(other.nap).not.toEqual(x.nap);
+  });
+
+  it('el código y los puertos no dependen de si se conoce el domicilio', () => {
+    const near = simulatedCurrentNap(ACCOUNT, 'telenews', { latitude: -2.1, longitude: -79.9 }, 'NOT_FOUND');
+    const far = simulatedCurrentNap(ACCOUNT, 'telenews', null, 'NO_COORDS');
+    expect(near.nap?.napCode).toBe(far.nap?.napCode);
+    expect(near.portNumber).toBe(far.portNumber);
+    expect(near.nap?.latitude).not.toBe(far.nap?.latitude);
+  });
+
+  it('sin coordenadas: NAP simulada en el clúster de los mocks', async () => {
+    useRealFsm(responder({ process: PROCESS_NO_COORDS }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    const body = res.json();
+    expect(body).toMatchObject({ found: true, simulated: true, simulationReason: 'NO_COORDS' });
+    const d = haversine({ latitude: -2.247946, longitude: -79.904161 }, body.nap);
+    expect(d).toBeLessThan(1_800);
+  });
+
+  it('token rechazado: 200 con NAP simulada y aviso FSM_AUTH (nunca 401/503)', async () => {
+    useRealFsm(() => ({ status: 401, raw: 'Unauthorized' }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      found: true,
+      simulated: true,
+      simulationReason: 'UPSTREAM_AUTH_ERROR',
+      degraded: { reason: 'FSM_AUTH' },
+    });
+    expect(typeof res.headers['x-wifix-degraded']).toBe('string');
+  });
+
+  it('FSM caído (5xx): 200 con NAP simulada y aviso FSM_UNAVAILABLE', async () => {
+    useRealFsm(() => ({ status: 500, raw: 'boom' }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      simulated: true,
+      simulationReason: 'UPSTREAM_UNAVAILABLE',
+      degraded: { reason: 'FSM_UNAVAILABLE' },
+    });
+  });
+
+  it('con override de coordenada y FSM caído: la NAP simulada queda cerca del override', async () => {
+    useRealFsm(() => ({ status: 500, raw: 'boom' }));
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?lat=-2.1&lng=-79.9`);
+    const body = res.json();
+    expect(body.simulated).toBe(true);
+    expect(haversine({ latitude: -2.1, longitude: -79.9 }, body.nap)).toBeLessThan(125);
+  });
+
+  it('fallback inválido es 400', async () => {
+    const res = await get(`/accounts/${ACCOUNT}/current-nap?fallback=otro`);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('mock 35070291 sigue siendo real (source FSM, simulated false)', async () => {
+    const res = await get(`/accounts/${ACCOUNT}/current-nap`);
+    expect(res.json()).toMatchObject({ found: true, simulated: false, source: 'FSM', assignment: 'CONTRACTED' });
   });
 });

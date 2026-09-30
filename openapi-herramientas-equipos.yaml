@@ -1148,6 +1148,26 @@ paths:
         cercana) y `40123456` (la más cercana) se encuentran; cualquier otra
         sale `NOT_FOUND`. En `fixture`, `35070291` sale `NOT_FOUND` (no está en
         la NAP grabada).
+
+
+        **NAP asignada siempre (default, `fallback=simulated`).** En Visita
+        técnica y Migraciones el cliente YA tiene una NAP contratada: el
+        técnico no busca NAPs. Si la búsqueda real no la identifica
+        (`NOT_FOUND`, `NO_COORDS`, `NOT_SUPPORTED`) o FSM falla (token →
+        `UPSTREAM_AUTH_ERROR`, 5xx/timeout → `UPSTREAM_UNAVAILABLE`), responde
+        **200** con una NAP asignada **simulada**, determinística por cuenta
+        (misma cuenta → mismo código, puertos y puerto), con `found:true`,
+        `simulated:true`, `source:SIMULATED`, `nap.source:SIMULATED`,
+        `nap.napId:null`, `equipmentId:null` y `simulationReason`. La NAP queda
+        a 15-120 m del domicilio (o del override) si se conoce; si no,
+        alrededor del clúster de los mocks. Cero llamadas extra: la búsqueda
+        real, su presupuesto y su cache no cambian. Si la causa fue un fallo de
+        FSM viene además `degraded` (`FSM_AUTH` / `FSM_UNAVAILABLE`).
+        **No pedir `/naps/{napRef}/ports` de una NAP simulada.**
+
+
+        `fallback=none` devuelve el comportamiento estricto anterior
+        (`found:false` con `reason`, o 503).
       operationId: getCurrentNap
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
@@ -1171,6 +1191,16 @@ paths:
             format: double
             minimum: -180
             maximum: 180
+        - name: fallback
+          in: query
+          required: false
+          description: >
+            `simulated` (default): si no se identifica la NAP real, la asignada
+            simulada. `none`: estricto (`found:false` / 503), como antes.
+          schema:
+            type: string
+            enum: [simulated, none]
+            default: simulated
         - $ref: '#/components/parameters/BrandHeader'
         - $ref: '#/components/parameters/BrandQuery'
       responses:
@@ -1213,8 +1243,39 @@ paths:
                       description: Activo
                     searchedNaps: 2
                     brand: telenews
+                    source: FSM
+                    simulated: false
+                    assignment: CONTRACTED
+                simulated:
+                  summary: NAP asignada simulada (no se identificó la real)
+                  value:
+                    accountNumber: '12345678'
+                    found: true
+                    nap:
+                      napId: null
+                      napCode: PL26KD2
+                      networkName: OLT-GYE-01/1/4
+                      latitude: -2.256763
+                      longitude: -79.895559
+                      distanceMeters: 35.6
+                      occupiedPorts: 13
+                      totalPorts: 16
+                      freePorts: 3
+                      source: SIMULATED
+                    portNumber: 9
+                    equipmentId: null
+                    clientStatus:
+                      code: A
+                      name: ACTIVA
+                      description: Activo (simulado)
+                    searchedNaps: 0
+                    brand: telenews
+                    source: SIMULATED
+                    simulated: true
+                    assignment: CONTRACTED
+                    simulationReason: NOT_FOUND
                 notFound:
-                  summary: No encontrada en las NAPs cercanas
+                  summary: No encontrada en las NAPs cercanas (solo con fallback=none)
                   value:
                     accountNumber: '12345678'
                     found: false
@@ -1225,6 +1286,9 @@ paths:
                     searchedNaps: 3
                     reason: NOT_FOUND
                     brand: telenews
+                    source: null
+                    simulated: false
+                    assignment: null
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3470,8 +3534,11 @@ components:
           description: totalPorts - occupiedPorts, nunca negativo.
         source:
           type: string
-          enum: [FSM, TEC]
-          description: De dónde salió la fila (ver `NAPS_PRIMARY_SOURCE`, ADR-04).
+          enum: [FSM, TEC, SIMULATED]
+          description: >
+            De dónde salió la fila (ver `NAPS_PRIMARY_SOURCE`, ADR-04).
+            `SIMULATED` solo aparece en `current-nap` (NAP asignada simulada);
+            `/naps/nearby` nunca lo devuelve.
 
     CurrentNap:
       type: object
@@ -3490,7 +3557,9 @@ components:
           allOf:
             - $ref: '#/components/schemas/NearbyNap'
           nullable: true
-          description: NAP donde apareció la cuenta; `null` si `found:false`.
+          description: >
+            NAP donde apareció la cuenta (o la asignada simulada, con
+            `source:SIMULATED` y `napId:null`); `null` si `found:false`.
         portNumber:
           type: integer
           nullable: true
@@ -3498,7 +3567,9 @@ components:
         equipmentId:
           type: string
           nullable: true
-          description: Serial/ID GPON del equipo en ese puerto, si FSM lo trae.
+          description: >
+            Serial/ID GPON del equipo en ese puerto, si FSM lo trae. Siempre
+            `null` con `simulated:true`.
           example: ZTEGD434832
         clientStatus:
           type: object
@@ -3534,6 +3605,27 @@ components:
           description: Marca efectivamente usada en la consulta.
         degraded:
           $ref: '#/components/schemas/Degraded'
+        source:
+          type: string
+          nullable: true
+          enum: [FSM, SIMULATED]
+          description: >
+            `FSM` si la NAP es la real, `SIMULATED` si es la asignada simulada;
+            `null` solo con `found:false` (`fallback=none`). Aditivo 2026-09-30.
+        simulated:
+          type: boolean
+          description: '`true` solo cuando la NAP es simulada.'
+        assignment:
+          type: string
+          nullable: true
+          enum: [CONTRACTED]
+          description: >
+            La NAP es la contratada/asignada al cliente. `null` solo con
+            `found:false` (`fallback=none`).
+        simulationReason:
+          type: string
+          enum: [NOT_FOUND, NO_COORDS, NOT_SUPPORTED, UPSTREAM_AUTH_ERROR, UPSTREAM_UNAVAILABLE]
+          description: Solo con `simulated:true`. Por qué no se usó la NAP real.
 
     WhitelistCheck:
       type: object

@@ -82,6 +82,28 @@ const terminalParamsSchema = z.object({
   id: z.string().min(1, 'El serial GPON o la MAC del cablemódem es obligatorio.'),
 });
 
+/**
+ * Pista de tecnología (`?technology=`): la app la conoce por el modelo del
+ * equipo o el tipo de código escaneado. Solo se usa si la ficha de ISP Monitor
+ * no trae `type` explícito. Acepta sinónimos: ONT/ONU/XPON/FIBRA → GPON;
+ * CABLEMODEM/DOCSIS → HFC.
+ */
+const technologyQuerySchema = z.object({
+  technology: z
+    .preprocess(
+      (v) => {
+        if (typeof v !== 'string' || v.trim() === '') return undefined;
+        const t = v.trim().toUpperCase();
+        if (['GPON', 'ONT', 'ONU', 'XPON', 'FIBRA', 'FTTH'].includes(t)) return 'GPON';
+        if (['HFC', 'CABLEMODEM', 'CM', 'DOCSIS'].includes(t)) return 'HFC';
+        return t;
+      },
+      z.enum(['HFC', 'GPON'], {
+        errorMap: () => ({ message: 'technology debe ser HFC o GPON (o ONT/ONU/XPON/CABLEMODEM).' }),
+      }).optional(),
+    ),
+});
+
 const seriesParamsSchema = terminalParamsSchema.extend({
   scope: z.enum(['terminal', 'network']),
   metric: z.enum(['status', 'snr', 'codewords']),
@@ -162,13 +184,16 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
   // Estado del equipo, de la red y evento asociado.
   app.get('/terminals/:id', async (request) => {
     const { id } = parseParams(terminalParamsSchema, request.params);
-    return getIspMonitorConnector().getTerminal(id);
+    const { technology } = parseQuery(technologyQuerySchema, request.query);
+    return getIspMonitorConnector().getTerminal(id, technology ? { technology } : {});
   });
 
-  // Panel completo: ficha + las 6 series de 24 h en una sola llamada.
+  // Panel completo: ficha + series de 24 h que aplican a la tecnología +
+  // bloque `docsis` (HFC) o `gpon` (GPON) + caídas con hora exacta.
   app.get('/terminals/:id/diagnostics', async (request) => {
     const { id } = parseParams(terminalParamsSchema, request.params);
-    return getIspMonitorConnector().getDiagnostics(id);
+    const { technology } = parseQuery(technologyQuerySchema, request.query);
+    return getIspMonitorConnector().getDiagnostics(id, technology ? { technology } : {});
   });
 
   // Serie individual: /terminals/HWTC123/series/terminal/snr

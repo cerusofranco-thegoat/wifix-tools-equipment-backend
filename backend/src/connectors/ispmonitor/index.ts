@@ -35,6 +35,33 @@ import {
   type SeriesPoint,
   type SeriesChannel,
 } from './normalize.js';
+import {
+  buildDocsisMetrics,
+  buildGponMetrics,
+  deriveOutages,
+  simulatedCauseFor,
+  technologyFromIdFormat,
+  type DocsisMetrics,
+  type GponMetrics,
+  type OutageCause,
+  type OutageSummary,
+  type TechnologySource,
+  type Uptime,
+} from './access-metrics.js';
+
+export type {
+  DocsisChannel,
+  DocsisMetrics,
+  GponMetrics,
+  Health,
+  MetricSource,
+  OnuState,
+  OutageCause,
+  OutageEvent,
+  OutageSummary,
+  TechnologySource,
+  Uptime,
+} from './access-metrics.js';
 
 export type Technology = 'GPON' | 'HFC';
 
@@ -93,6 +120,8 @@ export interface TerminalSnapshot {
   /** Estado del equipo del cliente. null si la API no lo expone. */
   online: boolean | null;
   technology: Technology | null;
+  /** Cómo se decidió `technology` (ficha, pista del cliente o formato del id). */
+  technologySource: TechnologySource;
   /** Ciudad donde está el equipo. */
   city: string | null;
   /**
@@ -137,13 +166,103 @@ export interface TerminalDiagnostics {
   /** Ventana de las series, siempre las últimas 24 h al momento de consultar. */
   window: { hours: 24; until: string };
   fetchedAt: string;
+  /**
+   * Tecnología de acceso del equipo. Decide qué bloque viene lleno:
+   * `HFC` → `docsis`; `GPON` → `gpon`. `null` si no se pudo determinar.
+   */
+  technology: Technology | null;
+  technologySource: TechnologySource;
+  /** `true` si TODO el payload es simulado (conector en modo mock). */
+  simulated: boolean;
+  /** Métricas DOCSIS; solo si `technology === 'HFC'`. */
+  docsis: DocsisMetrics | null;
+  /** Métricas ópticas GPON; solo si `technology === 'GPON'`. */
+  gpon: GponMetrics | null;
+  /** Caídas del equipo en las últimas 24 h, con inicio/fin exactos y duración. */
+  outages: OutageSummary;
+  /** Tiempo en línea desde la última vuelta. */
+  uptime: Uptime;
+}
+
+/** Pista de tecnología enviada por el cliente (`?technology=`). */
+export interface TechnologyOptions {
+  technology?: Technology;
 }
 
 export interface IspMonitorConnector {
   getNetworkMetrics(accountNumber: string): Promise<NetworkMetrics>;
-  getTerminal(id: string): Promise<TerminalSnapshot>;
+  getTerminal(id: string, opts?: TechnologyOptions): Promise<TerminalSnapshot>;
   getSeries(id: string, scope: SeriesScope, metric: SeriesMetric): Promise<Series24h>;
-  getDiagnostics(id: string): Promise<TerminalDiagnostics>;
+  getDiagnostics(id: string, opts?: TechnologyOptions): Promise<TerminalDiagnostics>;
+}
+
+/**
+ * Aplica la pista del cliente: la ficha de ISP Monitor (`type` explícito)
+ * siempre manda; si no lo trae, la pista gana al formato del id.
+ */
+export function applyTechnologyHint(
+  terminal: TerminalSnapshot,
+  hint: Technology | undefined,
+): TerminalSnapshot {
+  if (!hint || !terminal.found || terminal.technologySource === 'ISP_MONITOR') return terminal;
+  return { ...terminal, technology: hint, technologySource: 'HINT' };
+}
+
+/**
+ * Bloques por tecnología + caídas, a partir de la ficha y las series ya
+ * resueltas. `simulated` = conector en mock (todas las series son simuladas).
+ */
+export function enrichDiagnostics(
+  base: Omit<
+    TerminalDiagnostics,
+    'technology' | 'technologySource' | 'simulated' | 'docsis' | 'gpon' | 'outages' | 'uptime'
+  >,
+  simulated: boolean,
+): TerminalDiagnostics {
+  const { terminal } = base;
+  const technology = terminal.found ? terminal.technology : null;
+  const now = new Date(base.fetchedAt);
+  const seriesSource = simulated ? 'SIMULATED' : 'ISP_MONITOR';
+  const { summary, uptime } = deriveOutages(base.status.terminal, {
+    now,
+    source: seriesSource,
+    simulated,
+    // La causa (LOS / dying gasp / T3-T4) no la publica ISP Monitor: solo el
+    // mock la simula; en real queda UNKNOWN.
+    ...(simulated && technology ? { causeFor: simulatedCauseFor(base.id, technology) } : {}),
+  });
+  const ongoing = summary.items.find((e) => e.ongoing);
+  const ongoingCause: OutageCause | null = ongoing ? ongoing.cause : null;
+
+  return {
+    ...base,
+    technology,
+    technologySource: terminal.found ? terminal.technologySource : 'UNKNOWN',
+    simulated,
+    docsis:
+      technology === 'HFC'
+        ? buildDocsisMetrics({
+            id: base.id,
+            online: terminal.online,
+            snr: base.snr.terminal,
+            codewords: base.codewords.terminal,
+            seriesSource,
+            now,
+          })
+        : null,
+    gpon:
+      technology === 'GPON'
+        ? buildGponMetrics({
+            id: base.id,
+            terminal,
+            terminalSource: seriesSource,
+            ongoingCause,
+            now,
+          })
+        : null,
+    outages: summary,
+    uptime,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +279,51 @@ function hourlyTimestamps(count = 24): string[] {
   return out;
 }
 
+/** Muestras cada 5 min de las últimas 24 h (288), como ISP Monitor. */
+const STATUS_STEP_MS = 5 * 60_000;
+const STATUS_SAMPLES = 288;
+
+/**
+ * Estado del terminal en 24 h con caídas en TRAMOS (5 a 90 min), no muestras
+ * sueltas: así las caídas derivadas tienen duraciones creíbles. Si el equipo
+ * está fuera de línea, la serie termina caída (caída en curso).
+ */
+function mockTerminalStatusSeries(id: string, online: boolean): Series24h {
+  const rng = seededRng(`ispmonitor:status:blocks:${id}`);
+  // Alineado a múltiplos de 5 min, como la operadora.
+  const end = Math.floor(Date.now() / STATUS_STEP_MS) * STATUS_STEP_MS;
+  const up = new Array<boolean>(STATUS_SAMPLES).fill(true);
+  const blocks = rng.intBetween(0, 3);
+  for (let b = 0; b < blocks; b++) {
+    const length = rng.intBetween(1, 18);
+    const start = rng.intBetween(0, STATUS_SAMPLES - 30);
+    for (let i = start; i < Math.min(start + length, STATUS_SAMPLES - 12); i++) up[i] = false;
+  }
+  if (!online) {
+    const length = rng.intBetween(2, 10);
+    for (let i = STATUS_SAMPLES - length; i < STATUS_SAMPLES; i++) up[i] = false;
+  }
+  const points: SeriesPoint[] = up.map((isUp, i) => ({
+    t: new Date(end - (STATUS_SAMPLES - 1 - i) * STATUS_STEP_MS).toISOString(),
+    values: { online: isUp ? 1 : 0 },
+  }));
+  return {
+    id,
+    scope: 'terminal',
+    metric: 'status',
+    keys: ['online'],
+    points,
+    channels: [],
+    recognized: true,
+    raw: null,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 function mockSeries(id: string, scope: SeriesScope, metric: SeriesMetric): Series24h {
+  if (scope === 'terminal' && metric === 'status') {
+    return mockTerminalStatusSeries(id, mockTerminalOnline(id));
+  }
   const rng = seededRng(`ispmonitor:${metric}:${scope}:${id}`);
   const stamps = hourlyTimestamps();
   const points: SeriesPoint[] = [];
@@ -210,11 +373,18 @@ function mockSeries(id: string, scope: SeriesScope, metric: SeriesMetric): Serie
   };
 }
 
-function mockTerminal(id: string): TerminalSnapshot {
+/** Mismo sorteo que `mockTerminal`: el estado en línea del equipo simulado. */
+function mockTerminalOnline(id: string): boolean {
+  return seededRng(`ispmonitor:terminal:${id}`).bool(0.85);
+}
+
+function mockTerminal(id: string, hint?: Technology): TerminalSnapshot {
   const rng = seededRng(`ispmonitor:terminal:${id}`);
-  // Igual que en la realidad: una MAC de 12 hex es cablemódem HFC, un serial
-  // de 4 letras + 8 caracteres es un ONT de fibra.
-  const technology: Technology = /^[0-9A-F]{12}$/.test(id) ? 'HFC' : 'GPON';
+  // La pista del cliente manda; si no, el formato del id: una MAC de 12 hex es
+  // cablemódem HFC, un serial de vendor (ZTEG…, HWTC…) es un ONT de fibra.
+  const fromId = technologyFromIdFormat(id);
+  const technology: Technology = hint ?? fromId ?? 'GPON';
+  const technologySource: TechnologySource = hint ? 'HINT' : fromId ? 'ID_FORMAT' : 'UNKNOWN';
   const online = rng.bool(0.85);
   const hasEvent = !online || rng.bool(0.15);
   const eventText = hasEvent
@@ -241,7 +411,9 @@ function mockTerminal(id: string): TerminalSnapshot {
       { Type: 'LastMonth', IDs: [id, `ZTEG${rng.intBetween(10000000, 99999999)}`], Status: ['up', 'down'], Drop: '', Events: '' },
     ],
   };
-  return buildSnapshot(id, raw);
+  // La ficha simulada trae `type`, pero NO es un dato de ISP Monitor: se
+  // declara de dónde salió de verdad.
+  return { ...buildSnapshot(id, raw), technologySource };
 }
 
 export const ispMonitorMock: IspMonitorConnector = {
@@ -268,17 +440,17 @@ export const ispMonitorMock: IspMonitorConnector = {
     return base;
   },
 
-  async getTerminal(id) {
-    return mockTerminal(normalizeTerminalId(id));
+  async getTerminal(id, opts) {
+    return mockTerminal(normalizeTerminalId(id), opts?.technology);
   },
 
   async getSeries(id, scope, metric) {
     return mockSeries(normalizeTerminalId(id), scope, metric);
   },
 
-  async getDiagnostics(id) {
+  async getDiagnostics(id, opts) {
     const normalized = normalizeTerminalId(id);
-    const terminal = mockTerminal(normalized);
+    const terminal = mockTerminal(normalized, opts?.technology);
     // El mock respeta el mismo plan que el real: en GPON no hay DOCSIS, así
     // que el panel se ejercita igual con y sin credenciales.
     const plan = planSeriesFetches(terminal.technology);
@@ -291,17 +463,20 @@ export const ispMonitorMock: IspMonitorConnector = {
       bucket[metric][scope] = mockSeries(normalized, scope, metric);
     }
     const fetchedAt = new Date().toISOString();
-    return {
-      id: normalized,
-      terminal,
-      status: bucket.status,
-      snr: bucket.snr,
-      codewords: bucket.codewords,
-      errors: [],
-      skipped: plan.skipped,
-      window: { hours: 24, until: fetchedAt },
-      fetchedAt,
-    };
+    return enrichDiagnostics(
+      {
+        id: normalized,
+        terminal,
+        status: bucket.status,
+        snr: bucket.snr,
+        codewords: bucket.codewords,
+        errors: [],
+        skipped: plan.skipped,
+        window: { hours: 24, until: fetchedAt },
+        fetchedAt,
+      },
+      true,
+    );
   },
 };
 
@@ -359,19 +534,24 @@ function pickKey(body: Record<string, unknown>, aliases: readonly string[]): unk
   return undefined;
 }
 
-function detectTechnology(body: Record<string, unknown>, id: string): Technology | null {
+function detectTechnology(
+  body: Record<string, unknown>,
+  id: string,
+): { technology: Technology | null; source: TechnologySource } {
   const value = pickKey(body, ALIASES.technology);
   const text = value === null || value === undefined ? '' : String(value).toUpperCase();
   if (
     text.includes('GPON') || text.includes('FIBR') || text.includes('FTTH') ||
-    text.includes('ONT') || text.includes('ONU')
+    text.includes('ONT') || text.includes('ONU') || text.includes('XPON') || text.includes('EPON')
   ) {
-    return 'GPON';
+    return { technology: 'GPON', source: 'ISP_MONITOR' };
   }
-  if (text.includes('HFC') || text.includes('DOCSIS') || text.includes('CABLE')) return 'HFC';
-  // Sin campo explícito: una MAC de 12 hex es cablemódem; lo demás, serial GPON.
-  if (/^[0-9A-F]{12}$/.test(id)) return 'HFC';
-  return null;
+  if (text.includes('HFC') || text.includes('DOCSIS') || text.includes('CABLE')) {
+    return { technology: 'HFC', source: 'ISP_MONITOR' };
+  }
+  // Sin campo explícito: formato del id (MAC 12-hex → HFC; serial de vendor → GPON).
+  const fromId = technologyFromIdFormat(id);
+  return { technology: fromId, source: fromId ? 'ID_FORMAT' : 'UNKNOWN' };
 }
 
 /** Normaliza una entrada del historial `terminals[]`. */
@@ -406,6 +586,7 @@ function buildSnapshot(id: string, raw: unknown): TerminalSnapshot {
     found: false,
     online: null,
     technology: null,
+    technologySource: 'UNKNOWN',
     city: null,
     networkIds: [],
     event: null,
@@ -454,12 +635,14 @@ function buildSnapshot(id: string, raw: unknown): TerminalSnapshot {
   }
 
   const cityValue = pickKey(body, ALIASES.city);
+  const detected = detectTechnology(body, id);
 
   return {
     id,
     found: true,
     online: toBoolish(pickKey(body, ALIASES.online)),
-    technology: detectTechnology(body, id),
+    technology: detected.technology,
+    technologySource: detected.source,
     city: cityValue === null || cityValue === undefined ? null : String(cityValue),
     networkIds,
     event: { active: eventDescription !== null, description: eventDescription },
@@ -579,9 +762,12 @@ function skipAll(reason: string): Array<{ endpoint: string; reason: string }> {
 }
 
 export const ispMonitorReal: IspMonitorConnector = {
-  async getTerminal(id) {
+  async getTerminal(id, opts) {
     const normalized = normalizeTerminalId(id);
-    return buildSnapshot(normalized, await fetchTerminal(normalized));
+    return applyTechnologyHint(
+      buildSnapshot(normalized, await fetchTerminal(normalized)),
+      opts?.technology,
+    );
   },
 
   async getSeries(id, scope, metric) {
@@ -596,7 +782,7 @@ export const ispMonitorReal: IspMonitorConnector = {
     };
   },
 
-  async getDiagnostics(id) {
+  async getDiagnostics(id, opts) {
     const normalized = normalizeTerminalId(id);
     const errors: Array<{ endpoint: string; message: string }> = [];
 
@@ -617,23 +803,26 @@ export const ispMonitorReal: IspMonitorConnector = {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-    const terminal = buildSnapshot(normalized, raw);
+    const terminal = applyTechnologyHint(buildSnapshot(normalized, raw), opts?.technology);
 
     const finish = (
       skipped: Array<{ endpoint: string; reason: string }>,
     ): TerminalDiagnostics => {
       const fetchedAt = new Date().toISOString();
-      return {
-        id: normalized,
-        terminal,
-        status: bucket.status,
-        snr: bucket.snr,
-        codewords: bucket.codewords,
-        errors,
-        skipped,
-        window: { hours: 24, until: fetchedAt },
-        fetchedAt,
-      };
+      return enrichDiagnostics(
+        {
+          id: normalized,
+          terminal,
+          status: bucket.status,
+          snr: bucket.snr,
+          codewords: bucket.codewords,
+          errors,
+          skipped,
+          window: { hours: 24, until: fetchedAt },
+          fetchedAt,
+        },
+        false,
+      );
     };
 
     if (errors.length > 0) {

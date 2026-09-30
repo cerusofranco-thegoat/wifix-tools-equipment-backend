@@ -1461,6 +1461,7 @@ paths:
       operationId: getTerminal
       parameters:
         - $ref: '#/components/parameters/TerminalIdPath'
+        - $ref: '#/components/parameters/TechnologyHintQuery'
       responses:
         '200':
           description: >
@@ -1496,9 +1497,29 @@ paths:
         pero pidió no abusar, y todas las consultas van contra producción. Si
         alguna falla, el resto igual se devuelve y el fallo se reporta en
         `errors`.
+
+
+        **Por tecnología (2026-09-30).** `technology` (`HFC` | `GPON`) decide
+        qué bloque viene lleno: `docsis` (HFC: potencias y SNR downstream/
+        upstream por canal, FEC) o `gpon` (ONT/ONU: potencia óptica Rx/Tx,
+        OLT/puerto PON/ONU id, estado de la ONU, distancia, temperatura,
+        voltaje). El otro bloque es `null`: la app NO debe mostrar DOCSIS a un
+        ONT. `outages` trae cada caída de las últimas 24 h con inicio y fin en
+        UTC (`…Z`) y en hora de Ecuador (`…-05:00`), duración y causa.
+
+
+        **Real vs simulado.** ISP Monitor publica solo el estado up/down 24 h,
+        SNR y FEC upstream (HFC) y la red de acceso. De ahí salen, REALES, las
+        caídas (inicio/fin/duración), `uptime`, el SNR upstream por canal y los
+        FEC. Las potencias DOCSIS, el downstream y TODA la capa óptica GPON no
+        los publica la operadora: van SIMULADOS (deterministas por id) y
+        marcados con `simulated: true` y `sources.*: SIMULATED`. La causa de la
+        caída (LOS / dying gasp / T3-T4) solo la simula el mock; en real es
+        `UNKNOWN`. Con el conector en mock, `simulated: true` en la raíz.
       operationId: getTerminalDiagnostics
       parameters:
         - $ref: '#/components/parameters/TerminalIdPath'
+        - $ref: '#/components/parameters/TechnologyHintQuery'
       responses:
         '200':
           description: OK
@@ -1506,6 +1527,106 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TerminalDiagnostics'
+              examples:
+                gpon:
+                  summary: ONT ZTE (GPON) — extracto de los campos nuevos
+                  value:
+                    id: ZTEGD3F9BBE5
+                    technology: GPON
+                    technologySource: ISP_MONITOR
+                    simulated: false
+                    docsis: null
+                    gpon:
+                      technology: GPON
+                      simulated: true
+                      sources: { optical: SIMULATED, onuState: ISP_MONITOR, accessNetwork: ISP_MONITOR, oltTopology: SIMULATED }
+                      onu: { serial: ZTEGD3F9BBE5, onuId: 28, state: ONLINE, stateLabel: En línea }
+                      olt: { name: OLT-QUI-06, ponPort: 0/2/9, accessNetworkIds: [9198] }
+                      optical: { rxPowerDbm: -22.14, txPowerDbm: 3.25, oltRxPowerDbm: -24.85 }
+                      distanceMeters: 10043
+                      temperatureC: 42.8
+                      voltageV: 3.3
+                      biasCurrentMa: 21.3
+                      thresholds:
+                        rxPowerDbm: { min: -27, max: -8, warnBelow: -25 }
+                        txPowerDbm: { min: 0.5, max: 5 }
+                        oltRxPowerDbm: { min: -28, max: -8 }
+                        temperatureCMax: 70
+                        voltageV: { min: 3.1, max: 3.5 }
+                      health: OK
+                      measuredAt: '2026-09-30T16:42:22.843Z'
+                    outages:
+                      source: ISP_MONITOR
+                      causeSource: NONE
+                      simulated: false
+                      timezone: America/Guayaquil
+                      window: { from: '2026-09-29T16:45:00.000Z', until: '2026-09-30T16:42:22.843Z', hours: 24 }
+                      count: 1
+                      totalDownSeconds: 1500
+                      items:
+                        - startedAt: '2026-09-30T12:10:00.000Z'
+                          startedAtLocal: '2026-09-30T07:10:00.000-05:00'
+                          endedAt: '2026-09-30T12:35:00.000Z'
+                          endedAtLocal: '2026-09-30T07:35:00.000-05:00'
+                          durationSeconds: 1500
+                          ongoing: false
+                          cause: UNKNOWN
+                          causeLabel: Causa no informada por el monitoreo
+                          precisionSeconds: 300
+                          simulated: false
+                    uptime: { seconds: 14843, since: '2026-09-30T12:35:00.000Z', sinceLocal: '2026-09-30T07:35:00.000-05:00', lowerBound: false, source: ISP_MONITOR }
+                hfc:
+                  summary: Cablemódem (HFC) — extracto de los campos nuevos
+                  value:
+                    id: 384C90A2DB11
+                    technology: HFC
+                    technologySource: ISP_MONITOR
+                    simulated: false
+                    gpon: null
+                    docsis:
+                      technology: HFC
+                      simulated: true
+                      sources: { snrUpstream: ISP_MONITOR, snrDownstream: SIMULATED, power: SIMULATED, codewords: ISP_MONITOR }
+                      downstream:
+                        powerDbmv: 1.9
+                        snrDb: 37.4
+                        channels:
+                          - { channelId: DS1, direction: downstream, label: Downstream 1, frequencyMHz: 579, powerDbmv: 2.1, snrDb: 37.5, modulation: 256-QAM, simulatedFields: [frequencyMHz, powerDbmv, snrDb, modulation] }
+                      upstream:
+                        powerDbmv: 43.2
+                        snrDb: 35.1
+                        channels:
+                          - { channelId: '5000016', direction: upstream, label: Logical Upstream Channel 0/1.0/0, frequencyMHz: 18.8, powerDbmv: 43.4, snrDb: 36.2, modulation: 64-QAM, simulatedFields: [frequencyMHz, powerDbmv, modulation] }
+                          - { channelId: '5000018', direction: upstream, label: Logical Upstream Channel 0/1.1/0, frequencyMHz: 25.2, powerDbmv: 43.0, snrDb: 34.0, modulation: 64-QAM, simulatedFields: [frequencyMHz, powerDbmv, modulation] }
+                      codewords: { correctedPercent: 2, uncorrectedPercent: 0.05 }
+                      thresholds:
+                        downstreamPowerDbmv: { min: -7, max: 7 }
+                        downstreamSnrDbMin: 33
+                        upstreamPowerDbmv: { min: 35, max: 51 }
+                        upstreamSnrDbMin: 27
+                        uncorrectedPercentMax: 0.1
+                      health: OK
+                      measuredAt: '2026-09-30T16:42:22.845Z'
+                    outages:
+                      source: ISP_MONITOR
+                      causeSource: NONE
+                      simulated: false
+                      timezone: America/Guayaquil
+                      window: { from: '2026-09-29T16:45:00.000Z', until: '2026-09-30T16:42:22.845Z', hours: 24 }
+                      count: 1
+                      totalDownSeconds: 1943
+                      items:
+                        - startedAt: '2026-09-30T16:10:00.000Z'
+                          startedAtLocal: '2026-09-30T11:10:00.000-05:00'
+                          endedAt: null
+                          endedAtLocal: null
+                          durationSeconds: 1943
+                          ongoing: true
+                          cause: UNKNOWN
+                          causeLabel: Causa no informada por el monitoreo
+                          precisionSeconds: 300
+                          simulated: false
+                    uptime: { seconds: null, since: null, sinceLocal: null, lowerBound: false, source: ISP_MONITOR }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2143,6 +2264,19 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+
+    TechnologyHintQuery:
+      name: technology
+      in: query
+      required: false
+      description: >
+        Pista de tecnología (la app la conoce por el modelo del equipo). Solo se
+        usa si la ficha de ISP Monitor no trae `type` explícito. Acepta
+        sinónimos: ONT/ONU/XPON/FIBRA/FTTH → GPON; CABLEMODEM/CM/DOCSIS → HFC.
+        Otro valor → 400.
+      schema:
+        type: string
+        example: GPON
 
   # --------------------------------------------------------------------
   # RESPUESTAS REUTILIZABLES
@@ -3618,6 +3752,8 @@ components:
           type: string
           nullable: true
           enum: [GPON, HFC]
+        technologySource:
+          $ref: '#/components/schemas/TechnologySource'
         city:
           type: string
           nullable: true
@@ -3856,6 +3992,193 @@ components:
         fetchedAt:
           type: string
           format: date-time
+        technology:
+          type: string
+          nullable: true
+          enum: [HFC, GPON]
+          description: Decide qué bloque viene lleno (`docsis` o `gpon`). `null` si el equipo no se encontró.
+        technologySource:
+          $ref: '#/components/schemas/TechnologySource'
+        simulated:
+          type: boolean
+          description: true si TODO el payload es simulado (conector ISP Monitor en mock).
+        docsis:
+          allOf: [{ $ref: '#/components/schemas/DocsisMetrics' }]
+          nullable: true
+        gpon:
+          allOf: [{ $ref: '#/components/schemas/GponMetrics' }]
+          nullable: true
+        outages:
+          $ref: '#/components/schemas/OutageSummary'
+        uptime:
+          $ref: '#/components/schemas/Uptime'
+
+    TechnologySource:
+      type: string
+      enum: [ISP_MONITOR, HINT, ID_FORMAT, UNKNOWN]
+      description: >
+        Cómo se decidió la tecnología: `ISP_MONITOR` (la ficha trae `type`
+        explícito, siempre manda), `HINT` (`?technology=` del cliente), `ID_FORMAT`
+        (MAC 12-hex → HFC; serial de vendor ZTEG/HWTC/… → GPON) o `UNKNOWN`.
+
+    MetricSource:
+      type: string
+      enum: [ISP_MONITOR, SIMULATED, NONE]
+
+    Health:
+      type: string
+      enum: [OK, WARNING, CRITICAL, UNKNOWN]
+      description: Evaluación contra `thresholds`. Equipo caído → CRITICAL.
+
+    DocsisChannel:
+      type: object
+      properties:
+        channelId: { type: string, description: ifIndex real o DS1..DS4 / US1..US2 simulado }
+        direction: { type: string, enum: [downstream, upstream] }
+        label: { type: string }
+        frequencyMHz: { type: number, nullable: true }
+        powerDbmv: { type: number, nullable: true }
+        snrDb: { type: number, nullable: true }
+        modulation: { type: string, nullable: true }
+        simulatedFields:
+          type: array
+          items: { type: string }
+          description: Campos de ESTE canal que son simulados.
+
+    DocsisMetrics:
+      type: object
+      description: >
+        Solo HFC. Potencias (dBmV) y todo el downstream son SIMULADOS; SNR
+        upstream por canal y FEC salen de ISP Monitor en modo real. Valores
+        `null` si el cablemódem está caído.
+      properties:
+        technology: { type: string, enum: [HFC] }
+        simulated: { type: boolean, description: true si algún valor del bloque es simulado (hoy siempre). }
+        sources:
+          type: object
+          properties:
+            snrUpstream: { $ref: '#/components/schemas/MetricSource' }
+            snrDownstream: { $ref: '#/components/schemas/MetricSource' }
+            power: { $ref: '#/components/schemas/MetricSource' }
+            codewords: { $ref: '#/components/schemas/MetricSource' }
+        downstream:
+          type: object
+          properties:
+            powerDbmv: { type: number, nullable: true, description: Promedio de canales. }
+            snrDb: { type: number, nullable: true }
+            channels: { type: array, items: { $ref: '#/components/schemas/DocsisChannel' } }
+        upstream:
+          type: object
+          properties:
+            powerDbmv: { type: number, nullable: true }
+            snrDb: { type: number, nullable: true }
+            channels: { type: array, items: { $ref: '#/components/schemas/DocsisChannel' } }
+        codewords:
+          type: object
+          description: Último valor de 24 h; el peor canal.
+          properties:
+            correctedPercent: { type: number, nullable: true }
+            uncorrectedPercent: { type: number, nullable: true }
+        thresholds:
+          type: object
+          properties:
+            downstreamPowerDbmv: { type: object, properties: { min: { type: number }, max: { type: number } } }
+            downstreamSnrDbMin: { type: number }
+            upstreamPowerDbmv: { type: object, properties: { min: { type: number }, max: { type: number } } }
+            upstreamSnrDbMin: { type: number }
+            uncorrectedPercentMax: { type: number }
+        health: { $ref: '#/components/schemas/Health' }
+        measuredAt: { type: string, format: date-time }
+
+    GponMetrics:
+      type: object
+      description: >
+        Solo GPON (ONT/ONU/XPON). La capa óptica, OLT/puerto PON/ONU id,
+        distancia, temperatura, voltaje y corriente de bias son SIMULADOS
+        (ISP Monitor no los publica). `onu.state` y `olt.accessNetworkIds`
+        salen de la ficha real en modo real. Valores ópticos `null` si la ONU
+        está caída.
+      properties:
+        technology: { type: string, enum: [GPON] }
+        simulated: { type: boolean }
+        sources:
+          type: object
+          properties:
+            optical: { $ref: '#/components/schemas/MetricSource' }
+            onuState: { $ref: '#/components/schemas/MetricSource' }
+            accessNetwork: { $ref: '#/components/schemas/MetricSource' }
+            oltTopology: { $ref: '#/components/schemas/MetricSource' }
+        onu:
+          type: object
+          properties:
+            serial: { type: string }
+            onuId: { type: integer }
+            state: { type: string, enum: [ONLINE, OFFLINE, LOS, DYING_GASP, UNKNOWN] }
+            stateLabel: { type: string }
+        olt:
+          type: object
+          properties:
+            name: { type: string }
+            ponPort: { type: string, description: frame/slot/port }
+            accessNetworkIds: { type: array, items: { type: integer } }
+        optical:
+          type: object
+          properties:
+            rxPowerDbm: { type: number, nullable: true, description: Potencia recibida en el ONT. }
+            txPowerDbm: { type: number, nullable: true, description: Potencia transmitida por el ONT. }
+            oltRxPowerDbm: { type: number, nullable: true, description: Potencia del ONT recibida en la OLT. }
+        distanceMeters: { type: integer, nullable: true, description: Ranging OLT→ONT. }
+        temperatureC: { type: number, nullable: true }
+        voltageV: { type: number, nullable: true }
+        biasCurrentMa: { type: number, nullable: true }
+        thresholds:
+          type: object
+          description: Clase B+ (ITU-T G.984.2).
+        health: { $ref: '#/components/schemas/Health' }
+        measuredAt: { type: string, format: date-time }
+
+    OutageEvent:
+      type: object
+      properties:
+        startedAt: { type: string, format: date-time, description: 'Primera muestra caída (UTC, `…Z`).' }
+        startedAtLocal: { type: string, description: 'Mismo instante en hora de Ecuador con offset (`…-05:00`).' }
+        endedAt: { type: string, format: date-time, nullable: true, description: Primera muestra de vuelta en línea; null si sigue caído. }
+        endedAtLocal: { type: string, nullable: true }
+        durationSeconds: { type: integer, description: Si sigue caído, hasta el momento de la consulta. }
+        ongoing: { type: boolean }
+        cause: { type: string, enum: [LOS, DYING_GASP, T3_TIMEOUT, T4_TIMEOUT, POWER_LOSS, UNKNOWN] }
+        causeLabel: { type: string }
+        precisionSeconds: { type: integer, description: Resolución de la serie (300 s en ISP Monitor). }
+        simulated: { type: boolean }
+
+    OutageSummary:
+      type: object
+      properties:
+        source: { $ref: '#/components/schemas/MetricSource' }
+        causeSource: { $ref: '#/components/schemas/MetricSource' }
+        simulated: { type: boolean }
+        timezone: { type: string, example: America/Guayaquil }
+        window:
+          type: object
+          properties:
+            from: { type: string, format: date-time, nullable: true }
+            until: { type: string, format: date-time }
+            hours: { type: integer, enum: [24] }
+        count: { type: integer }
+        totalDownSeconds: { type: integer }
+        items:
+          type: array
+          description: La más reciente primero.
+          items: { $ref: '#/components/schemas/OutageEvent' }
+
+    Uptime:
+      type: object
+      properties:
+        seconds: { type: integer, nullable: true, description: null si está caído o sin datos. }
+        since: { type: string, format: date-time, nullable: true }
+        sinceLocal: { type: string, nullable: true }
+        lowerBound: { type: boolean, description: 'true → sin caídas en la ventana; en línea AL MENOS `seconds`.' }
+        source: { $ref: '#/components/schemas/MetricSource' }
 
     SignalLevels:
       type: object

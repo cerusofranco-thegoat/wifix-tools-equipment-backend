@@ -65,6 +65,13 @@ enum RemovalReasonCode {
   @@map("removal_reason_code")
 }
 
+enum SpeedtestSource {
+  APP             @map("app")
+  EXTERNAL_DEVICE @map("external-device")
+
+  @@map("speedtest_source")
+}
+
 enum NetworkServerType {
   DNS
   GATEWAY
@@ -152,6 +159,9 @@ model DistanceMeasurement {
   contractId     String?  @map("contract_id")
   visitId        String?  @map("visit_id")
   technicianId   String?  @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId         String?  @map("task_id")
   distanceMeters Float    @map("distance_meters")
   startLat       Float?   @map("start_lat")
   startLng       Float?   @map("start_lng")
@@ -164,32 +174,44 @@ model DistanceMeasurement {
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([measuredAt])
   @@map("distance_measurements")
 }
 
 model Speedtest {
-  id                String   @id @default(uuid()) @db.Uuid
-  accountNumber     String   @map("account_number")
-  clientId          String?  @map("client_id")
-  contractId        String?  @map("contract_id")
-  visitId           String?  @map("visit_id")
-  technicianId      String?  @map("technician_id")
-  downloadMbps      Float    @map("download_mbps")
-  uploadMbps        Float    @map("upload_mbps")
-  latencyMs         Float?   @map("latency_ms")
-  jitterMs          Float?   @map("jitter_ms")
-  packetLossPercent Float?   @map("packet_loss_percent")
-  serverId          String?  @map("server_id")
-  serverName        String?  @map("server_name")
-  ispName           String?  @map("isp_name")
-  measuredAt        DateTime @map("measured_at") @db.Timestamptz(6)
+  id                String          @id @default(uuid()) @db.Uuid
+  accountNumber     String          @map("account_number")
+  clientId          String?         @map("client_id")
+  contractId        String?         @map("contract_id")
+  visitId           String?         @map("visit_id")
+  technicianId      String?         @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId            String?         @map("task_id")
+  downloadMbps      Float           @map("download_mbps")
+  uploadMbps        Float           @map("upload_mbps")
+  latencyMs         Float?          @map("latency_ms")
+  jitterMs          Float?          @map("jitter_ms")
+  packetLossPercent Float?          @map("packet_loss_percent")
+  serverId          String?         @map("server_id")
+  serverName        String?         @map("server_name")
+  ispName           String?         @map("isp_name")
+  /// Quién midió: la app (`app`) o un dispositivo Android externo del técnico
+  /// con puerto de hasta 10 Gb/s (`external-device`).
+  source            SpeedtestSource @default(APP)
+  deviceName        String?         @map("device_name")
+  deviceId          String?         @map("device_id")
+  /// `true` si el resultado es simulado (hoy el externo se simula en el frontend).
+  simulated         Boolean         @default(false)
+  measuredAt        DateTime        @map("measured_at") @db.Timestamptz(6)
   notes             String?
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([measuredAt])
   @@map("speedtests")
 }
@@ -201,6 +223,9 @@ model WifiHeatmap {
   contractId    String?  @map("contract_id")
   visitId       String?  @map("visit_id")
   technicianId  String?  @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId        String?  @map("task_id")
   label         String?
   notes         String?
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -211,6 +236,7 @@ model WifiHeatmap {
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([createdAt])
   @@map("wifi_heatmaps")
 }
@@ -285,6 +311,9 @@ model PingTest {
   contractId        String?  @map("contract_id")
   visitId           String?  @map("visit_id")
   technicianId      String?  @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId            String?  @map("task_id")
   target            String
   serverId          String?  @map("server_id")
   packetsSent       Int?     @map("packets_sent")
@@ -305,6 +334,7 @@ model PingTest {
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([measuredAt])
   @@index([heatmapId])
   @@map("ping_tests")
@@ -317,6 +347,9 @@ model TracerouteTest {
   contractId    String?  @map("contract_id")
   visitId       String?  @map("visit_id")
   technicianId  String?  @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId        String?  @map("task_id")
   target        String
   serverId      String?  @map("server_id")
   measuredAt    DateTime @map("measured_at") @db.Timestamptz(6)
@@ -328,6 +361,7 @@ model TracerouteTest {
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([measuredAt])
   @@map("traceroute_tests")
 }
@@ -356,6 +390,9 @@ model RetiredEquipment {
   contractId        String?                  @map("contract_id")
   visitId           String?                  @map("visit_id")
   technicianId      String?                  @map("technician_id")
+  /// Vínculo con la visita FSM: tarea (`TASK/294328/2026`) u orden
+  /// (`ORDER/424900/2026`) donde se tomó el registro. Opcional.
+  taskId            String?                  @map("task_id")
   equipmentModelId  String                   @map("equipment_model_id") @db.Uuid
   serialValue       String                   @map("serial_value")
   serialFieldType   EquipmentSerialFieldType @map("serial_field_type")
@@ -372,6 +409,7 @@ model RetiredEquipment {
   @@index([accountNumber])
   @@index([clientId])
   @@index([visitId])
+  @@index([accountNumber, taskId])
   @@index([serialValue])
   @@index([retiredAt])
   @@map("retired_equipment")

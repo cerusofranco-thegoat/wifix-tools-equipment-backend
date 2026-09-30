@@ -7,6 +7,7 @@ export const contextFiltersSchema = z.object({
   contractId: z.string().min(1).optional(),
   visitId: z.string().min(1).optional(),
   technicianId: z.string().min(1).optional(),
+  taskId: z.string().min(1).optional(),
 });
 
 export const dateRangeSchema = z.object({
@@ -24,6 +25,7 @@ export interface ContextWhere {
   contractId?: string;
   visitId?: string;
   technicianId?: string;
+  taskId?: string;
 }
 
 export function buildContextWhere(filters: ListFilters): ContextWhere {
@@ -33,6 +35,7 @@ export function buildContextWhere(filters: ListFilters): ContextWhere {
   if (filters.contractId) w.contractId = filters.contractId;
   if (filters.visitId) w.visitId = filters.visitId;
   if (filters.technicianId) w.technicianId = filters.technicianId;
+  if (filters.taskId) w.taskId = filters.taskId;
   return w;
 }
 

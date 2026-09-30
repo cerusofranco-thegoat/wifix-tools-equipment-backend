@@ -86,6 +86,16 @@ export interface VisitItem {
   technician: string | null;
   result: VisitResult;
   notesLoaded: boolean;
+  /** Creación de la orden (UTC). Abre la ventana de la visita. */
+  createdAt: string | null;
+  /** Fin de la orden (UTC); `null` si sigue pendiente. */
+  endedAt: string | null;
+  /**
+   * Tarea FSM de la orden (`TASK/294328/2026`) si `/account/process` la trae.
+   * Junto con `workOrder`, es lo que vincula los registros guardados en la app
+   * (`taskId`) con la visita.
+   */
+  fsmTaskId: string | null;
 }
 
 export interface VisitsResult {
@@ -322,6 +332,9 @@ function orderVisit(
     technician: extra.technician ?? null,
     result,
     notesLoaded: extra.notesLoaded ?? false,
+    createdAt: order.createdAt,
+    endedAt: order.finished ? order.endedAt : null,
+    fsmTaskId: order.task && /^TASK\//i.test(order.task.trim()) ? order.task.trim() : null,
   };
 }
 

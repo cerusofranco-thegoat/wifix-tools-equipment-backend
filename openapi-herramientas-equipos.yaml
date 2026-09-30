@@ -206,6 +206,7 @@ paths:
         - $ref: '#/components/parameters/ClientIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
         - $ref: '#/components/parameters/Page'
@@ -276,6 +277,7 @@ paths:
         - $ref: '#/components/parameters/ContractIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
         - $ref: '#/components/parameters/Page'
@@ -345,6 +347,7 @@ paths:
         - $ref: '#/components/parameters/ClientIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
         - $ref: '#/components/parameters/Page'
@@ -498,6 +501,7 @@ paths:
         - $ref: '#/components/parameters/ClientIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
         - $ref: '#/components/parameters/Page'
@@ -570,6 +574,7 @@ paths:
         - $ref: '#/components/parameters/ClientIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - $ref: '#/components/parameters/DateFrom'
         - $ref: '#/components/parameters/DateTo'
         - $ref: '#/components/parameters/Page'
@@ -639,6 +644,7 @@ paths:
         - $ref: '#/components/parameters/ClientIdFilter'
         - $ref: '#/components/parameters/VisitIdFilter'
         - $ref: '#/components/parameters/TechnicianIdFilter'
+        - $ref: '#/components/parameters/TaskIdFilter'
         - name: removalReasonCode
           in: query
           description: Filtrar por código de motivo de retiro.
@@ -771,6 +777,12 @@ paths:
         Devuelve, en una sola respuesta, los registros de este módulo
         asociados a un número de cuenta: mediciones de distancia, tests de
         velocidad, mapas de calor, pings, traceroutes y equipos retirados.
+
+
+        **DEPRECADO (2026-09-30)** para la UI del "historial de la app": lo
+        reemplaza `GET /accounts/{accountNumber}/visits?include=records`, que
+        muestra esos mismos registros dentro de cada visita. Sigue funcionando
+        sin cambios para el APK ya instalado.
       operationId: getAccountToolHistory
       parameters:
         - name: accountNumber
@@ -1861,19 +1873,105 @@ paths:
         **1 + ≤5 llamadas upstream**, concurrencia `FSM_API_MAX_CONCURRENCY`.
         Un fallo de token en cualquier llamada es 503 `UPSTREAM_AUTH_ERROR`
         (nunca 401).
+
+
+        **`?include=records` (2026-09-30)** — reemplaza al "historial de la
+        app": cada visita trae `records` con lo que se hizo y qué datos arrojó
+        (speedtest de la app y del dispositivo externo, ping, traceroute, señal
+        WiFi, distancia, equipos retirados) y un `checklist` de qué se hizo y
+        qué no. Asociación: (1) `taskId` del registro == `workOrder` o
+        `fsmTaskId` de la visita (`linkedBy: TASK_ID`); (2) si no, por ventana
+        de tiempo de la visita, misma cuenta (`linkedBy: TIME_WINDOW`):
+        [creación de la orden, como mucho 72 h antes del fin; fin + 2 h]; la
+        pendiente llega hasta ahora + 2 h; si cae en varias gana la de cierre
+        más próximo. Las `CANCELADA` solo reciben registros por `taskId`. Solo
+        agrega lecturas a la base propia (0 llamadas upstream extra).
       operationId: getVisits
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
         - $ref: '#/components/parameters/BrandHeader'
         - $ref: '#/components/parameters/BrandQuery'
+        - name: include
+          in: query
+          required: false
+          description: "`records` → cada visita trae sus registros. Otro valor → 400."
+          schema:
+            type: string
+            enum: [records]
       responses:
         '200':
           description: >-
-            OK. Una cuenta sin órdenes devuelve `items` vacío.
+            OK. Una cuenta sin órdenes devuelve `items` vacío. Con
+            `include=records` el esquema es `VisitsWithRecordsResult`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VisitsResult'
+                oneOf:
+                  - $ref: '#/components/schemas/VisitsResult'
+                  - $ref: '#/components/schemas/VisitsWithRecordsResult'
+              examples:
+                withRecords:
+                  summary: include=records — una visita con speedtest externo y ping
+                  value:
+                    items:
+                      - taskId: ORDER/83093/2024
+                        workOrder: ORDER/83093/2024
+                        occurredAt: '2024-02-29T16:28:56.000Z'
+                        reason: TASK/109712/2024
+                        closingNotes: Se cambió el patch cord, señal OK.
+                        technician: VINCULADO GYE PEREZ JUAN
+                        result: SATISFACTORIA
+                        notesLoaded: true
+                        createdAt: '2024-02-28T21:08:20.000Z'
+                        endedAt: '2024-02-29T16:28:56.000Z'
+                        fsmTaskId: TASK/109712/2024
+                        records:
+                          linkedBy: MIXED
+                          window: { from: '2024-02-28T21:08:20.000Z', until: '2024-02-29T18:28:56.000Z' }
+                          checklist:
+                            - { type: speedtest, label: Speedtest (app), done: false, count: 0 }
+                            - { type: externalSpeedtest, label: Speedtest (dispositivo externo), done: true, count: 1 }
+                            - { type: ping, label: Ping, done: true, count: 1 }
+                            - { type: traceroute, label: Traceroute, done: false, count: 0 }
+                            - { type: wifiSignal, label: Medición de señal WiFi, done: false, count: 0 }
+                            - { type: distance, label: Medición de distancia, done: false, count: 0 }
+                            - { type: retiredEquipment, label: Equipos retirados, done: false, count: 0 }
+                          speedtests:
+                            - id: 3f0c7a52-0d7e-4f0e-9a39-3b8a3c1f1a11
+                              accountNumber: '35070291'
+                              taskId: ORDER/83093/2024
+                              createdAt: '2024-02-29T16:10:02.000Z'
+                              downloadMbps: 9412.5
+                              uploadMbps: 8120.3
+                              latencyMs: 3.2
+                              jitterMs: 0.4
+                              measuredAt: '2024-02-29T16:09:40.000Z'
+                              source: external-device
+                              deviceName: Tester 10G #1
+                              deviceId: AND-10G-0001
+                              simulated: true
+                              linkedBy: TASK_ID
+                          pingTests:
+                            - id: 8b1d6c0e-2a55-4c1e-9f7b-5d2e1a0c9b22
+                              accountNumber: '35070291'
+                              createdAt: '2024-02-29T16:12:00.000Z'
+                              target: 8.8.8.8
+                              packetsSent: 10
+                              packetsReceived: 10
+                              avgLatencyMs: 12.3
+                              continuous: false
+                              measuredAt: '2024-02-29T16:11:30.000Z'
+                              linkedBy: TIME_WINDOW
+                          tracerouteTests: []
+                          wifiHeatmaps: []
+                          distanceMeasurements: []
+                          retiredEquipment: []
+                    pendingCount: 0
+                    totalOrders: 1
+                    scanned: 1
+                    truncated: false
+                    brand: telenews
+                    recordsSummary: { linked: 2, unlinked: 0, windowGraceHours: 2, windowLookbackHours: 72 }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2233,6 +2331,12 @@ components:
       description: Filtrar por técnico (referencia upstream, opcional).
       schema:
         type: string
+    TaskIdFilter:
+      name: taskId
+      in: query
+      description: Filtrar por visita FSM (`TASK/…` u `ORDER/…`), coincidencia exacta.
+      schema:
+        type: string
     DateFrom:
       name: dateFrom
       in: query
@@ -2495,6 +2599,16 @@ components:
           description: >
             Identificador del técnico. Opcional. No hay autenticación en
             la Fase 1.
+        taskId:
+          type: string
+          maxLength: 120
+          description: >
+            Visita FSM en la que se tomó el registro: tarea (`TASK/294328/2026`)
+            u orden (`ORDER/424900/2026`). Opcional pero **recomendado**: es lo
+            que asocia el registro a la visita en
+            `GET /accounts/{accountNumber}/visits?include=records`. Sin él la
+            asociación es por ventana de tiempo.
+          example: ORDER/424900/2026
 
     # ---- Catálogos ---------------------------------------------------
 
@@ -2649,11 +2763,37 @@ components:
     # ---- Test de velocidad (campo 23) --------------------------------
 
     SpeedtestInput:
+      description: >
+        Speedtest de la app (`source: app`, default) o de un **dispositivo
+        Android externo** del técnico con puerto de hasta 10 Gb/s
+        (`source: external-device`). Para el externo son obligatorios
+        `deviceName` o `deviceId`, y `downloadMbps`/`uploadMbps` ≤ 10000.
+        `measuredAt` es obligatorio; `timestamp` se acepta como alias.
       allOf:
         - $ref: '#/components/schemas/ServiceContext'
         - type: object
           required: [downloadMbps, uploadMbps, measuredAt]
           properties:
+            source:
+              type: string
+              enum: [app, external-device]
+              default: app
+            deviceName:
+              type: string
+              maxLength: 120
+              example: Tester 10G #1
+            deviceId:
+              type: string
+              maxLength: 120
+              example: AND-10G-0001
+            simulated:
+              type: boolean
+              default: false
+              description: true si el resultado es simulado (hoy el externo se simula desde el frontend).
+            timestamp:
+              type: string
+              format: date-time
+              description: Alias de `measuredAt` (entrada). La respuesta siempre trae `measuredAt`.
             downloadMbps:
               type: number
               format: double
@@ -4455,6 +4595,94 @@ components:
           description: >
             true solo en SATISFACTORIA/INSATISFACTORIA. En el resto el cliente
             puede pedir las notas con `GET /workorders/tasks?workOrder=`.
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Creación de la orden (UTC). Abre la ventana de la visita.
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Fin de la orden (UTC); null si sigue pendiente.
+        fsmTaskId:
+          type: string
+          nullable: true
+          description: >
+            Tarea FSM de la orden (`TASK/294328/2026`) si `/account/process` la
+            trae. Junto con `workOrder`, es el valor que la app debe mandar como
+            `taskId` al guardar un registro durante esta visita.
+          example: TASK/109712/2024
+
+    VisitRecords:
+      type: object
+      properties:
+        linkedBy:
+          type: string
+          nullable: true
+          enum: [TASK_ID, TIME_WINDOW, MIXED]
+          description: null si la visita no tiene registros.
+        window:
+          type: object
+          nullable: true
+          description: Ventana usada para la asociación por tiempo; null en CANCELADA.
+          properties:
+            from: { type: string, format: date-time }
+            until: { type: string, format: date-time }
+        checklist:
+          type: array
+          description: Siempre los 7 tipos, en este orden, con `done` y `count`.
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment]
+              label: { type: string }
+              done: { type: boolean }
+              count: { type: integer }
+        speedtests:
+          type: array
+          description: App y dispositivo externo (distinguir por `source`). Cada uno trae `linkedBy`.
+          items: { $ref: '#/components/schemas/Speedtest' }
+        pingTests:
+          type: array
+          items: { $ref: '#/components/schemas/PingTest' }
+        tracerouteTests:
+          type: array
+          items: { $ref: '#/components/schemas/TracerouteTest' }
+        wifiHeatmaps:
+          type: array
+          description: Mediciones de señal WiFi por habitación y AP.
+          items: { $ref: '#/components/schemas/WifiHeatmap' }
+        distanceMeasurements:
+          type: array
+          items: { $ref: '#/components/schemas/DistanceMeasurement' }
+        retiredEquipment:
+          type: array
+          items: { $ref: '#/components/schemas/RetiredEquipment' }
+
+    VisitsWithRecordsResult:
+      allOf:
+        - $ref: '#/components/schemas/VisitsResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/VisitItem'
+                  - type: object
+                    properties:
+                      records:
+                        $ref: '#/components/schemas/VisitRecords'
+            recordsSummary:
+              type: object
+              properties:
+                linked: { type: integer, description: Registros de la cuenta asociados a alguna visita. }
+                unlinked: { type: integer, description: Registros de la cuenta fuera de toda visita. }
+                windowGraceHours: { type: integer, example: 2 }
+                windowLookbackHours: { type: integer, example: 72 }
 
     VisitsResult:
       type: object

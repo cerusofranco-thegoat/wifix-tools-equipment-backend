@@ -13,6 +13,7 @@ import { parseParams, parseQuery } from '../../lib/validation.js';
 import { brandFromRequest } from '../../lib/brand.js';
 import { env } from '../../config/env.js';
 import { getFsmConnector } from '../../connectors/index.js';
+import { withVisitRecords } from './visit-records.service.js';
 
 const accountParamsSchema = z.object({
   accountNumber: z.string().min(1, 'accountNumber es obligatorio.'),
@@ -20,6 +21,20 @@ const accountParamsSchema = z.object({
 
 const brandQuerySchema = z.object({
   brand: z.string().optional(),
+});
+
+/**
+ * `include=records` agrega a cada visita los registros guardados en la app
+ * (speedtest, ping, traceroute, señal WiFi, distancia, retiros) que le
+ * corresponden. Sin el parámetro la respuesta es la de siempre.
+ */
+const visitsQuerySchema = brandQuerySchema.extend({
+  include: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.split(',').every((p) => ['records', ''].includes(p.trim())), {
+      message: "include solo admite 'records'.",
+    }),
 });
 
 const unsatisfactoryQuerySchema = brandQuerySchema.extend({
@@ -57,13 +72,17 @@ export async function registerTasksVisitsRoutes(app: FastifyInstance): Promise<v
   // --- Campos 15+16 unificados: todas las visitas de la cuenta ---------------
   // Una entrada por orden, con su resultado. La pendiente (la próxima visita)
   // va primero. 1 + como mucho `FSM_ORDERS_MAX_FANOUT` llamadas.
+  // `?include=records`: cada visita trae lo que se hizo y qué datos arrojó
+  // (reemplaza al "historial de la app"). Solo agrega lecturas a la base propia.
   app.get('/accounts/:accountNumber/visits', async (request) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
-    const { brand } = parseQuery(brandQuerySchema, request.query);
-    return getFsmConnector().getVisits(accountNumber, {
+    const { brand, include } = parseQuery(visitsQuerySchema, request.query);
+    const visits = await getFsmConnector().getVisits(accountNumber, {
       brand: brandFromRequest(request, brand),
       limit: env.FSM_ORDERS_MAX_FANOUT,
     });
+    const wantsRecords = include?.split(',').some((p) => p.trim() === 'records') ?? false;
+    return wantsRecords ? withVisitRecords(accountNumber, visits) : visits;
   });
 
   // --- Campo 16: visitas anteriores (sin notas) -----------------------------

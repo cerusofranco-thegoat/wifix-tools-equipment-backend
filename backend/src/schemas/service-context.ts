@@ -8,6 +8,12 @@ export const serviceContextSchema = z.object({
   contractId: z.string().min(1).optional(),
   visitId: z.string().min(1).optional(),
   technicianId: z.string().min(1).optional(),
+  /**
+   * Visita FSM en la que se tomó el registro: tarea (`TASK/294328/2026`) u
+   * orden (`ORDER/424900/2026`). Es lo que asocia el registro a una visita
+   * anterior en `GET /accounts/{n}/visits?include=records`.
+   */
+  taskId: z.string().trim().min(1).max(120, 'taskId excede 120 caracteres.').optional(),
 });
 
 export type ServiceContextInput = z.infer<typeof serviceContextSchema>;
@@ -18,6 +24,7 @@ export interface ContextColumns {
   contractId: string | null;
   visitId: string | null;
   technicianId: string | null;
+  taskId: string | null;
 }
 
 export function toContextColumns(ctx: ServiceContextInput): ContextColumns {
@@ -27,6 +34,7 @@ export function toContextColumns(ctx: ServiceContextInput): ContextColumns {
     contractId: ctx.contractId ?? null,
     visitId: ctx.visitId ?? null,
     technicianId: ctx.technicianId ?? null,
+    taskId: ctx.taskId ?? null,
   };
 }
 
@@ -36,6 +44,7 @@ export interface ContextDto {
   contractId?: string;
   visitId?: string;
   technicianId?: string;
+  taskId?: string;
 }
 
 export function toContextDto(row: ContextColumns): ContextDto {
@@ -44,5 +53,6 @@ export function toContextDto(row: ContextColumns): ContextDto {
   if (row.contractId) dto.contractId = row.contractId;
   if (row.visitId) dto.visitId = row.visitId;
   if (row.technicianId) dto.technicianId = row.technicianId;
+  if (row.taskId) dto.taskId = row.taskId;
   return dto;
 }

@@ -6,6 +6,7 @@ import type { ListFilters } from '../../../schemas/filters.js';
 import { speedtestRepository } from './speedtest.repository.js';
 import { toSpeedtestDto, type SpeedtestDto } from './speedtest.mappers.js';
 import type { SpeedtestInput } from './speedtest.schemas.js';
+import { toSpeedtestSourceEnum } from './speedtest.mappers.js';
 
 export const speedtestService = {
   async create(input: SpeedtestInput): Promise<SpeedtestDto> {
@@ -23,6 +24,10 @@ export const speedtestService = {
       ispName: input.ispName ?? null,
       measuredAt: input.measuredAt,
       notes: input.notes ?? null,
+      source: toSpeedtestSourceEnum(input.source),
+      deviceName: input.deviceName ?? null,
+      deviceId: input.deviceId ?? null,
+      simulated: input.simulated,
     });
     return toSpeedtestDto(row);
   },

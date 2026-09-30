@@ -497,7 +497,8 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 | | `/herramientas/v1/accounts/{n}/wifi-devices` | GET |
 | | `/herramientas/v1/accounts/{n}/wifi-config` | GET · PUT |
 | Ingreso a la cuenta | `/herramientas/v1/accounts/lookup?document=` (cédula/RUC; `order=` → 501) | GET · POST |
-| Tareas y Visitas | `/herramientas/v1/accounts/{n}/unsatisfactory-tasks` | GET |
+| Tareas y Visitas | `/herramientas/v1/accounts/{n}/visits` (`?include=records` → registros de la app por visita) | GET |
+| | `/herramientas/v1/accounts/{n}/unsatisfactory-tasks` | GET |
 | | `/herramientas/v1/accounts/{n}/previous-visits` | GET |
 | | `/herramientas/v1/accounts/{n}/orders` | GET |
 | | `/herramientas/v1/workorders/tasks?workOrder=` | GET |
@@ -509,7 +510,11 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 - `accountNumber` es **obligatorio** en cada POST transaccional.
 - `measuredAt`/`retiredAt` no pueden ser fechas futuras (tolerancia 5 min).
 - Paginación: `page ≥ 1`, `pageSize` 1..100 (default 20).
-- **Speedtest:** `downloadMbps`, `uploadMbps` obligatorios y ≥ 0.
+- **Speedtest:** `downloadMbps`, `uploadMbps` obligatorios y ≥ 0. `source: external-device`
+  (dispositivo Android del técnico, hasta 10 Gb/s) exige `deviceName` o `deviceId` y ≤ 10000 Mbps;
+  `timestamp` es alias de `measuredAt`.
+- **`taskId`** (opcional en todo POST transaccional): tarea/orden FSM de la visita; es lo que
+  asocia el registro a la visita en `visits?include=records` (si falta, se asocia por ventana de tiempo).
 - **Mapa de calor:** al menos 1 habitación; `signalDbm` ∈ [-120, 0]; `floor` default 1.
 - **Ping:** si se envían ambos, `packetsReceived ≤ packetsSent`; `heatmapId` debe existir.
 - **Equipos retirados:** `equipmentModelId` y `removalReasonCode` deben existir en

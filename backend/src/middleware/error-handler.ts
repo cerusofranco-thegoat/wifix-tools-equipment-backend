@@ -10,6 +10,7 @@ export type ApiErrorCode =
   | 'CONNECTOR_ERROR'
   | 'UPSTREAM_AUTH_ERROR'
   | 'UPSTREAM_UNAVAILABLE'
+  | 'NOT_IMPLEMENTED'
   | 'INTERNAL_ERROR';
 
 export interface ApiErrorDetail {
@@ -84,6 +85,15 @@ export class ApiError extends Error {
 
   static unauthorized(message = 'No autorizado.'): ApiError {
     return new ApiError('UNAUTHORIZED', 401, message);
+  }
+
+  /**
+   * La operación está reconocida por el contrato pero todavía no se puede
+   * resolver (p. ej. falta el endpoint de la operadora). 501, no 404: la ruta
+   * existe y el cliente puede ocultar la opción hasta que cambie.
+   */
+  static notImplemented(message: string, meta?: Record<string, unknown>): ApiError {
+    return new ApiError('NOT_IMPLEMENTED', 501, message, undefined, meta);
   }
 
   static connectorError(message = 'Error consultando un sistema externo.'): ApiError {

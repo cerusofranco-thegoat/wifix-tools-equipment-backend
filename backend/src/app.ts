@@ -1,4 +1,8 @@
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import Fastify, {
+  type FastifyInstance,
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from 'fastify';
 import cors from '@fastify/cors';
 import { env } from './config/env.js';
 import { registerErrorHandler } from './middleware/error-handler.js';
@@ -19,6 +23,7 @@ import { registerNetworkDiagnosticsRoutes } from './modules/network-diagnostics/
 import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.routes.js';
 import { registerIntegrationsRoutes } from './modules/integrations/integrations.routes.js';
 import { registerWhitelistRoutes } from './modules/whitelist/whitelist.routes.js';
+import { registerAccountLookupRoutes } from './modules/account-lookup/account-lookup.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -27,6 +32,33 @@ const AUTH_EXCLUDED_PATHS: Array<string | RegExp> = [
   `${API_PREFIX}/health`,
   `${API_PREFIX}/auth/login`,
 ];
+
+/**
+ * Query params con datos personales que NUNCA deben quedar en el log de
+ * peticiones (LOPDP): `GET /accounts/lookup?document=<cédula>`.
+ */
+const REDACTED_QUERY_PARAMS = ['document'];
+
+/** URL con los valores de `REDACTED_QUERY_PARAMS` reemplazados. */
+export function redactUrl(url: string): string {
+  const q = url.indexOf('?');
+  if (q === -1) return url;
+  const params = url
+    .slice(q + 1)
+    .split('&')
+    .map((pair) => {
+      const eq = pair.indexOf('=');
+      const rawKey = (eq === -1 ? pair : pair.slice(0, eq)).replace(/\+/g, ' ');
+      let key = rawKey;
+      try {
+        key = decodeURIComponent(rawKey);
+      } catch {
+        /* clave mal codificada: se compara tal cual */
+      }
+      return REDACTED_QUERY_PARAMS.includes(key) && eq !== -1 ? `${pair.slice(0, eq)}=[REDACTADO]` : pair;
+    });
+  return `${url.slice(0, q)}?${params.join('&')}`;
+}
 
 export interface BuildAppOptions {
   /** Si es `false`, desactiva el logger (útil en pruebas). */
@@ -39,6 +71,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const loggerConfig: FastifyServerOptions['logger'] = logger
     ? {
         level: env.LOG_LEVEL,
+        serializers: {
+          req(request: FastifyRequest) {
+            return {
+              method: request.method,
+              url: redactUrl(request.url),
+              host: request.host,
+              remoteAddress: request.ip,
+            };
+          },
+        },
         ...(env.NODE_ENV === 'development'
           ? {
               transport: {
@@ -109,6 +151,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerTasksVisitsRoutes(api);
       await registerIntegrationsRoutes(api);
       await registerWhitelistRoutes(api);
+      await registerAccountLookupRoutes(api);
     },
     { prefix: API_PREFIX },
   );

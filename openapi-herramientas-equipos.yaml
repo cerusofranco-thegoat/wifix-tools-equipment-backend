@@ -1313,6 +1313,142 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /accounts/lookup:
+    get:
+      tags: [Datos del Cliente]
+      summary: Buscar cuentas por cédula/RUC (o por nº de orden FSM, aún no disponible)
+      description: >
+        Ingreso alternativo al número de cuenta. Envía **exactamente uno** de
+        `document` u `order`.
+
+
+        **`document`** (cédula/RUC/pasaporte): se normaliza con la misma lógica
+        que el import de la whitelist (`normalizeDocumentId`): se quitan
+        espacios, puntos y guiones; 9 dígitos → 10 y 12 → 13 restituyendo el
+        cero inicial. Se buscan las cuentas de la whitelist Xtrim con ese
+        documento. Solo lee la base propia: cero llamadas a sistemas externos.
+
+
+        **LOPDP:** el documento es solo el criterio de búsqueda; **nunca** sale
+        en la respuesta (ni `documentId` ni `cpartyId`) y se redacta en el log de
+        peticiones. Se prefiere `POST /accounts/lookup` para que tampoco viaje en
+        la URL.
+
+
+        **`order`** (nº de orden FSM, p. ej. `ORDER/424900/2026`): reconocido
+        pero responde **501 `NOT_IMPLEMENTED`**. `fsm-data-ms` no expone una
+        consulta orden → cuenta (`/workorder/tasks` devuelve tareas y notas sin
+        cuenta ni cpartyId) y la whitelist no guarda órdenes. Se habilitará
+        cuando la operadora publique ese endpoint.
+      operationId: lookupAccounts
+      parameters:
+        - name: document
+          in: query
+          required: false
+          schema: { type: string, maxLength: 32 }
+          description: Cédula (10), RUC (13) u otro documento. Mínimo 6 caracteres tras normalizar.
+        - name: order
+          in: query
+          required: false
+          schema: { type: string, maxLength: 120 }
+          description: Nº de orden FSM. Hoy siempre 501.
+      responses:
+        '200':
+          description: >
+            OK. Sin coincidencias → `matches: []` (no es error). Si la whitelist
+            nunca se importó → `reason: WHITELIST_EMPTY`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountLookupResult'
+              examples:
+                varias:
+                  summary: Documento con varias cuentas (el técnico elige)
+                  value:
+                    by: document
+                    documentKind: CEDULA
+                    matches:
+                      - accountNumber: '35070291'
+                        status: ACTIVO
+                        city: GUAYAQUIL
+                        node: AR7S
+                        businessType: Combo Tv - Int
+                        accountType: Residencial
+                        accessType: Sin Registro
+                        fullName: PEREZ GOMEZ JUAN CARLOS
+                      - accountNumber: '40999888'
+                        status: SUSPENDIDO
+                        city: GUAYAQUIL
+                        node: AR7S
+                        businessType: Internet GPON
+                        accountType: Residencial
+                        accessType: Mora Dia 31
+                        fullName: PEREZ GOMEZ JUAN CARLOS
+                    count: 2
+                    truncated: false
+                    importedAt: '2026-09-26T22:07:00.000Z'
+                ninguna:
+                  summary: Sin coincidencias
+                  value:
+                    by: document
+                    documentKind: CEDULA
+                    matches: []
+                    count: 0
+                    truncated: false
+                    importedAt: '2026-09-26T22:07:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          description: Búsqueda por `order` todavía no disponible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: NOT_IMPLEMENTED
+                message: >-
+                  El ingreso por número de orden todavía no está disponible: FSM
+                  no expone una consulta de orden a cuenta. Ingresa con el número
+                  de cuenta o la cédula.
+                meta:
+                  lookup: order
+                  order: ORDER/424900/2026
+                  requires: Endpoint FSM orden→cuenta (pendiente con la operadora).
+    post:
+      tags: [Datos del Cliente]
+      summary: Igual que el GET, con el criterio en el cuerpo (preferido)
+      operationId: lookupAccountsPost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                document: { type: string, maxLength: 32 }
+                order: { type: string, maxLength: 120 }
+            example:
+              document: '0912345678'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountLookupResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '501':
+          description: Búsqueda por `order` todavía no disponible.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /terminals/{id}:
     get:
       tags: [Diagnóstico de Red]
@@ -3199,6 +3335,50 @@ components:
           type: string
           enum: [WHITELIST_EMPTY]
           description: Solo con `listed:null`.
+
+    AccountLookupResult:
+      type: object
+      required: [by, documentKind, matches, count, truncated, importedAt]
+      properties:
+        by:
+          type: string
+          enum: [document]
+        documentKind:
+          type: string
+          enum: [CEDULA, RUC, OTRO]
+          description: CEDULA (10 dígitos), RUC (13) u OTRO (se buscó tal cual).
+        matches:
+          type: array
+          description: >
+            Máximo 50. Orden: ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE, luego
+            por número de cuenta. Nunca incluye el documento.
+          items:
+            type: object
+            required: [accountNumber, status]
+            properties:
+              accountNumber: { type: string }
+              status: { type: string, enum: [ACTIVO, SUSPENDIDO, ORDENADO, PENDIENTE] }
+              city: { type: string, nullable: true }
+              node: { type: string, nullable: true }
+              businessType: { type: string, nullable: true }
+              accountType: { type: string, nullable: true }
+              accessType: { type: string, nullable: true }
+              fullName:
+                type: string
+                nullable: true
+                description: Nombre según la planilla Xtrim (para que el técnico elija la cuenta).
+        count: { type: integer }
+        truncated:
+          type: boolean
+          description: Hay más de 50 cuentas con ese documento; se recortó la lista.
+        importedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          enum: [WHITELIST_EMPTY]
+          description: Solo si la whitelist nunca se importó.
 
     NapPort:
       type: object

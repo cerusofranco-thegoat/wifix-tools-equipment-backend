@@ -496,6 +496,7 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 | | `/herramientas/v1/accounts/{n}/lan-devices` | GET |
 | | `/herramientas/v1/accounts/{n}/wifi-devices` | GET |
 | | `/herramientas/v1/accounts/{n}/wifi-config` | GET · PUT |
+| Ingreso a la cuenta | `/herramientas/v1/accounts/lookup?document=` (cédula/RUC; `order=` → 501) | GET · POST |
 | Tareas y Visitas | `/herramientas/v1/accounts/{n}/unsatisfactory-tasks` | GET |
 | | `/herramientas/v1/accounts/{n}/previous-visits` | GET |
 | | `/herramientas/v1/accounts/{n}/orders` | GET |
@@ -530,6 +531,7 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 | `CONNECTOR_ERROR` | 502 | Fallo de un sistema externo (modo real) |
 | `UPSTREAM_AUTH_ERROR` | 503 | Token de FSM ausente, vencido o rechazado |
 | `UPSTREAM_UNAVAILABLE` | 503 | FSM no responde / devolvió error propio (reintentable) |
+| `NOT_IMPLEMENTED` | 501 | Operación reconocida pero aún no resoluble (hoy: `accounts/lookup?order=`) |
 | `INTERNAL_ERROR` | 500 | Error no controlado |
 
 `UNAUTHORIZED` (401) es **solo** para el JWT propio de Wifix: ningún fallo de

@@ -475,3 +475,65 @@ model WhitelistImport {
   @@index([importedAt])
   @@map("whitelist_imports")
 }
+
+// ===========================================================================
+// UBICACIÓN "CASA CLIENTE" (GPS del técnico en el domicilio)
+// ===========================================================================
+//
+// APPEND-ONLY: cada captura es una fila nueva; nunca se sobrescribe. Sirve para
+// que un gerente compare la ubicación capturada por el técnico con la que la
+// operadora tiene registrada del cliente y ubique la casa exacta.
+//
+// Las columnas `registered_*`, `nap_*` y `distance_*` son una FOTO tomada al
+// capturar (la ubicación registrada o la NAP pueden cambiar después): leer el
+// historial no requiere llamar a FSM.
+
+enum ClientLocationLabel {
+  CASA_CLIENTE
+
+  @@map("client_location_label")
+}
+
+enum ClientLocationSource {
+  GPS
+  MANUAL
+
+  @@map("client_location_source")
+}
+
+model ClientLocation {
+  id                         String               @id @default(uuid()) @db.Uuid
+  accountNumber              String               @map("account_number")
+  label                      ClientLocationLabel  @default(CASA_CLIENTE)
+  latitude                   Float
+  longitude                  Float
+  accuracyMeters             Float?               @map("accuracy_meters")
+  source                     ClientLocationSource
+  /// NAP del cliente a la que se vincula la captura (la enviada o la de current-nap).
+  napCode                    String?              @map("nap_code")
+  napPort                    String?              @map("nap_port")
+  /// Coordenada de la NAP según current-nap al capturar; null si no coincide el código.
+  napLatitude                Float?               @map("nap_latitude")
+  napLongitude               Float?               @map("nap_longitude")
+  /// true si esa NAP era la asignada SIMULADA de current-nap.
+  napSimulated               Boolean?             @map("nap_simulated")
+  /// Vínculo con la visita FSM (`TASK/…` u `ORDER/…`). Opcional.
+  taskId                     String?              @map("task_id")
+  capturedAt                 DateTime             @map("captured_at") @db.Timestamptz(6)
+  notes                      String?
+  /// Usuario (técnico) que capturó: id del JWT y email como foto.
+  capturedById               String               @map("captured_by_id")
+  capturedByEmail            String               @map("captured_by_email")
+  /// Ubicación registrada del cliente al capturar ('FSM' | 'TEC' | 'MOCK').
+  registeredLatitude         Float?               @map("registered_latitude")
+  registeredLongitude        Float?               @map("registered_longitude")
+  registeredSource           String?              @map("registered_source")
+  distanceToRegisteredMeters Float?               @map("distance_to_registered_meters")
+  distanceToNapMeters        Float?               @map("distance_to_nap_meters")
+  createdAt                  DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountNumber, capturedAt])
+  @@index([accountNumber, taskId])
+  @@index([capturedAt])
+  @@map("client_locations")
+}

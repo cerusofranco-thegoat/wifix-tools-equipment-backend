@@ -1298,6 +1298,264 @@ paths:
         '503':
           $ref: '#/components/responses/UpstreamAuthUnavailable'
 
+  /accounts/{accountNumber}/client-location:
+    post:
+      tags: [Datos del Cliente]
+      summary: Guarda la ubicación "Casa cliente" capturada por el técnico
+      description: >
+        El técnico captura su GPS (o marca el punto a mano) en el domicilio del
+        cliente y queda **guardado** como "Casa cliente", vinculado a la NAP
+        del cliente, para que un gerente lo compare con la ubicación que la
+        operadora tiene registrada y ubique la casa exacta.
+
+
+        **Append-only**: cada captura es una fila nueva; nunca se sobrescribe
+        (no hay PUT/PATCH/DELETE). Se guarda el usuario (JWT) que capturó.
+
+
+        Al guardar se toma una **foto**:
+
+        - `registeredLocation`: coordenada del cliente en FSM
+          `/account/process` (la del cliente o, si no viene, la de la orden más
+          reciente que la tenga; cache 60 s compartido con client-profile).
+          `source:FSM` (o `MOCK` con `CONNECTOR_MODE_FSM=mock`). TEC **no**
+          expone el domicilio y la whitelist no guarda coordenadas (LOPDP): si
+          FSM no la trae o no responde, `null`.
+
+        - NAP: `napCode`/`napPort` enviados o, si no vienen, los de
+          `GET /accounts/{accountNumber}/current-nap` (real o asignada
+          simulada; cache 10 min). `napLocation` y `distanceToNapMeters` solo
+          si el código coincide con el de current-nap; `napLocation.simulated`
+          dice si esa NAP era la simulada.
+
+        - Distancias con Haversine, en metros (0,1 m).
+
+
+        Un fallo de FSM **nunca** impide guardar. La cuenta se guarda
+        normalizada (`035070291` → `35070291`). Las coordenadas no se escriben
+        en los logs.
+      operationId: createClientLocation
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+        - $ref: '#/components/parameters/BrandHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientLocationInput'
+            examples:
+              gps:
+                summary: GPS del técnico durante la visita
+                value:
+                  latitude: -2.24801
+                  longitude: -79.90422
+                  accuracyMeters: 6.5
+                  source: GPS
+                  taskId: ORDER/424900/2026
+                  notes: Portón verde, junto a la tienda.
+              manual:
+                summary: Punto marcado a mano, con NAP y puerto explícitos
+                value:
+                  latitude: -2.24795
+                  longitude: -79.90418
+                  label: CASA_CLIENTE
+                  source: MANUAL
+                  napCode: PL53KD8
+                  napPort: 7
+                  capturedAt: '2026-09-30T15:40:00.000Z'
+      responses:
+        '201':
+          description: Captura guardada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientLocation'
+              examples:
+                created:
+                  value:
+                    id: 6d1f0b2e-8c3a-4d7e-9b1a-2f4c5e6a7b80
+                    accountNumber: '35070291'
+                    label: CASA_CLIENTE
+                    latitude: -2.24801
+                    longitude: -79.90422
+                    accuracyMeters: 6.5
+                    source: GPS
+                    napCode: PL53KD8
+                    napPort: 7
+                    taskId: ORDER/424900/2026
+                    capturedAt: '2026-09-30T15:42:10.000Z'
+                    createdAt: '2026-09-30T15:42:11.204Z'
+                    capturedBy:
+                      id: 0b7e7a3c-1f2d-4c5b-8e9a-3d2c1b0a9f87
+                      email: tecnico@wifix.test
+                    registeredLocation:
+                      latitude: -2.2446170
+                      longitude: -79.9051330
+                      source: FSM
+                    distanceToRegisteredMeters: 385.4
+                    distanceToNapMeters: 507.9
+                    napLocation:
+                      latitude: -2.243528
+                      longitude: -79.906654
+                      simulated: false
+                    notes: Portón verde, junto a la tienda.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags: [Datos del Cliente]
+      summary: Capturas "Casa cliente" de la cuenta y su ubicación registrada
+      description: >
+        Últimas capturas de la cuenta (más reciente primero, máximo 50),
+        `latest` (= `items[0]` o `null`) y la ubicación registrada del cliente
+        en FSM consultada en vivo (cache 60 s); si FSM no responde, la foto de
+        la última captura. Cada ítem trae su propia foto de registrada/NAP.
+      operationId: getClientLocations
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+        - $ref: '#/components/parameters/BrandHeader'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountClientLocations'
+              examples:
+                withCaptures:
+                  value:
+                    latest:
+                      id: 6d1f0b2e-8c3a-4d7e-9b1a-2f4c5e6a7b80
+                      accountNumber: '35070291'
+                      label: CASA_CLIENTE
+                      latitude: -2.24801
+                      longitude: -79.90422
+                      accuracyMeters: 6.5
+                      source: GPS
+                      napCode: PL53KD8
+                      napPort: 7
+                      taskId: ORDER/424900/2026
+                      capturedAt: '2026-09-30T15:42:10.000Z'
+                      createdAt: '2026-09-30T15:42:11.204Z'
+                      capturedBy:
+                        id: 0b7e7a3c-1f2d-4c5b-8e9a-3d2c1b0a9f87
+                        email: tecnico@wifix.test
+                      registeredLocation:
+                        latitude: -2.2446170
+                        longitude: -79.9051330
+                        source: FSM
+                      distanceToRegisteredMeters: 385.4
+                      distanceToNapMeters: 507.9
+                      napLocation:
+                        latitude: -2.243528
+                        longitude: -79.906654
+                        simulated: false
+                      notes: Portón verde, junto a la tienda.
+                    items:
+                      - id: 6d1f0b2e-8c3a-4d7e-9b1a-2f4c5e6a7b80
+                        accountNumber: '35070291'
+                        label: CASA_CLIENTE
+                        latitude: -2.24801
+                        longitude: -79.90422
+                        accuracyMeters: 6.5
+                        source: GPS
+                        napCode: PL53KD8
+                        napPort: 7
+                        taskId: ORDER/424900/2026
+                        capturedAt: '2026-09-30T15:42:10.000Z'
+                        createdAt: '2026-09-30T15:42:11.204Z'
+                        capturedBy: { id: 0b7e7a3c-1f2d-4c5b-8e9a-3d2c1b0a9f87, email: tecnico@wifix.test }
+                        registeredLocation: { latitude: -2.244617, longitude: -79.905133, source: FSM }
+                        distanceToRegisteredMeters: 385.4
+                        distanceToNapMeters: 507.9
+                        napLocation: { latitude: -2.243528, longitude: -79.906654, simulated: false }
+                        notes: Portón verde, junto a la tienda.
+                    registeredLocation:
+                      latitude: -2.244617
+                      longitude: -79.905133
+                      source: FSM
+                empty:
+                  summary: Sin capturas
+                  value:
+                    latest: null
+                    items: []
+                    registeredLocation: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /client-locations:
+    get:
+      tags: [Datos del Cliente]
+      summary: Capturas "Casa cliente" de todas las cuentas (vista de gerente)
+      description: >
+        Lista paginada de capturas, más reciente primero, con los mismos
+        objetos que `/accounts/{accountNumber}/client-location`. Solo lee la
+        base propia: cero llamadas a sistemas externos. Hoy requiere solo JWT
+        (no hay roles todavía).
+      operationId: listClientLocations
+      parameters:
+        - name: accountNumber
+          in: query
+          required: false
+          description: Filtra por cuenta (se normaliza; `035070291` = `35070291`).
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          description: '`capturedAt` >= from (ISO 8601).'
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: '`capturedAt` <= to (ISO 8601). `from > to` es 400.'
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientLocationPage'
+              examples:
+                page:
+                  value:
+                    items:
+                      - id: 6d1f0b2e-8c3a-4d7e-9b1a-2f4c5e6a7b80
+                        accountNumber: '35070291'
+                        label: CASA_CLIENTE
+                        latitude: -2.24801
+                        longitude: -79.90422
+                        accuracyMeters: 6.5
+                        source: GPS
+                        napCode: PL53KD8
+                        napPort: 7
+                        taskId: ORDER/424900/2026
+                        capturedAt: '2026-09-30T15:42:10.000Z'
+                        createdAt: '2026-09-30T15:42:11.204Z'
+                        capturedBy: { id: 0b7e7a3c-1f2d-4c5b-8e9a-3d2c1b0a9f87, email: tecnico@wifix.test }
+                        registeredLocation: { latitude: -2.244617, longitude: -79.905133, source: FSM }
+                        distanceToRegisteredMeters: 385.4
+                        distanceToNapMeters: 507.9
+                        napLocation: { latitude: -2.243528, longitude: -79.906654, simulated: false }
+                        notes: null
+                    page: { page: 1, pageSize: 50, totalItems: 1, totalPages: 1 }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /accounts/{accountNumber}/whitelist:
     get:
       tags: [Datos del Cliente]
@@ -1942,7 +2200,8 @@ paths:
         **`?include=records` (2026-09-30)** — reemplaza al "historial de la
         app": cada visita trae `records` con lo que se hizo y qué datos arrojó
         (speedtest de la app y del dispositivo externo, ping, traceroute, señal
-        WiFi, distancia, equipos retirados) y un `checklist` de qué se hizo y
+        WiFi, distancia, equipos retirados y, desde el 2026-09-30, ubicación
+        casa cliente `clientLocation`, por `capturedAt`) y un `checklist` de qué se hizo y
         qué no. Asociación: (1) `taskId` del registro == `workOrder` o
         `fsmTaskId` de la visita (`linkedBy: TASK_ID`); (2) si no, por ventana
         de tiempo de la visita, misma cuenta (`linkedBy: TIME_WINDOW`):
@@ -2000,6 +2259,7 @@ paths:
                             - { type: wifiSignal, label: Medición de señal WiFi, done: false, count: 0 }
                             - { type: distance, label: Medición de distancia, done: false, count: 0 }
                             - { type: retiredEquipment, label: Equipos retirados, done: false, count: 0 }
+                            - { type: clientLocation, label: Ubicación casa cliente, done: false, count: 0 }
                           speedtests:
                             - id: 3f0c7a52-0d7e-4f0e-9a39-3b8a3c1f1a11
                               accountNumber: '35070291'
@@ -2030,6 +2290,7 @@ paths:
                           wifiHeatmaps: []
                           distanceMeasurements: []
                           retiredEquipment: []
+                          clientLocations: []
                     pendingCount: 0
                     totalOrders: 1
                     scanned: 1
@@ -3627,6 +3888,160 @@ components:
           enum: [NOT_FOUND, NO_COORDS, NOT_SUPPORTED, UPSTREAM_AUTH_ERROR, UPSTREAM_UNAVAILABLE]
           description: Solo con `simulated:true`. Por qué no se usó la NAP real.
 
+    RegisteredLocation:
+      type: object
+      description: >
+        Ubicación registrada del cliente. Hoy sale solo de FSM
+        `/account/process`; `MOCK` con el conector FSM en mock. `TEC` queda
+        reservado: TEC no expone el domicilio.
+      required: [latitude, longitude, source]
+      properties:
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        source:
+          type: string
+          enum: [FSM, TEC, MOCK]
+
+    ClientLocationInput:
+      type: object
+      required: [latitude, longitude, source]
+      properties:
+        latitude: { type: number, format: double, minimum: -90, maximum: 90 }
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          description: (0,0) es 400.
+        accuracyMeters: { type: number, minimum: 0, description: Precisión del GPS en metros. }
+        label:
+          type: string
+          enum: [CASA_CLIENTE]
+          default: CASA_CLIENTE
+        source:
+          type: string
+          enum: [GPS, MANUAL]
+        napCode:
+          type: string
+          maxLength: 50
+          description: NAP del cliente. Sin él, la de current-nap.
+        napPort:
+          oneOf:
+            - { type: string, maxLength: 20 }
+            - { type: integer, minimum: 0 }
+          description: Puerto en la NAP. Sin él (y misma NAP), el de current-nap.
+        taskId:
+          type: string
+          maxLength: 100
+          description: '`workOrder` (ORDER/…) o tarea (TASK/…) de la visita en curso.'
+        capturedAt:
+          type: string
+          format: date-time
+          description: Default ahora. No puede ser futura.
+        notes: { type: string, maxLength: 500 }
+
+    ClientLocation:
+      type: object
+      required:
+        - id
+        - accountNumber
+        - label
+        - latitude
+        - longitude
+        - accuracyMeters
+        - source
+        - napCode
+        - napPort
+        - taskId
+        - capturedAt
+        - createdAt
+        - capturedBy
+        - registeredLocation
+        - distanceToRegisteredMeters
+        - distanceToNapMeters
+      properties:
+        id: { type: string, format: uuid }
+        accountNumber: { type: string, description: Normalizada. }
+        label: { type: string, enum: [CASA_CLIENTE] }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        accuracyMeters: { type: number, nullable: true }
+        source: { type: string, enum: [GPS, MANUAL] }
+        napCode: { type: string, nullable: true }
+        napPort:
+          oneOf:
+            - { type: integer, nullable: true }
+            - { type: string, nullable: true }
+          description: Número si el puerto es numérico; texto tal cual si no.
+        taskId: { type: string, nullable: true }
+        capturedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        capturedBy:
+          type: object
+          required: [id, email]
+          properties:
+            id: { type: string }
+            email: { type: string }
+        registeredLocation:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/RegisteredLocation'
+          nullable: true
+          description: Foto de la ubicación registrada al capturar.
+        distanceToRegisteredMeters:
+          type: number
+          nullable: true
+          description: Haversine captura ↔ registrada (m).
+        distanceToNapMeters:
+          type: number
+          nullable: true
+          description: Haversine captura ↔ NAP del cliente (m). null si no se conocen sus coordenadas.
+        napLocation:
+          type: object
+          nullable: true
+          description: >
+            Aditivo. Coordenada de la NAP usada para `distanceToNapMeters`;
+            `simulated:true` si era la NAP asignada simulada.
+          properties:
+            latitude: { type: number, format: double }
+            longitude: { type: number, format: double }
+            simulated: { type: boolean }
+        notes: { type: string, nullable: true, description: Aditivo. }
+
+    AccountClientLocations:
+      type: object
+      required: [latest, items, registeredLocation]
+      properties:
+        latest:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/ClientLocation'
+          nullable: true
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ClientLocation' }
+        registeredLocation:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/RegisteredLocation'
+          nullable: true
+
+    ClientLocationPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ClientLocation' }
+        page:
+          type: object
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            totalItems: { type: integer }
+            totalPages: { type: integer }
+
     WhitelistCheck:
       type: object
       description: >
@@ -4723,13 +5138,15 @@ components:
             until: { type: string, format: date-time }
         checklist:
           type: array
-          description: Siempre los 7 tipos, en este orden, con `done` y `count`.
+          description: >
+            Siempre los 8 tipos, en este orden, con `done` y `count`
+            (`clientLocation` = "Ubicación casa cliente", aditivo 2026-09-30).
           items:
             type: object
             properties:
               type:
                 type: string
-                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment]
+                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment, clientLocation]
               label: { type: string }
               done: { type: boolean }
               count: { type: integer }
@@ -4753,6 +5170,10 @@ components:
         retiredEquipment:
           type: array
           items: { $ref: '#/components/schemas/RetiredEquipment' }
+        clientLocations:
+          type: array
+          description: Capturas "Casa cliente" (aditivo). Cada una trae `linkedBy`.
+          items: { $ref: '#/components/schemas/ClientLocation' }
 
     VisitsWithRecordsResult:
       allOf:

@@ -1,5 +1,6 @@
 // Registros guardados en la app (speedtest, ping, traceroute, señal WiFi,
-// distancia, equipos retirados) asociados a cada VISITA de la cuenta.
+// distancia, equipos retirados, ubicación casa cliente) asociados a cada
+// VISITA de la cuenta.
 //
 // Reemplaza al "historial de la app" (conteos sueltos de tool-history): cada
 // visita dice qué se hizo, qué no y qué datos arrojó.
@@ -29,6 +30,10 @@ import {
   toRetiredEquipmentDto,
   type RetiredEquipmentDto,
 } from '../retired-equipment/retired-equipment.mappers.js';
+import {
+  toClientLocationDto,
+  type ClientLocationDto,
+} from '../client-location/client-location.mappers.js';
 
 /** Margen tras el cierre de la orden: el técnico suele guardar al salir. */
 export const VISIT_WINDOW_GRACE_MS = 2 * 3600_000;
@@ -46,7 +51,8 @@ export type RecordType =
   | 'traceroute'
   | 'wifiSignal'
   | 'distance'
-  | 'retiredEquipment';
+  | 'retiredEquipment'
+  | 'clientLocation';
 
 const RECORD_LABELS: Record<RecordType, string> = {
   speedtest: 'Speedtest (app)',
@@ -56,6 +62,7 @@ const RECORD_LABELS: Record<RecordType, string> = {
   wifiSignal: 'Medición de señal WiFi',
   distance: 'Medición de distancia',
   retiredEquipment: 'Equipos retirados',
+  clientLocation: 'Ubicación casa cliente',
 };
 
 type Linked<T> = T & { linkedBy: LinkedBy };
@@ -75,6 +82,8 @@ export interface VisitRecords {
   wifiHeatmaps: Array<Linked<HeatmapDto>>;
   distanceMeasurements: Array<Linked<DistanceMeasurementDto>>;
   retiredEquipment: Array<Linked<RetiredEquipmentDto>>;
+  /** Capturas "Casa cliente" (GPS/manual del técnico en el domicilio). */
+  clientLocations: Array<Linked<ClientLocationDto>>;
 }
 
 export type VisitWithRecords = VisitItem & { records: VisitRecords };
@@ -99,6 +108,8 @@ export interface AccountRecords {
   wifiHeatmaps: HeatmapDto[];
   distanceMeasurements: DistanceMeasurementDto[];
   retiredEquipment: RetiredEquipmentDto[];
+  /** Opcional para no romper repositorios de prueba anteriores. */
+  clientLocations?: ClientLocationDto[];
 }
 
 export interface VisitRecordsRepository {
@@ -108,7 +119,7 @@ export interface VisitRecordsRepository {
 export const prismaVisitRecordsRepository: VisitRecordsRepository = {
   async loadAccountRecords(accountNumbers) {
     const where = { accountNumber: { in: accountNumbers } };
-    const [speedtests, pings, traceroutes, heatmaps, distance, retired] = await Promise.all([
+    const [speedtests, pings, traceroutes, heatmaps, distance, retired, locations] = await Promise.all([
       prisma.speedtest.findMany({ where, orderBy: { measuredAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
       prisma.pingTest.findMany({ where, orderBy: { measuredAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
       prisma.tracerouteTest.findMany({
@@ -130,6 +141,7 @@ export const prismaVisitRecordsRepository: VisitRecordsRepository = {
         take: MAX_RECORDS_PER_TYPE,
         include: { barcodePhoto: true },
       }),
+      prisma.clientLocation.findMany({ where, orderBy: { capturedAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
     ]);
     return {
       speedtests: speedtests.map(toSpeedtestDto),
@@ -138,6 +150,7 @@ export const prismaVisitRecordsRepository: VisitRecordsRepository = {
       wifiHeatmaps: heatmaps.map(toHeatmapDto),
       distanceMeasurements: distance.map(toDistanceDto),
       retiredEquipment: retired.map(toRetiredEquipmentDto),
+      clientLocations: locations.map(toClientLocationDto),
     };
   },
 };
@@ -178,7 +191,7 @@ export function visitWindow(visit: VisitItem, now: Date): { from: number; until:
 }
 
 interface Assignable {
-  taskId?: string;
+  taskId?: string | null;
   /** Instante del registro (ISO). */
   at: string;
 }
@@ -224,6 +237,7 @@ function emptyRecords(window: { from: number; until: number } | null): VisitReco
     wifiHeatmaps: [],
     distanceMeasurements: [],
     retiredEquipment: [],
+    clientLocations: [],
   };
 }
 
@@ -244,6 +258,8 @@ function finalize(records: VisitRecords): VisitRecords {
         return records.distanceMeasurements.length;
       case 'retiredEquipment':
         return records.retiredEquipment.length;
+      case 'clientLocation':
+        return records.clientLocations.length;
     }
   };
   const types = Object.keys(RECORD_LABELS) as RecordType[];
@@ -258,6 +274,7 @@ function finalize(records: VisitRecords): VisitRecords {
     ...records.wifiHeatmaps,
     ...records.distanceMeasurements,
     ...records.retiredEquipment,
+    ...records.clientLocations,
   ].map((r) => r.linkedBy);
   const kinds = new Set(all);
   records.linkedBy = kinds.size === 0 ? null : kinds.size === 1 ? (all[0] as LinkedBy) : 'MIXED';
@@ -275,7 +292,7 @@ export function attachRecords(
   let linked = 0;
   let unlinked = 0;
 
-  function place<T extends { taskId?: string }>(
+  function place<T extends { taskId?: string | null }>(
     list: T[],
     at: (r: T) => string,
     pick: (b: VisitRecords) => Array<Linked<T>>,
@@ -297,6 +314,7 @@ export function attachRecords(
   place(records.wifiHeatmaps, (r) => r.createdAt, (b) => b.wifiHeatmaps);
   place(records.distanceMeasurements, (r) => r.measuredAt, (b) => b.distanceMeasurements);
   place(records.retiredEquipment, (r) => r.retiredAt, (b) => b.retiredEquipment);
+  place(records.clientLocations ?? [], (r) => r.capturedAt, (b) => b.clientLocations);
 
   return {
     ...visits,

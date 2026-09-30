@@ -24,6 +24,7 @@ import { registerTasksVisitsRoutes } from './modules/tasks-visits/tasks-visits.r
 import { registerIntegrationsRoutes } from './modules/integrations/integrations.routes.js';
 import { registerWhitelistRoutes } from './modules/whitelist/whitelist.routes.js';
 import { registerAccountLookupRoutes } from './modules/account-lookup/account-lookup.routes.js';
+import { registerClientLocationRoutes } from './modules/client-location/client-location.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -152,6 +153,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerIntegrationsRoutes(api);
       await registerWhitelistRoutes(api);
       await registerAccountLookupRoutes(api);
+      await registerClientLocationRoutes(api);
     },
     { prefix: API_PREFIX },
   );

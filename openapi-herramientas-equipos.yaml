@@ -75,6 +75,10 @@ tags:
   - name: Integraciones
     description: >
       Diagnóstico de la integración con FSM (`fsm-data-ms`) y consultas en lote.
+  - name: Validación de Equipo
+    description: >
+      Catálogo de equipos homologados y validación del equipo a instalar contra
+      la velocidad del plan contratado (Instalaciones, Migraciones, Visita técnica).
 
 security:
   - bearerAuth: []
@@ -1556,6 +1560,354 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  # ====================================================================
+  # VALIDACIÓN DE EQUIPO VS PLAN CONTRATADO (2026-10-01)
+  # ====================================================================
+
+  /device-catalog:
+    get:
+      tags: [Validación de Equipo]
+      summary: Catálogo de equipos homologados
+      description: >
+        Equipos activos del catálogo (los 'Moderno' de la planilla
+        "Velocidades por modelos de equipos GPON"; los 'Obsoleto' no entran).
+        Un modelo fuera de esta lista no está homologado y se bloquea.
+        `serialPrefixes` es una **pista** de marca para filtrar la lista tras
+        escanear el serial: un prefijo no identifica el modelo exacto.
+      operationId: getDeviceCatalog
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceCatalog'
+              examples:
+                catalog:
+                  value:
+                    items:
+                      - model: ZXHN F660
+                        displayName: ZXHN F660
+                        brand: ZTE
+                        deviceType: ONT
+                        category: ONT / ONU (GPON)
+                        wifiTech: WIFI 4
+                        ethernetMaxMbps: 1000
+                        wifiMaxMbps: 300
+                        wifiStatus: disabled
+                        serialPrefixes: [ZTEG]
+                      - model: ONT ZTE XGS-PON ZXHN F8605P
+                        displayName: ONT XGS-PON ZXHN F8605P
+                        brand: ZTE
+                        deviceType: ONT
+                        category: ONT / ONU (XGS-PON)
+                        wifiTech: WIFI 6
+                        ethernetMaxMbps: 2500
+                        wifiMaxMbps: 1800
+                        wifiStatus: enabled
+                        serialPrefixes: [ZTEG]
+                      - model: ONU300G-1G
+                        displayName: ONU300G-1G
+                        brand: Blik Telecom
+                        deviceType: ONT
+                        category: ONT / ONU (GPON)
+                        wifiTech: SIN WIFI
+                        ethernetMaxMbps: 1000
+                        wifiMaxMbps: null
+                        wifiStatus: none
+                        serialPrefixes: [STGU]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{accountNumber}/device-validations:
+    post:
+      tags: [Validación de Equipo]
+      summary: Valida el equipo a instalar contra el plan contratado
+      description: >
+        El servidor es la fuente de verdad (la app replica la misma regla para
+        feedback inmediato). `planMbps` **no** se recibe del cliente: es la
+        velocidad de bajada contratada, de la misma fuente que
+        `contractedDownloadMbps` de `client-profile` (hoy simulada →
+        `planSource: simulated`).
+
+
+        Regla, en este orden:
+
+        1. Modelo fuera del catálogo homologado (incluye obsoletos) →
+           `blocked`, razón `not_in_catalog` (aunque no haya plan).
+
+        2. Sin plan contratado → `unknown_plan` (no bloquea; queda como alerta
+           "sin plan").
+
+        3. `ethernetMaxMbps < planMbps` → `blocked`, razón `ethernet`.
+
+        4. `wifiStatus = enabled` y `wifiMaxMbps < planMbps` → `blocked`, razón
+           `wifi`. Con `none`/`disabled` solo cuenta Ethernet.
+
+        Igualar el plan es suficiente. Si fallan Ethernet y WiFi vienen las dos
+        razones. Sin override.
+
+
+        **Append-only**: se guardan TODOS los intentos (ok, bloqueados, sin
+        plan) con el técnico del JWT; un `blocked` es una alerta para el
+        gerente. El modelo se busca sin distinguir mayúsculas/espacios, por
+        `model` o `displayName`. `device` y `reasons` son una **foto** al
+        validar. `taskId` es opcional como en los demás registros por visita:
+        si no viene, `/accounts/{accountNumber}/visits?include=records` lo
+        asocia por ventana de tiempo. La cuenta se guarda normalizada. No
+        responde 404 por cuenta desconocida (mismo criterio que
+        `client-location`: la cuenta ya se validó en "Confirmar cuenta").
+      operationId: createDeviceValidation
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceValidationInput'
+            examples:
+              barcode:
+                value:
+                  serial: ZTEGD4B47E30
+                  model: ZXHN F670L
+                  category: instalaciones
+                  taskId: TASK/294328/2026
+                  serialSource: barcode
+      responses:
+        '201':
+          description: Validación guardada (también si quedó bloqueada).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceValidation'
+              examples:
+                blockedWifi:
+                  summary: Plan 1000 con ZXHN F670L (WiFi 500)
+                  value:
+                    id: 39c93eff-5814-4efb-ab6b-b1ffb92023e8
+                    accountNumber: '93000007'
+                    category: instalaciones
+                    taskId: TASK/294328/2026
+                    serial: ZTEGD4B47E30
+                    serialSource: barcode
+                    model: ZXHN F670L
+                    result: blocked
+                    planMbps: 1000
+                    planSource: simulated
+                    device:
+                      model: ZXHN F670L
+                      displayName: ZXHN F670L
+                      brand: ZTE
+                      deviceType: ONT
+                      category: ONT / ONU (GPON)
+                      wifiTech: WIFI 5
+                      ethernetMaxMbps: 1000
+                      wifiMaxMbps: 500
+                      wifiStatus: enabled
+                      serialPrefixes: [ZTEG]
+                    reasons:
+                      - { kind: wifi, deviceMbps: 500, planMbps: 1000 }
+                    message: >-
+                      Advertencia: el dispositivo que usted está instalando no es el
+                      correcto, ya que no permite la máxima capacidad del plan
+                      contratado (1000 Mbps) y, por lo tanto, no le va a dar un buen
+                      servicio al cliente. Velocidad máxima del equipo por WiFi: 500 Mbps.
+                    createdAt: '2026-10-01T21:16:00.754Z'
+                    technician: { id: f8a7d12b-7653-4c94-8c24-803827f9f09c, email: tecnico@wifix.test, name: Técnico Demo }
+                blockedPowerline:
+                  summary: Plan 1000 con powerline (Ethernet 100, WiFi 300)
+                  value:
+                    id: 5238e84e-1f71-4c7b-8758-a839e0997f85
+                    accountNumber: '93000007'
+                    category: visitas
+                    taskId: null
+                    serial: '2234567890'
+                    serialSource: manual
+                    model: POWER LINE TP-LINK TLWPA4220 STARTER KIT
+                    result: blocked
+                    planMbps: 1000
+                    planSource: simulated
+                    device:
+                      model: POWER LINE TP-LINK TLWPA4220 STARTER KIT
+                      displayName: POWER LINE TP-LINK TLWPA4220 STARTER KIT
+                      brand: TP-LINK
+                      deviceType: REPETIDOR POWERLINE
+                      category: Accesorio (Power Line)
+                      wifiTech: WIFI 4
+                      ethernetMaxMbps: 100
+                      wifiMaxMbps: 300
+                      wifiStatus: enabled
+                      serialPrefixes: []
+                    reasons:
+                      - { kind: ethernet, deviceMbps: 100, planMbps: 1000 }
+                      - { kind: wifi, deviceMbps: 300, planMbps: 1000 }
+                    message: >-
+                      Advertencia: el dispositivo que usted está instalando no es el
+                      correcto, ya que no permite la máxima capacidad del plan
+                      contratado (1000 Mbps) y, por lo tanto, no le va a dar un buen
+                      servicio al cliente. Velocidad máxima del equipo: Ethernet 100
+                      Mbps y WiFi 300 Mbps.
+                    createdAt: '2026-10-01T21:16:01.266Z'
+                    technician: { id: f8a7d12b-7653-4c94-8c24-803827f9f09c, email: tecnico@wifix.test, name: Técnico Demo }
+                notInCatalog:
+                  summary: Modelo obsoleto / no homologado
+                  value:
+                    id: c1e2bfcf-6c07-4a30-a2af-1db494cfe7a3
+                    accountNumber: '93000007'
+                    category: instalaciones
+                    taskId: null
+                    serial: ABC123
+                    serialSource: null
+                    model: ROUTER TP-LINK (2 ANT)
+                    result: blocked
+                    planMbps: 1000
+                    planSource: simulated
+                    device: null
+                    reasons:
+                      - { kind: not_in_catalog, planMbps: 1000 }
+                    message: >-
+                      Advertencia: el dispositivo que usted está instalando no es el
+                      correcto: el modelo «ROUTER TP-LINK (2 ANT)» no está en el
+                      catálogo de equipos homologados, por lo que no se garantiza la
+                      máxima capacidad del plan contratado (1000 Mbps).
+                    createdAt: '2026-10-01T21:16:01.514Z'
+                    technician: { id: f8a7d12b-7653-4c94-8c24-803827f9f09c, email: tecnico@wifix.test, name: Técnico Demo }
+                ok:
+                  summary: Plan 1000 con ONT ZTE ZXHN F6600
+                  value:
+                    id: fb1b45c8-30db-46e3-8228-815ea4485401
+                    accountNumber: '93000007'
+                    category: migraciones
+                    taskId: null
+                    serial: ZTEGAB12CD34
+                    serialSource: ocr
+                    model: ONT ZTE ZXHN F6600 WIFI 6
+                    result: ok
+                    planMbps: 1000
+                    planSource: simulated
+                    device:
+                      model: ONT ZTE ZXHN F6600 WIFI 6
+                      displayName: ONT ZTE ZXHN F6600 WIFI 6
+                      brand: ZTE
+                      deviceType: ONT
+                      category: ONT / ONU (GPON)
+                      wifiTech: WIFI 6
+                      ethernetMaxMbps: 1000
+                      wifiMaxMbps: 1000
+                      wifiStatus: enabled
+                      serialPrefixes: [ZTEG]
+                    reasons: []
+                    message: 'Equipo correcto: soporta la máxima capacidad del plan contratado (1000 Mbps).'
+                    createdAt: '2026-10-01T21:16:01.018Z'
+                    technician: { id: f8a7d12b-7653-4c94-8c24-803827f9f09c, email: tecnico@wifix.test, name: Técnico Demo }
+                unknownPlan:
+                  summary: La fuente del plan no respondió
+                  value:
+                    id: 0a4c2f5e-3b6d-4e8f-9a1b-2c3d4e5f6a7b
+                    accountNumber: '93000007'
+                    category: visitas
+                    taskId: null
+                    serial: ZTEG00000002
+                    serialSource: barcode
+                    model: ZXHN F670L
+                    result: unknown_plan
+                    planMbps: null
+                    planSource: real
+                    device:
+                      model: ZXHN F670L
+                      displayName: ZXHN F670L
+                      brand: ZTE
+                      deviceType: ONT
+                      category: ONT / ONU (GPON)
+                      wifiTech: WIFI 5
+                      ethernetMaxMbps: 1000
+                      wifiMaxMbps: 500
+                      wifiStatus: enabled
+                      serialPrefixes: [ZTEG]
+                    reasons: []
+                    message: >-
+                      No se pudo obtener el plan contratado del cliente: no se validó
+                      la capacidad del equipo. Se registró una alerta para el gerente.
+                    createdAt: '2026-10-01T21:20:00.000Z'
+                    technician: { id: f8a7d12b-7653-4c94-8c24-803827f9f09c, email: tecnico@wifix.test, name: Técnico Demo }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags: [Validación de Equipo]
+      summary: Historial de validaciones de equipo de la cuenta
+      description: Más reciente primero, máximo 50. Acepta la cuenta con o sin ceros a la izquierda.
+      operationId: getAccountDeviceValidations
+      parameters:
+        - $ref: '#/components/parameters/AccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeviceValidations'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /device-validations:
+    get:
+      tags: [Validación de Equipo]
+      summary: Validaciones de equipo de todas las cuentas (alertas para gerente)
+      description: >
+        Lista paginada, más reciente primero, con los mismos objetos que
+        `/accounts/{accountNumber}/device-validations` (incluye `accountNumber`
+        y `technician`). `result=blocked` = alertas. Solo lee la base propia.
+        Hoy requiere solo JWT (no hay roles todavía); sin UI por ahora.
+      operationId: listDeviceValidations
+      parameters:
+        - name: result
+          in: query
+          required: false
+          schema: { type: string, enum: [ok, blocked, unknown_plan] }
+        - name: accountNumber
+          in: query
+          required: false
+          description: Filtra por cuenta (se normaliza; `035070291` = `35070291`).
+          schema: { type: string }
+        - name: category
+          in: query
+          required: false
+          schema: { type: string, enum: [instalaciones, migraciones, visitas] }
+        - name: from
+          in: query
+          required: false
+          description: '`createdAt` >= from (ISO 8601).'
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: '`createdAt` <= to (ISO 8601). `from > to` es 400.'
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceValidationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /accounts/{accountNumber}/whitelist:
     get:
       tags: [Datos del Cliente]
@@ -2201,7 +2553,8 @@ paths:
         app": cada visita trae `records` con lo que se hizo y qué datos arrojó
         (speedtest de la app y del dispositivo externo, ping, traceroute, señal
         WiFi, distancia, equipos retirados y, desde el 2026-09-30, ubicación
-        casa cliente `clientLocation`, por `capturedAt`) y un `checklist` de qué se hizo y
+        casa cliente `clientLocation`, por `capturedAt`; desde el 2026-10-01,
+        validación de equipo vs plan `deviceValidation`, por `createdAt`) y un `checklist` de qué se hizo y
         qué no. Asociación: (1) `taskId` del registro == `workOrder` o
         `fsmTaskId` de la visita (`linkedBy: TASK_ID`); (2) si no, por ventana
         de tiempo de la visita, misma cuenta (`linkedBy: TIME_WINDOW`):
@@ -2260,6 +2613,7 @@ paths:
                             - { type: distance, label: Medición de distancia, done: false, count: 0 }
                             - { type: retiredEquipment, label: Equipos retirados, done: false, count: 0 }
                             - { type: clientLocation, label: Ubicación casa cliente, done: false, count: 0 }
+                            - { type: deviceValidation, label: Validación de equipo vs plan, done: false, count: 0 }
                           speedtests:
                             - id: 3f0c7a52-0d7e-4f0e-9a39-3b8a3c1f1a11
                               accountNumber: '35070291'
@@ -2291,6 +2645,7 @@ paths:
                           distanceMeasurements: []
                           retiredEquipment: []
                           clientLocations: []
+                          deviceValidations: []
                     pendingCount: 0
                     totalOrders: 1
                     scanned: 1
@@ -4042,6 +4397,141 @@ components:
             totalItems: { type: integer }
             totalPages: { type: integer }
 
+    DeviceCatalogItem:
+      type: object
+      required:
+        [model, displayName, brand, deviceType, category, wifiTech, ethernetMaxMbps, wifiMaxMbps, wifiStatus, serialPrefixes]
+      properties:
+        model: { type: string, description: Clave del catálogo (columna MODELO). Es lo que se envía en el POST. }
+        displayName: { type: string }
+        brand: { type: string }
+        deviceType: { type: string, description: 'ONT | ROUTER | REPETIDOR POWERLINE' }
+        category: { type: string, example: ONT / ONU (GPON) }
+        wifiTech: { type: string, nullable: true, example: WIFI 6 }
+        ethernetMaxMbps: { type: integer, minimum: 1 }
+        wifiMaxMbps:
+          type: integer
+          nullable: true
+          description: null sin WiFi. Con `wifiStatus=disabled` es solo informativo.
+        wifiStatus:
+          type: string
+          enum: [enabled, none, disabled]
+          description: '`none` = sin radio WiFi; `disabled` = radio desactivado (ZXHN F660). En ambos solo cuenta Ethernet.'
+        serialPrefixes:
+          type: array
+          items: { type: string }
+          description: Pista de marca por prefijo de serial (ZTEG, ZTEL, HWTC, BWH, STGU, XPON). No identifica el modelo exacto.
+
+    DeviceCatalog:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DeviceCatalogItem' }
+
+    DeviceValidationInput:
+      type: object
+      required: [serial, model, category]
+      description: '`planMbps` NO se acepta: lo resuelve el servidor (un campo extra se ignora).'
+      properties:
+        serial: { type: string, minLength: 1, maxLength: 64 }
+        model:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: '`model` (o `displayName`) del catálogo. Sin distinguir mayúsculas/espacios.'
+        category: { type: string, enum: [instalaciones, migraciones, visitas] }
+        taskId:
+          type: string
+          maxLength: 120
+          description: '`workOrder` (ORDER/…) o tarea (TASK/…) de la visita en curso.'
+        serialSource: { type: string, enum: [barcode, ocr, manual] }
+
+    DeviceValidationReason:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [ethernet, wifi, not_in_catalog] }
+        deviceMbps: { type: integer, description: Solo en ethernet / wifi. }
+        planMbps: { type: integer, description: En ethernet / wifi; en not_in_catalog solo si se conoce el plan. }
+
+    DeviceValidation:
+      type: object
+      required:
+        - id
+        - accountNumber
+        - category
+        - taskId
+        - serial
+        - serialSource
+        - model
+        - result
+        - planMbps
+        - planSource
+        - device
+        - reasons
+        - message
+        - createdAt
+        - technician
+      properties:
+        id: { type: string, format: uuid }
+        accountNumber: { type: string, description: Normalizada. }
+        category: { type: string, enum: [instalaciones, migraciones, visitas] }
+        taskId: { type: string, nullable: true }
+        serial: { type: string }
+        serialSource: { type: string, nullable: true, enum: [barcode, ocr, manual] }
+        model: { type: string, description: Modelo tal como lo envió la app. }
+        result:
+          type: string
+          enum: [ok, blocked, unknown_plan]
+          description: '`blocked` = alerta; la app no deja continuar con ese equipo.'
+        planMbps: { type: integer, nullable: true, description: Velocidad de bajada contratada. null → unknown_plan. }
+        planSource: { type: string, enum: [simulated, real] }
+        device:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/DeviceCatalogItem'
+          nullable: true
+          description: Foto del ítem del catálogo al validar; null si no está homologado.
+        reasons:
+          type: array
+          items: { $ref: '#/components/schemas/DeviceValidationReason' }
+        message: { type: string, description: Texto en español para mostrar al técnico. }
+        createdAt: { type: string, format: date-time }
+        technician:
+          type: object
+          required: [id, email, name]
+          description: Técnico del JWT que hizo la validación.
+          properties:
+            id: { type: string }
+            email: { type: string }
+            name: { type: string, nullable: true }
+
+    AccountDeviceValidations:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/DeviceValidation' }
+
+    DeviceValidationPage:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DeviceValidation' }
+        page:
+          type: object
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            totalItems: { type: integer }
+            totalPages: { type: integer }
+
     WhitelistCheck:
       type: object
       description: >
@@ -5139,14 +5629,15 @@ components:
         checklist:
           type: array
           description: >
-            Siempre los 8 tipos, en este orden, con `done` y `count`
-            (`clientLocation` = "Ubicación casa cliente", aditivo 2026-09-30).
+            Siempre los 9 tipos, en este orden, con `done` y `count`
+            (`clientLocation` = "Ubicación casa cliente", aditivo 2026-09-30;
+            `deviceValidation` = "Validación de equipo vs plan", aditivo 2026-10-01).
           items:
             type: object
             properties:
               type:
                 type: string
-                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment, clientLocation]
+                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment, clientLocation, deviceValidation]
               label: { type: string }
               done: { type: boolean }
               count: { type: integer }
@@ -5174,6 +5665,10 @@ components:
           type: array
           description: Capturas "Casa cliente" (aditivo). Cada una trae `linkedBy`.
           items: { $ref: '#/components/schemas/ClientLocation' }
+        deviceValidations:
+          type: array
+          description: Validaciones de equipo vs plan (aditivo 2026-10-01). Cada una trae `linkedBy`.
+          items: { $ref: '#/components/schemas/DeviceValidation' }
 
     VisitsWithRecordsResult:
       allOf:

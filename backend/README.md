@@ -504,6 +504,9 @@ Lo que **sigue sin verificarse contra una respuesta real**:
 | | `/herramientas/v1/workorders/tasks?workOrder=` | GET |
 | Integraciones | `/herramientas/v1/integrations/fsm/health` | GET |
 | | `/herramientas/v1/accounts/status-batch` | POST |
+| Validación de equipo | `/herramientas/v1/device-catalog` | GET |
+| | `/herramientas/v1/accounts/{n}/device-validations` | POST · GET |
+| | `/herramientas/v1/device-validations?result=&from=&to=` (gerente) | GET |
 
 ## Reglas de negocio (resumen)
 
@@ -521,6 +524,11 @@ Lo que **sigue sin verificarse contra una respuesta real**:
   catálogo; `serialFieldType` se copia del modelo al crear; `barcodePhotoId` debe existir.
 - **`PUT client-profile` y `PUT wifi-config`** registran en el log el `user.id`
   del JWT, `accountNumber` y los campos editados.
+- **Validación de equipo vs plan:** el servidor decide con `evaluateDeviceValidation`
+  (`src/modules/device-validation/device-validation.rules.ts`, función pura que la webapp
+  replica). Fuera de catálogo → `blocked`; sin plan → `unknown_plan`; Ethernet o WiFi
+  (si `wifiStatus=enabled`) por debajo del plan → `blocked`. `planMbps` sale del mismo
+  origen que `contractedDownloadMbps` (hoy simulado); nunca del body. Append-only.
 - **Mock determinista:** las consultas de los conectores devuelven los mismos
   datos para una misma `accountNumber` / `napCode`.
 
@@ -574,6 +582,7 @@ Mensajes (`message`) en español; códigos en inglés.
 | `npm run prisma:generate` | Regenera el cliente Prisma. |
 | `npm run prisma:migrate` | Aplica migraciones de Prisma. |
 | `npm run prisma:seed` | Siembra usuario + catálogos (idempotente). |
+| `npm run device-catalog:import -- "<xlsx>" [--dry-run] [--write-json]` | Actualiza el catálogo de equipos homologados desde la planilla de velocidades (upsert por modelo; `--write-json` reescribe `prisma/catalogs/device-catalog.json`). |
 
 ## Estructura del código
 

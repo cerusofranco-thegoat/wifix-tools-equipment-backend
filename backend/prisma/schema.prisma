@@ -537,3 +537,109 @@ model ClientLocation {
   @@index([capturedAt])
   @@map("client_locations")
 }
+
+// ===========================================================================
+// VALIDACIÓN DE EQUIPO VS PLAN CONTRATADO
+// ===========================================================================
+//
+// `device_models`: catálogo de equipos HOMOLOGADOS (solo los 'Moderno' de la
+// planilla "Velocidades por modelos de equipos GPON"). Se actualiza con
+// `npm run device-catalog:import -- <xlsx>` (upsert por `model`). Un modelo que
+// la planilla pasa a 'Obsoleto' queda `active = false` (no se borra: las
+// validaciones viejas guardan su propia foto del equipo).
+//
+// `device_validations`: APPEND-ONLY. Cada intento del técnico (ok, bloqueado o
+// sin plan) es una fila; un `BLOCKED` es una alerta para el gerente. `device` y
+// `reasons` son una FOTO al validar (el catálogo puede cambiar después).
+
+enum DeviceWifiStatus {
+  /// WiFi activo: su velocidad máxima limita el plan.
+  ENABLED
+  /// Sin radio WiFi (ONT/ONU bridge): solo cuenta Ethernet.
+  NONE
+  /// Tiene radio pero va desactivado (ZXHN F660): solo cuenta Ethernet.
+  DISABLED
+
+  @@map("device_wifi_status")
+}
+
+enum DeviceValidationCategory {
+  INSTALACIONES
+  MIGRACIONES
+  VISITAS
+
+  @@map("device_validation_category")
+}
+
+enum DeviceValidationResult {
+  OK
+  BLOCKED
+  UNKNOWN_PLAN
+
+  @@map("device_validation_result")
+}
+
+model DeviceModel {
+  id              String           @id @default(uuid()) @db.Uuid
+  /// Columna MODELO de la planilla: clave natural (upsert).
+  model           String           @unique
+  displayName     String           @map("display_name")
+  brand           String
+  /// TIPO_EQUIPO: ONT | ROUTER | REPETIDOR POWERLINE (texto tal cual).
+  deviceType      String           @map("device_type")
+  /// CATEGORIA: "ONT / ONU (GPON)", "Router WiFi", …
+  category        String
+  /// TECNOLOGÍA WIFI: "WIFI 6", "SIN WIFI", …
+  wifiTech        String?          @map("wifi_tech")
+  ethernetMaxMbps Int              @map("ethernet_max_mbps")
+  /// null si el equipo no tiene WiFi; con DISABLED es solo informativo.
+  wifiMaxMbps     Int?             @map("wifi_max_mbps")
+  wifiStatus      DeviceWifiStatus @map("wifi_status")
+  /// Pistas de marca por prefijo de serial (ZTEG, HWTC…); no identifican el modelo exacto.
+  serialPrefixes  String[]         @default([]) @map("serial_prefixes")
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  validations DeviceValidation[]
+
+  @@index([active])
+  @@map("device_models")
+}
+
+model DeviceValidation {
+  id               String                   @id @default(uuid()) @db.Uuid
+  accountNumber    String                   @map("account_number")
+  category         DeviceValidationCategory
+  /// Vínculo con la visita FSM (`TASK/…` u `ORDER/…`). Opcional.
+  taskId           String?                  @map("task_id")
+  serial           String
+  /// 'barcode' | 'ocr' | 'manual'.
+  serialSource     String?                  @map("serial_source")
+  /// Modelo tal como lo envió la app.
+  model            String
+  /// Modelo del catálogo que coincidió; null si no está homologado.
+  deviceModelId    String?                  @map("device_model_id") @db.Uuid
+  result           DeviceValidationResult
+  planMbps         Int?                     @map("plan_mbps")
+  /// 'simulated' | 'real'.
+  planSource       String                   @map("plan_source")
+  /// Foto del ítem del catálogo al validar (forma de `GET /device-catalog`).
+  device           Json?
+  /// [{ kind, deviceMbps?, planMbps? }]
+  reasons          Json                     @default("[]")
+  message          String
+  /// Técnico que validó (del JWT).
+  validatedById    String                   @map("validated_by_id")
+  validatedByEmail String                   @map("validated_by_email")
+  validatedByName  String?                  @map("validated_by_name")
+  createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  deviceModel DeviceModel? @relation(fields: [deviceModelId], references: [id], onDelete: SetNull)
+
+  @@index([accountNumber, createdAt])
+  @@index([accountNumber, taskId])
+  @@index([result, createdAt])
+  @@index([createdAt])
+  @@map("device_validations")
+}

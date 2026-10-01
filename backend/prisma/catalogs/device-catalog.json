@@ -1,0 +1,270 @@
+{
+  "source": "Velocidades por modelos de equipos GPON.xlsx (Hoja1), solo ESTADO_EQUIPO = 'Moderno'",
+  "generatedAt": "2026-10-01",
+  "items": [
+    {
+      "model": "ROUTER ZXHN H3601P V9 WIFI 6",
+      "displayName": "ROUTER ZXHN H3601P V9 WIFI 6",
+      "brand": "ZTE",
+      "deviceType": "ROUTER",
+      "category": "Router WiFi",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1200,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEL"
+      ]
+    },
+    {
+      "model": "AX3 DUAL CORE WIFI 6",
+      "displayName": "AX3 DUAL CORE WIFI 6",
+      "brand": "HUAWEI",
+      "deviceType": "ROUTER",
+      "category": "Router WiFi",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1000,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "BWH"
+      ]
+    },
+    {
+      "model": "AX3 QUAD CORE WIFI 6",
+      "displayName": "AX3 QUAD CORE WIFI 6",
+      "brand": "HUAWEI",
+      "deviceType": "ROUTER",
+      "category": "Router WiFi",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1000,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "BWH"
+      ]
+    },
+    {
+      "model": "POWER LINE TP-LINK TLWPA4220 STARTER KIT",
+      "displayName": "POWER LINE TP-LINK TLWPA4220 STARTER KIT",
+      "brand": "TP-LINK",
+      "deviceType": "REPETIDOR POWERLINE",
+      "category": "Accesorio (Power Line)",
+      "wifiTech": "WIFI 4",
+      "ethernetMaxMbps": 100,
+      "wifiMaxMbps": 300,
+      "wifiStatus": "enabled",
+      "serialPrefixes": []
+    },
+    {
+      "model": "ONT HUR 2001",
+      "displayName": "ONT HUR 2001",
+      "brand": "INTELLEGO",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "STGU"
+      ]
+    },
+    {
+      "model": "ONU Bridge TXG-B2000",
+      "displayName": "ONU Bridge TXG-B2000",
+      "brand": "ONU",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "XPON"
+      ]
+    },
+    {
+      "model": "ONU HUR4101XR",
+      "displayName": "ONU HUR4101XR",
+      "brand": "INTELLEGO",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "STGU"
+      ]
+    },
+    {
+      "model": "ONU300G-1G",
+      "displayName": "ONU300G-1G",
+      "brand": "Blik Telecom",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "STGU"
+      ]
+    },
+    {
+      "model": "ZXHN F601",
+      "displayName": "ZXHN F601",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ZXHN F612C",
+      "displayName": "ZXHN F612C",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "SIN WIFI",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": null,
+      "wifiStatus": "none",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ZXHN F660",
+      "displayName": "ZXHN F660",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 4",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 300,
+      "wifiStatus": "disabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ZXHN F670L",
+      "displayName": "ZXHN F670L",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 5",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 500,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ZXHN F670Y",
+      "displayName": "ZXHN F670Y",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 5",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 500,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ZXHN F688 V9.0",
+      "displayName": "ZXHN F688 V9.0",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 5",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 500,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ONT OptiXstar HG8145X6",
+      "displayName": "ONT OptiXstar HG8145X6",
+      "brand": "HUAWEI",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1000,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "HWTC"
+      ]
+    },
+    {
+      "model": "ONT ZTE ZXHN F6600 WIFI 6",
+      "displayName": "ONT ZTE ZXHN F6600 WIFI 6",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1000,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ONT ZTE ZXHN F6600P",
+      "displayName": "ONT ZTE ZXHN F6600P",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1000,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ONT ZXHN F1611A-1FXS",
+      "displayName": "ONT ZXHN F1611A-1FXS",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (GPON)",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 1000,
+      "wifiMaxMbps": 1200,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    },
+    {
+      "model": "ONT ZTE XGS-PON ZXHN F8605P",
+      "displayName": "ONT XGS-PON ZXHN F8605P",
+      "brand": "ZTE",
+      "deviceType": "ONT",
+      "category": "ONT / ONU (XGS-PON)",
+      "wifiTech": "WIFI 6",
+      "ethernetMaxMbps": 2500,
+      "wifiMaxMbps": 1800,
+      "wifiStatus": "enabled",
+      "serialPrefixes": [
+        "ZTEG"
+      ]
+    }
+  ]
+}

@@ -8,6 +8,10 @@ import {
   NetworkServerType,
 } from '@prisma/client';
 import bcrypt from 'bcrypt';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { DeviceCatalogItem } from '../src/modules/device-validation/device-validation.rules.js';
+import { upsertDeviceCatalog } from '../src/modules/device-validation/device-catalog.import.js';
 
 const prisma = new PrismaClient();
 
@@ -169,12 +173,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // Catálogo de equipos homologados (validación de equipo vs plan). Fuente:
+  // prisma/catalogs/device-catalog.json, generado desde la planilla con
+  // `npm run device-catalog:import -- <xlsx> --write-json`.
+  console.log('Sembrando catálogo de equipos homologados...');
+  const deviceCatalog = JSON.parse(
+    readFileSync(fileURLToPath(new URL('./catalogs/device-catalog.json', import.meta.url)), 'utf8'),
+  ) as { items: DeviceCatalogItem[] };
+  await upsertDeviceCatalog(prisma, deviceCatalog.items);
+
   const counts = {
     users: await prisma.user.count(),
     equipmentModels: await prisma.equipmentModel.count(),
     removalReasons: await prisma.removalReason.count(),
     speedtestServers: await prisma.speedtestServer.count(),
     networkServers: await prisma.networkServer.count(),
+    deviceModels: await prisma.deviceModel.count({ where: { active: true } }),
   };
   console.log('Datos poblados:', counts);
 }

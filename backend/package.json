@@ -19,7 +19,8 @@
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "device-catalog:import": "tsx prisma/import-device-catalog.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.668.0",

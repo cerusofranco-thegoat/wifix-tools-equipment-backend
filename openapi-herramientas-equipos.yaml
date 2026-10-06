@@ -2002,7 +2002,7 @@ paths:
   /accounts/lookup:
     get:
       tags: [Datos del Cliente]
-      summary: Buscar cuentas por cédula/RUC (o por nº de orden FSM, aún no disponible)
+      summary: Buscar cuentas por cédula/RUC o por nº de orden (TYTAN simulado)
       description: >
         Ingreso alternativo al número de cuenta. Envía **exactamente uno** de
         `document` u `order`.
@@ -2021,11 +2021,16 @@ paths:
         la URL.
 
 
-        **`order`** (nº de orden FSM, p. ej. `ORDER/424900/2026`): reconocido
-        pero responde **501 `NOT_IMPLEMENTED`**. `fsm-data-ms` no expone una
-        consulta orden → cuenta (`/workorder/tasks` devuelve tareas y notas sin
-        cuenta ni cpartyId) y la whitelist no guarda órdenes. Se habilitará
-        cuando la operadora publique ese endpoint.
+        **`order`** (nº de orden, p. ej. `ORDER/463158/2026` o solo `463158`,
+        que se normaliza a `ORDER/<n>/<año actual de Ecuador>`): **TYTAN
+        SIMULADO** (`simulated: true`, `source: TYTAN`). Devuelve exactamente 1
+        cuenta elegida de forma determinística de la whitelist (hash del nº de
+        orden; se prefieren cuentas ACTIVO), así que pasa el bloqueo de
+        whitelist aguas abajo. Misma orden → misma cuenta mientras no se
+        reimporte la lista; `GET /orders/context` usa la MISMA resolución.
+        Whitelist vacía → cuenta demo `40123456` con `reason: WHITELIST_EMPTY`.
+        Formato inválido → 400 `VALIDATION_ERROR`. La integración real con TYTAN
+        (orden → cuenta) queda pendiente.
       operationId: lookupAccounts
       parameters:
         - name: document
@@ -2037,7 +2042,9 @@ paths:
           in: query
           required: false
           schema: { type: string, maxLength: 120 }
-          description: Nº de orden FSM. Hoy siempre 501.
+          description: >-
+            Nº de orden (`ORDER/<4-10 dígitos>/<año>` o solo los dígitos).
+            TYTAN simulado.
       responses:
         '200':
           description: >
@@ -2046,8 +2053,29 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AccountLookupResult'
+                oneOf:
+                  - $ref: '#/components/schemas/AccountLookupResult'
+                  - $ref: '#/components/schemas/OrderLookupResult'
               examples:
+                porOrden:
+                  summary: Por nº de orden (TYTAN simulado)
+                  value:
+                    by: order
+                    workOrder: ORDER/463158/2026
+                    simulated: true
+                    source: TYTAN
+                    matches:
+                      - accountNumber: '8482838'
+                        status: ACTIVO
+                        city: GUAYAQUIL
+                        node: QQ4B
+                        businessType: Internet GPON
+                        accountType: Residencial
+                        accessType: Acceso Completo
+                        fullName: PEREZ GOMEZ JUAN CARLOS
+                    count: 1
+                    truncated: false
+                    importedAt: '2026-09-26T22:07:00.000Z'
                 varias:
                   summary: Documento con varias cuentas (el técnico elige)
                   value:
@@ -2086,22 +2114,6 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '501':
-          description: Búsqueda por `order` todavía no disponible.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              example:
-                code: NOT_IMPLEMENTED
-                message: >-
-                  El ingreso por número de orden todavía no está disponible: FSM
-                  no expone una consulta de orden a cuenta. Ingresa con el número
-                  de cuenta o la cédula.
-                meta:
-                  lookup: order
-                  order: ORDER/424900/2026
-                  requires: Endpoint FSM orden→cuenta (pendiente con la operadora).
     post:
       tags: [Datos del Cliente]
       summary: Igual que el GET, con el criterio en el cuerpo (preferido)
@@ -2123,17 +2135,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AccountLookupResult'
+                oneOf:
+                  - $ref: '#/components/schemas/AccountLookupResult'
+                  - $ref: '#/components/schemas/OrderLookupResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '501':
-          description: Búsqueda por `order` todavía no disponible.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
 
   /terminals/{id}:
     get:
@@ -4609,6 +4617,23 @@ components:
           enum: [WHITELIST_EMPTY]
           description: Solo con `listed:null`.
 
+    LookupAccount:
+      type: object
+      description: Cuenta de la whitelist. Nunca incluye el documento ni el cpartyId (LOPDP).
+      required: [accountNumber, status]
+      properties:
+        accountNumber: { type: string }
+        status: { type: string, enum: [ACTIVO, SUSPENDIDO, ORDENADO, PENDIENTE] }
+        city: { type: string, nullable: true }
+        node: { type: string, nullable: true }
+        businessType: { type: string, nullable: true }
+        accountType: { type: string, nullable: true }
+        accessType: { type: string, nullable: true }
+        fullName:
+          type: string
+          nullable: true
+          description: Nombre según la planilla Xtrim (para que el técnico elija la cuenta).
+
     AccountLookupResult:
       type: object
       required: [by, documentKind, matches, count, truncated, importedAt]
@@ -4626,20 +4651,7 @@ components:
             Máximo 50. Orden: ACTIVO > SUSPENDIDO > ORDENADO > PENDIENTE, luego
             por número de cuenta. Nunca incluye el documento.
           items:
-            type: object
-            required: [accountNumber, status]
-            properties:
-              accountNumber: { type: string }
-              status: { type: string, enum: [ACTIVO, SUSPENDIDO, ORDENADO, PENDIENTE] }
-              city: { type: string, nullable: true }
-              node: { type: string, nullable: true }
-              businessType: { type: string, nullable: true }
-              accountType: { type: string, nullable: true }
-              accessType: { type: string, nullable: true }
-              fullName:
-                type: string
-                nullable: true
-                description: Nombre según la planilla Xtrim (para que el técnico elija la cuenta).
+            $ref: '#/components/schemas/LookupAccount'
         count: { type: integer }
         truncated:
           type: boolean
@@ -4652,6 +4664,46 @@ components:
           type: string
           enum: [WHITELIST_EMPTY]
           description: Solo si la whitelist nunca se importó.
+
+    OrderLookupResult:
+      type: object
+      description: Lookup por nº de orden. TYTAN SIMULADO y determinístico.
+      required: [by, workOrder, simulated, source, matches, count, truncated, importedAt]
+      properties:
+        by:
+          type: string
+          enum: [order]
+        workOrder:
+          type: string
+          description: Orden normalizada.
+          example: ORDER/463158/2026
+        simulated:
+          type: boolean
+          enum: [true]
+        source:
+          type: string
+          enum: [TYTAN]
+        matches:
+          type: array
+          minItems: 1
+          maxItems: 1
+          description: Exactamente 1 cuenta, mismo shape que el lookup por documento.
+          items:
+            $ref: '#/components/schemas/LookupAccount'
+        count:
+          type: integer
+          enum: [1]
+        truncated:
+          type: boolean
+          enum: [false]
+        importedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          enum: [WHITELIST_EMPTY]
+          description: Whitelist vacía → cuenta demo `40123456`.
 
     NapPort:
       type: object

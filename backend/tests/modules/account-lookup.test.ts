@@ -1,4 +1,4 @@
-// GET/POST /accounts/lookup — ingreso por cédula/RUC (y nº de orden, 501).
+// GET/POST /accounts/lookup — ingreso por cédula/RUC y por nº de orden (TYTAN simulado).
 // Sin base de datos: el repositorio se reemplaza por un doble en memoria con
 // datos sintéticos. Protege la regla LOPDP: el documento NUNCA sale.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -7,6 +7,8 @@ import { buildFsmTestApp } from '../helpers/fsm-app.js';
 import { redactUrl } from '../../src/app.js';
 import {
   LOOKUP_MAX_MATCHES,
+  ORDER_DEMO_ACCOUNT,
+  resetOrderCandidateCache,
   setAccountLookupRepository,
   type AccountLookupRepository,
   type LookupAccount,
@@ -38,11 +40,19 @@ function row(accountNumber: string, documentId: string, status: Row['status'], e
   };
 }
 
-function fakeRepo(rows: Row[], importedAt: Date | null): AccountLookupRepository & { queries: string[] } {
+function fakeRepo(
+  rows: Row[],
+  importedAt: Date | null,
+): AccountLookupRepository & { queries: string[]; candidateCalls: number } {
   const queries: string[] = [];
-  return {
+  const candidates = (onlyActive: boolean): Row[] =>
+    rows
+      .filter((r) => !onlyActive || r.status === 'ACTIVO')
+      .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
+  const repo = {
     queries,
-    async findByDocument(documentId, take) {
+    candidateCalls: 0,
+    async findByDocument(documentId: string, take: number) {
       queries.push(documentId);
       // Devuelve las filas CON documentId y cpartyId: la capa de servicio no debe filtrarlas.
       return rows.filter((r) => r.documentId === documentId).slice(0, take);
@@ -50,7 +60,16 @@ function fakeRepo(rows: Row[], importedAt: Date | null): AccountLookupRepository
     async latestImportAt() {
       return importedAt;
     },
+    async countOrderCandidates(onlyActive: boolean) {
+      repo.candidateCalls += 1;
+      return candidates(onlyActive).length;
+    },
+    // Devuelve la fila CON documentId y cpartyId: el servicio no debe filtrarlas.
+    async findOrderCandidateAt(index: number, onlyActive: boolean) {
+      return candidates(onlyActive)[index] ?? null;
+    },
   };
+  return repo;
 }
 
 let repo: ReturnType<typeof fakeRepo>;
@@ -67,6 +86,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  resetOrderCandidateCache();
   repo = fakeRepo(
     [
       row('90000003', DOC, 'PENDIENTE'),
@@ -181,15 +201,106 @@ describe('POST /accounts/lookup', () => {
   });
 });
 
-describe('lookup por nº de orden', () => {
-  it('reconocido pero no disponible: 501 NOT_IMPLEMENTED', async () => {
-    const res = await get('order=ORDER%2F424900%2F2026');
-    expect(res.status).toBe(501);
-    expect(res.body).toMatchObject({
-      code: 'NOT_IMPLEMENTED',
-      meta: { lookup: 'order', order: 'ORDER/424900/2026' },
+describe('lookup por nº de orden (TYTAN simulado)', () => {
+  async function postOrder(order: string) {
+    const res = await app.inject({
+      method: 'POST',
+      url: `${PREFIX}/accounts/lookup`,
+      headers: authHeaders,
+      payload: { order },
     });
+    return { status: res.statusCode, body: res.json() as Record<string, unknown>, raw: res.body };
+  }
+
+  it('devuelve exactamente 1 cuenta ACTIVO de la whitelist, con el shape del lookup por documento', async () => {
+    const res = await postOrder('ORDER/463158/2026');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      by: 'order',
+      workOrder: 'ORDER/463158/2026',
+      simulated: true,
+      source: 'TYTAN',
+      count: 1,
+      truncated: false,
+      importedAt: IMPORTED_AT.toISOString(),
+    });
+    expect(res.body).not.toHaveProperty('reason');
+    const matches = res.body.matches as LookupAccount[];
+    expect(matches).toHaveLength(1);
+    // Solo hay 2 cuentas ACTIVO: se elige entre ellas.
+    expect(['90000002', '90000009']).toContain(matches[0]?.accountNumber);
+    expect(Object.keys(matches[0] as object).sort()).toEqual(
+      ['accessType', 'accountNumber', 'accountType', 'businessType', 'city', 'fullName', 'node', 'status'],
+    );
+    // LOPDP: ni documento ni cpartyId.
+    expect(res.raw).not.toContain('documentId');
+    expect(res.raw).not.toContain('cpartyId');
+    expect(res.raw).not.toContain(DOC);
+    expect(res.raw).not.toContain(RUC);
+    // El documento nunca se consulta para este camino.
     expect(repo.queries).toEqual([]);
+  });
+
+  it('determinístico: misma orden → misma cuenta; GET y POST coinciden', async () => {
+    const a = await postOrder('ORDER/463158/2026');
+    const b = await get('order=ORDER%2F463158%2F2026');
+    expect(b.status).toBe(200);
+    expect(b.body.matches).toEqual(a.body.matches);
+  });
+
+  it('reparte órdenes distintas entre varias cuentas', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => row(String(70000000 + i), `09${String(i).padStart(8, '0')}`, 'ACTIVO'));
+    setAccountLookupRepository(fakeRepo(many, IMPORTED_AT));
+    const seen = new Set<string>();
+    for (let n = 0; n < 20; n++) {
+      const res = await postOrder(`ORDER/${460000 + n}/2026`);
+      seen.add((res.body.matches as LookupAccount[])[0]?.accountNumber as string);
+    }
+    expect(seen.size).toBeGreaterThan(5);
+  });
+
+  it('solo dígitos → ORDER/<n>/<año actual de Ecuador>', async () => {
+    const year = new Date(Date.now() - 5 * 3600_000).getUTCFullYear();
+    const res = await postOrder(' 463158 ');
+    expect(res.status).toBe(200);
+    expect(res.body.workOrder).toBe(`ORDER/463158/${year}`);
+  });
+
+  it('acepta minúsculas y espacios alrededor de las barras', async () => {
+    const res = await postOrder('order / 463158 / 2026');
+    expect(res.body.workOrder).toBe('ORDER/463158/2026');
+  });
+
+  it('formato inválido → 400 VALIDATION_ERROR', async () => {
+    for (const bad of ['TASK/463158/2026', 'ORDER/12/2026', 'ORDER/463158', 'abc', 'ORDER/463158/1800']) {
+      const res = await postOrder(bad);
+      expect(res.status, bad).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    }
+  });
+
+  it('sin cuentas ACTIVO usa cualquier estado', async () => {
+    setAccountLookupRepository(fakeRepo([row('90000001', DOC, 'SUSPENDIDO')], IMPORTED_AT));
+    const res = await postOrder('ORDER/463158/2026');
+    expect((res.body.matches as LookupAccount[])[0]?.accountNumber).toBe('90000001');
+  });
+
+  it('whitelist vacía → cuenta demo 40123456 con reason WHITELIST_EMPTY', async () => {
+    setAccountLookupRepository(fakeRepo([], null));
+    const res = await postOrder('463158');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ count: 1, importedAt: null, reason: 'WHITELIST_EMPTY' });
+    expect((res.body.matches as LookupAccount[])[0]).toMatchObject({
+      accountNumber: ORDER_DEMO_ACCOUNT,
+      status: 'ACTIVO',
+    });
+  });
+
+  it('cachea el conteo de candidatas por import (no recuenta en cada orden)', async () => {
+    await postOrder('ORDER/463158/2026');
+    await postOrder('ORDER/463159/2026');
+    await postOrder('ORDER/463160/2026');
+    expect(repo.candidateCalls).toBe(1);
   });
 });
 

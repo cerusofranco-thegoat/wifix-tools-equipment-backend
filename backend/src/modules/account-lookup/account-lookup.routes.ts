@@ -3,7 +3,8 @@
 //   GET  /accounts/lookup?document=0912345678
 //   POST /accounts/lookup   { "document": "0912345678" }   ← preferido: el
 //        documento no viaja en la URL (logs de proxies intermedios).
-//   ...?order=ORDER/424900/2026  → 501 NOT_IMPLEMENTED (ver el servicio).
+//   ...?order=ORDER/424900/2026 (o solo `424900`) → cuenta de la orden,
+//        TYTAN SIMULADO y determinístico (ver `resolveOrderAccount`).
 //
 // Autenticada como el resto de /herramientas/v1 (hook global).
 
@@ -27,7 +28,7 @@ export const accountLookupSchema = z
     ),
   })
   .refine((q) => (q.document === undefined) !== (q.order === undefined), {
-    message: 'Envía exactamente uno: document (cédula/RUC) u order (nº de orden FSM).',
+    message: 'Envía exactamente uno: document (cédula/RUC) u order (nº de orden).',
     path: ['document'],
   });
 

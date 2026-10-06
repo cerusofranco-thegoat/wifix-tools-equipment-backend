@@ -11,6 +11,7 @@ import {
   getNapPortsByRef,
 } from '../../connectors/index.js';
 import { findCurrentNap } from './current-nap.service.js';
+import { getIspAccessNetwork, getIspMonitorAccount } from './isp-monitor.service.js';
 
 const accountParamsSchema = z.object({
   accountNumber: z.string().min(1, 'accountNumber es obligatorio.'),
@@ -80,6 +81,20 @@ const currentNapQuerySchema = z
 
 /** Radio y número de NAPs que se piden si el cliente no especifica nada. */
 const NEARBY_NAPS_DEFAULTS = { meters: 100, maxRows: 3 } as const;
+
+/**
+ * Cuenta para ISP Monitor: solo dígitos (4 a 12; los ceros a la izquierda no
+ * cuentan, igual que en la whitelist). Otro formato → 400 VALIDATION_ERROR.
+ */
+const ispAccountParamsSchema = z.object({
+  accountNumber: z
+    .string()
+    .trim()
+    .regex(/^\d{1,12}$/, 'accountNumber debe tener solo dígitos (máx. 12).')
+    .refine((v) => v.replace(/^0+(?=\d)/, '').length >= 4, {
+      message: 'accountNumber debe tener al menos 4 dígitos significativos.',
+    }),
+});
 
 const terminalParamsSchema = z.object({
   id: z.string().min(1, 'El serial GPON o la MAC del cablemódem es obligatorio.'),
@@ -210,6 +225,19 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
   app.get('/accounts/:accountNumber/network-metrics', async (request) => {
     const { accountNumber } = parseParams(accountParamsSchema, request.params);
     return getIspMonitorConnector().getNetworkMetrics(accountNumber);
+  });
+
+  // --- ISP Monitor por número de cuenta (SIMULADO) --------------------------
+  // GPON → ficha "ONU Info"; HFC → cablemódem + DOCSIS. No consulta TEC.
+  app.get('/accounts/:accountNumber/isp-monitor', async (request) => {
+    const { accountNumber } = parseParams(ispAccountParamsSchema, request.params);
+    return getIspMonitorAccount(accountNumber, request.log);
+  });
+
+  // Equipos de la red de acceso del cliente por NAP + diagnóstico interno/externo.
+  app.get('/accounts/:accountNumber/isp-monitor/access-network', async (request) => {
+    const { accountNumber } = parseParams(ispAccountParamsSchema, request.params);
+    return getIspAccessNetwork(accountNumber, request.log);
   });
 
   app.get('/accounts/:accountNumber/node-events', async (request) => {

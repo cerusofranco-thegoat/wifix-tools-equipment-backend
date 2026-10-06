@@ -1,5 +1,5 @@
 // Registros guardados en la app (speedtest, ping, traceroute, señal WiFi,
-// distancia, equipos retirados, ubicación casa cliente, validación de equipo) asociados a cada
+// distancia, equipos retirados, ubicación casa cliente, validación de equipo, NAP elegida) asociados a cada
 // VISITA de la cuenta.
 //
 // Reemplaza al "historial de la app" (conteos sueltos de tool-history): cada
@@ -38,6 +38,10 @@ import {
   toDeviceValidationDto,
   type DeviceValidationDto,
 } from '../device-validation/device-validation.mappers.js';
+import {
+  toNapAssignmentDto,
+  type NapAssignmentDto,
+} from '../nap-assignment/nap-assignment.mappers.js';
 
 /** Margen tras el cierre de la orden: el técnico suele guardar al salir. */
 export const VISIT_WINDOW_GRACE_MS = 2 * 3600_000;
@@ -57,7 +61,8 @@ export type RecordType =
   | 'distance'
   | 'retiredEquipment'
   | 'clientLocation'
-  | 'deviceValidation';
+  | 'deviceValidation'
+  | 'napAssignment';
 
 const RECORD_LABELS: Record<RecordType, string> = {
   speedtest: 'Speedtest (app)',
@@ -69,6 +74,7 @@ const RECORD_LABELS: Record<RecordType, string> = {
   retiredEquipment: 'Equipos retirados',
   clientLocation: 'Ubicación casa cliente',
   deviceValidation: 'Validación de equipo vs plan',
+  napAssignment: 'NAP elegida (instalación)',
 };
 
 type Linked<T> = T & { linkedBy: LinkedBy };
@@ -92,6 +98,8 @@ export interface VisitRecords {
   clientLocations: Array<Linked<ClientLocationDto>>;
   /** Validaciones del equipo a instalar vs plan (ok, bloqueadas, sin plan). */
   deviceValidations: Array<Linked<DeviceValidationDto>>;
+  /** NAP elegida por el técnico en Instalación (append-only). */
+  napAssignments: Array<Linked<NapAssignmentDto>>;
 }
 
 export type VisitWithRecords = VisitItem & { records: VisitRecords };
@@ -120,6 +128,8 @@ export interface AccountRecords {
   clientLocations?: ClientLocationDto[];
   /** Opcional por la misma razón. */
   deviceValidations?: DeviceValidationDto[];
+  /** Opcional por la misma razón. */
+  napAssignments?: NapAssignmentDto[];
 }
 
 export interface VisitRecordsRepository {
@@ -129,7 +139,7 @@ export interface VisitRecordsRepository {
 export const prismaVisitRecordsRepository: VisitRecordsRepository = {
   async loadAccountRecords(accountNumbers) {
     const where = { accountNumber: { in: accountNumbers } };
-    const [speedtests, pings, traceroutes, heatmaps, distance, retired, locations, validations] = await Promise.all([
+    const [speedtests, pings, traceroutes, heatmaps, distance, retired, locations, validations, naps] = await Promise.all([
       prisma.speedtest.findMany({ where, orderBy: { measuredAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
       prisma.pingTest.findMany({ where, orderBy: { measuredAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
       prisma.tracerouteTest.findMany({
@@ -153,6 +163,7 @@ export const prismaVisitRecordsRepository: VisitRecordsRepository = {
       }),
       prisma.clientLocation.findMany({ where, orderBy: { capturedAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
       prisma.deviceValidation.findMany({ where, orderBy: { createdAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
+      prisma.napAssignment.findMany({ where, orderBy: { createdAt: 'desc' }, take: MAX_RECORDS_PER_TYPE }),
     ]);
     return {
       speedtests: speedtests.map(toSpeedtestDto),
@@ -163,6 +174,7 @@ export const prismaVisitRecordsRepository: VisitRecordsRepository = {
       retiredEquipment: retired.map(toRetiredEquipmentDto),
       clientLocations: locations.map(toClientLocationDto),
       deviceValidations: validations.map(toDeviceValidationDto),
+      napAssignments: naps.map(toNapAssignmentDto),
     };
   },
 };
@@ -251,6 +263,7 @@ function emptyRecords(window: { from: number; until: number } | null): VisitReco
     retiredEquipment: [],
     clientLocations: [],
     deviceValidations: [],
+    napAssignments: [],
   };
 }
 
@@ -275,6 +288,8 @@ function finalize(records: VisitRecords): VisitRecords {
         return records.clientLocations.length;
       case 'deviceValidation':
         return records.deviceValidations.length;
+      case 'napAssignment':
+        return records.napAssignments.length;
     }
   };
   const types = Object.keys(RECORD_LABELS) as RecordType[];
@@ -291,6 +306,7 @@ function finalize(records: VisitRecords): VisitRecords {
     ...records.retiredEquipment,
     ...records.clientLocations,
     ...records.deviceValidations,
+    ...records.napAssignments,
   ].map((r) => r.linkedBy);
   const kinds = new Set(all);
   records.linkedBy = kinds.size === 0 ? null : kinds.size === 1 ? (all[0] as LinkedBy) : 'MIXED';
@@ -332,6 +348,7 @@ export function attachRecords(
   place(records.retiredEquipment, (r) => r.retiredAt, (b) => b.retiredEquipment);
   place(records.clientLocations ?? [], (r) => r.capturedAt, (b) => b.clientLocations);
   place(records.deviceValidations ?? [], (r) => r.createdAt, (b) => b.deviceValidations);
+  place(records.napAssignments ?? [], (r) => r.createdAt, (b) => b.napAssignments);
 
   return {
     ...visits,

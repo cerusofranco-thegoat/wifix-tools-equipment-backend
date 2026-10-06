@@ -1561,6 +1561,106 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ====================================================================
+  # NAP ELEGIDA EN INSTALACIÓN (2026-10-06)
+  # ====================================================================
+
+  /accounts/{accountNumber}/nap-assignment:
+    parameters:
+      - $ref: '#/components/parameters/AccountNumberPath'
+    post:
+      tags: [Datos del Cliente]
+      summary: Guardar la NAP elegida en Instalación (append-only)
+      description: >
+        Cada elección es una fila nueva; la vigente es la más reciente. La
+        cuenta se guarda normalizada (`035070291` → `35070291`) y
+        `technicianId` es el usuario del JWT. Valida coordenadas (rango y
+        (0,0) prohibido) igual que `client-location`. Solo escribe la base
+        propia: cero llamadas externas.
+      operationId: createNapAssignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NapAssignmentInput'
+      responses:
+        '201':
+          description: Guardada.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NapAssignment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags: [Datos del Cliente]
+      summary: NAP elegida de la cuenta (vigente + historial)
+      description: '`latest` = la más reciente (o `null`); `items` más reciente primero, máx. 50.'
+      operationId: getNapAssignments
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [latest, items]
+                properties:
+                  latest:
+                    allOf:
+                      - $ref: '#/components/schemas/NapAssignment'
+                    nullable: true
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/NapAssignment' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /nap-assignments:
+    get:
+      tags: [Datos del Cliente]
+      summary: NAPs elegidas de todas las cuentas (vista de gerente, sin UI)
+      description: >
+        Más reciente primero, paginado por cursor: pasa `nextCursor` de la
+        respuesta como `cursor` para la página siguiente (`null` = no hay más).
+      operationId: listNapAssignments
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: accountNumber
+          in: query
+          required: false
+          description: Filtro opcional por cuenta (se normaliza).
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/NapAssignment' }
+                  nextCursor: { type: string, format: uuid, nullable: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ====================================================================
   # VALIDACIÓN DE EQUIPO VS PLAN CONTRATADO (2026-10-01)
   # ====================================================================
 
@@ -2655,7 +2755,9 @@ paths:
         (speedtest de la app y del dispositivo externo, ping, traceroute, señal
         WiFi, distancia, equipos retirados y, desde el 2026-09-30, ubicación
         casa cliente `clientLocation`, por `capturedAt`; desde el 2026-10-01,
-        validación de equipo vs plan `deviceValidation`, por `createdAt`) y un `checklist` de qué se hizo y
+        validación de equipo vs plan `deviceValidation`, por `createdAt`; desde
+        el 2026-10-06, NAP elegida en instalación `napAssignment`, por
+        `createdAt`) y un `checklist` de qué se hizo y
         qué no. Asociación: (1) `taskId` del registro == `workOrder` o
         `fsmTaskId` de la visita (`linkedBy: TASK_ID`); (2) si no, por ventana
         de tiempo de la visita, misma cuenta (`linkedBy: TIME_WINDOW`):
@@ -2715,6 +2817,7 @@ paths:
                             - { type: retiredEquipment, label: Equipos retirados, done: false, count: 0 }
                             - { type: clientLocation, label: Ubicación casa cliente, done: false, count: 0 }
                             - { type: deviceValidation, label: Validación de equipo vs plan, done: false, count: 0 }
+                            - { type: napAssignment, label: NAP elegida (instalación), done: false, count: 0 }
                           speedtests:
                             - id: 3f0c7a52-0d7e-4f0e-9a39-3b8a3c1f1a11
                               accountNumber: '35070291'
@@ -2747,6 +2850,7 @@ paths:
                           retiredEquipment: []
                           clientLocations: []
                           deviceValidations: []
+                          napAssignments: []
                     pendingCount: 0
                     totalOrders: 1
                     scanned: 1
@@ -4915,6 +5019,40 @@ components:
           description: Solo con `valid:false`.
         simulated: { type: boolean, enum: [true] }
 
+    NapAssignmentInput:
+      type: object
+      required: [napCode, latitude, longitude, source]
+      properties:
+        napId: { type: string, nullable: true, description: Id FSM (también se acepta número). }
+        napCode: { type: string, maxLength: 50, example: QQ4JC1 }
+        napName: { type: string, nullable: true, maxLength: 200 }
+        port: { type: integer, nullable: true, minimum: 0, maximum: 512, example: 3 }
+        latitude: { type: number, minimum: -90, maximum: 90, example: -2.19 }
+        longitude: { type: number, minimum: -180, maximum: 180, example: -79.88 }
+        distanceMeters: { type: number, nullable: true, minimum: 0, example: 120 }
+        source: { type: string, enum: [FSM, TEC, MOCK] }
+        taskId: { type: string, nullable: true, example: TASK/549487/2026 }
+        workOrder: { type: string, nullable: true, example: ORDER/463158/2026 }
+
+    NapAssignment:
+      type: object
+      required: [id, accountNumber, napId, napCode, napName, port, latitude, longitude, distanceMeters, source, taskId, workOrder, technicianId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        accountNumber: { type: string }
+        napId: { type: string, nullable: true }
+        napCode: { type: string }
+        napName: { type: string, nullable: true }
+        port: { type: integer, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+        distanceMeters: { type: number, nullable: true }
+        source: { type: string, enum: [FSM, TEC, MOCK] }
+        taskId: { type: string, nullable: true }
+        workOrder: { type: string, nullable: true }
+        technicianId: { type: string, description: Usuario del JWT que eligió la NAP. }
+        createdAt: { type: string, format: date-time }
+
     NapPort:
       type: object
       properties:
@@ -5893,15 +6031,16 @@ components:
         checklist:
           type: array
           description: >
-            Siempre los 9 tipos, en este orden, con `done` y `count`
+            Siempre los 10 tipos, en este orden, con `done` y `count`
             (`clientLocation` = "Ubicación casa cliente", aditivo 2026-09-30;
-            `deviceValidation` = "Validación de equipo vs plan", aditivo 2026-10-01).
+            `deviceValidation` = "Validación de equipo vs plan", aditivo 2026-10-01;
+            `napAssignment` = "NAP elegida (instalación)", aditivo 2026-10-06).
           items:
             type: object
             properties:
               type:
                 type: string
-                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment, clientLocation, deviceValidation]
+                enum: [speedtest, externalSpeedtest, ping, traceroute, wifiSignal, distance, retiredEquipment, clientLocation, deviceValidation, napAssignment]
               label: { type: string }
               done: { type: boolean }
               count: { type: integer }
@@ -5933,6 +6072,10 @@ components:
           type: array
           description: Validaciones de equipo vs plan (aditivo 2026-10-01). Cada una trae `linkedBy`.
           items: { $ref: '#/components/schemas/DeviceValidation' }
+        napAssignments:
+          type: array
+          description: NAP elegida en instalación (aditivo 2026-10-06). Cada una trae `linkedBy`.
+          items: { $ref: '#/components/schemas/NapAssignment' }
 
     VisitsWithRecordsResult:
       allOf:

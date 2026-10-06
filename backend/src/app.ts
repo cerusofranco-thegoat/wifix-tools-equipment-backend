@@ -27,6 +27,7 @@ import { registerAccountLookupRoutes } from './modules/account-lookup/account-lo
 import { registerClientLocationRoutes } from './modules/client-location/client-location.routes.js';
 import { registerDeviceValidationRoutes } from './modules/device-validation/device-validation.routes.js';
 import { registerOrdersRoutes } from './modules/orders/orders.routes.js';
+import { registerNapAssignmentRoutes } from './modules/nap-assignment/nap-assignment.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -158,6 +159,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerClientLocationRoutes(api);
       await registerDeviceValidationRoutes(api);
       await registerOrdersRoutes(api);
+      await registerNapAssignmentRoutes(api);
     },
     { prefix: API_PREFIX },
   );

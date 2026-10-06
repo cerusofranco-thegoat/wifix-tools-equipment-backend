@@ -26,6 +26,7 @@ import { registerWhitelistRoutes } from './modules/whitelist/whitelist.routes.js
 import { registerAccountLookupRoutes } from './modules/account-lookup/account-lookup.routes.js';
 import { registerClientLocationRoutes } from './modules/client-location/client-location.routes.js';
 import { registerDeviceValidationRoutes } from './modules/device-validation/device-validation.routes.js';
+import { registerOrdersRoutes } from './modules/orders/orders.routes.js';
 
 const API_PREFIX = '/herramientas/v1';
 
@@ -156,6 +157,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await registerAccountLookupRoutes(api);
       await registerClientLocationRoutes(api);
       await registerDeviceValidationRoutes(api);
+      await registerOrdersRoutes(api);
     },
     { prefix: API_PREFIX },
   );

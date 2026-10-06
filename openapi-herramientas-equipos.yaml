@@ -2143,6 +2143,99 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /orders/context:
+    get:
+      tags: [Datos del Cliente]
+      summary: Contexto completo de una orden (TYTAN simulado)
+      description: >
+        **SIMULADO y determinístico** (`simulated: true`, `source: TYTAN`):
+        misma orden → mismos datos (las fechas se anclan al día actual de
+        Ecuador: la tarea `Pendiente`, si la hay, es la de HOY y va primera).
+        `client.accountNumber` es SIEMPRE la misma cuenta que devuelve
+        `POST /accounts/lookup {order}` para esa orden. `tasks` va de la más
+        reciente a la más antigua (2–5); `equipment` trae 2–4 equipos (módem/ONT
+        e Internet siempre). `workOrder` va SIEMPRE como query param (lleva
+        barras) y acepta solo los dígitos (año actual). No llama a FSM ni a la
+        operadora. Integración real con TYTAN pendiente.
+      operationId: getOrderContext
+      parameters:
+        - name: workOrder
+          in: query
+          required: true
+          schema: { type: string, maxLength: 120 }
+          example: ORDER/463158/2026
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderContext'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /orders/task-check:
+    get:
+      tags: [Datos del Cliente]
+      summary: Valida que el nº de task pertenezca a la orden (TYTAN simulado)
+      description: >
+        Nº de task obligatorio en Visita técnica. `taskId` con formato
+        `TASK/<6-7 dígitos>/<año>` (acepta solo los dígitos y normaliza).
+        Válida si está en `tasks` de `/orders/context` para esa orden. Si no
+        pertenece → **200** `valid: false, reason: TASK_NOT_IN_ORDER`. Formato
+        inválido → 400. El frontend usa el `taskId` devuelto como `taskId` de
+        todos los registros de la visita.
+      operationId: checkOrderTask
+      parameters:
+        - name: workOrder
+          in: query
+          required: true
+          schema: { type: string, maxLength: 120 }
+          example: ORDER/463158/2026
+        - name: taskId
+          in: query
+          required: true
+          schema: { type: string, maxLength: 120 }
+          example: TASK/549487/2026
+      responses:
+        '200':
+          description: OK (válida o no).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCheckResult'
+              examples:
+                valida:
+                  value:
+                    valid: true
+                    taskId: TASK/549487/2026
+                    workOrder: ORDER/463158/2026
+                    task:
+                      taskId: TASK/549487/2026
+                      taskType: Visita Técnica HFC
+                      status: Pendiente
+                      doneFrom: null
+                      doneTo: null
+                      scheduledFrom: '2026-10-06T15:30:00.000Z'
+                      scheduledTo: '2026-10-06T17:30:00.000Z'
+                      assignedTo: CONN-154 GYE VT | LLANOS SANCHEZ RODNEY ALBERTO
+                      priority: 1
+                      closure: null
+                    simulated: true
+                noPertenece:
+                  value:
+                    valid: false
+                    reason: TASK_NOT_IN_ORDER
+                    taskId: TASK/549487/2026
+                    workOrder: ORDER/463158/2026
+                    simulated: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /terminals/{id}:
     get:
       tags: [Diagnóstico de Red]
@@ -4704,6 +4797,123 @@ components:
           type: string
           enum: [WHITELIST_EMPTY]
           description: Whitelist vacía → cuenta demo `40123456`.
+
+    OrderTask:
+      type: object
+      required: [taskId, taskType, status, doneFrom, doneTo, scheduledFrom, scheduledTo, assignedTo, priority, closure]
+      properties:
+        taskId: { type: string, example: TASK/549487/2026 }
+        taskType: { type: string, example: Visita Técnica HFC }
+        status: { type: string, enum: [Realizado, Cancelado, Pendiente] }
+        doneFrom: { type: string, format: date-time, nullable: true }
+        doneTo: { type: string, format: date-time, nullable: true }
+        scheduledFrom: { type: string, format: date-time, nullable: true }
+        scheduledTo: { type: string, format: date-time, nullable: true }
+        assignedTo:
+          type: string
+          nullable: true
+          example: CONN-154 GYE MIGRA | LLANOS SANCHEZ RODNEY ALBERTO
+        priority: { type: integer, example: 1 }
+        closure:
+          type: object
+          nullable: true
+          description: '`null` en la tarea Pendiente.'
+          required: [result, reason, notes, materials]
+          properties:
+            result: { type: string, enum: [Satisfactoria, Insatisfactoria] }
+            reason: { type: string, example: CAMBIO DE MATERIAL EXTERNO DAÑO POR TERCEROS }
+            notes:
+              type: string
+              example: 'CTO: 8482838 DIRECCIÓN: ... COORDENADAS: -79.88,-2.19 NIVELES EN EL PUNTO: -19 NIVELES EN LA NAP -15 NUMERACION DE LA NAP: QQ4JC1 METRAJE DE CABLEADO FIBRA DROP 120 MTS.'
+            materials:
+              type: array
+              items:
+                type: object
+                required: [name, type, quantity]
+                properties:
+                  name: { type: string, example: 'CONECTOR SC APC SM PARA FUSION [MIN-CON-033]' }
+                  type: { type: string, enum: [Material] }
+                  quantity: { type: number, example: 4 }
+
+    OrderContext:
+      type: object
+      description: Contexto de la orden. TYTAN SIMULADO y determinístico.
+      required: [simulated, source, order, client, tasks, equipment, registeredAddress, observations]
+      properties:
+        simulated: { type: boolean, enum: [true] }
+        source: { type: string, enum: [TYTAN] }
+        order:
+          type: object
+          required: [workOrder, orderType, technology, status, createdAt, closedAt, slaAt, externalSystem, externalId, signatureProcess]
+          properties:
+            workOrder: { type: string, example: ORDER/463158/2026 }
+            orderType: { type: string, enum: [Visita Técnica, Instalación, Migración] }
+            technology: { type: string, enum: [HFC, GPON] }
+            status: { type: string, enum: [Realizado, Cancelado, Pendiente, En curso] }
+            createdAt: { type: string, format: date-time }
+            closedAt: { type: string, format: date-time, nullable: true }
+            slaAt: { type: string, format: date-time }
+            externalSystem: { type: string, enum: [TYTAN] }
+            externalId: { type: string, example: '38890883' }
+            signatureProcess: { type: string, example: FSM_VISTEC/126103/2026 }
+        client:
+          type: object
+          required: [accountNumber, fullName, phones, address, latitude, longitude, napCode, zoneCode]
+          properties:
+            accountNumber:
+              type: string
+              description: La MISMA cuenta que devuelve el lookup por esta orden.
+              example: '8482838'
+            fullName:
+              type: string
+              description: Nombre de la whitelist si lo trae; si no, uno generado.
+            phones: { type: array, items: { type: string } }
+            address: { type: string, example: 'Guayaquil, Villamil, CENTRO 1 VILLAMIL, 2002, ABDON CALDERON, MZ. E' }
+            latitude: { type: number, example: -2.1980433464 }
+            longitude: { type: number, example: -79.8816070557 }
+            napCode: { type: string, example: QQ4JC1 }
+            zoneCode: { type: string, example: QQ4BA }
+        tasks:
+          type: array
+          minItems: 2
+          maxItems: 5
+          description: Más reciente primero. A lo sumo una Pendiente (la de hoy).
+          items: { $ref: '#/components/schemas/OrderTask' }
+        equipment:
+          type: array
+          minItems: 2
+          maxItems: 4
+          items:
+            type: object
+            required: [serviceId, status, type, shortName, productName, model, serial, mac]
+            properties:
+              serviceId: { type: string, example: '156021417' }
+              status: { type: string, example: Aprovisionado }
+              type: { type: string, example: SERVICE CALL+GPON }
+              shortName: { type: string, example: Modem }
+              productName: { type: string, example: Modem }
+              model: { type: string, nullable: true, example: ONT ZTE ZXHN F6600 WIFI 6 }
+              serial: { type: string, nullable: true, example: ZTEGD1578186 }
+              mac: { type: string, nullable: true, example: 400EF304BFB6 }
+        registeredAddress: { type: string }
+        observations: { type: string }
+
+    TaskCheckResult:
+      type: object
+      required: [valid, taskId, workOrder, simulated]
+      properties:
+        valid: { type: boolean }
+        taskId: { type: string, description: Normalizada. }
+        workOrder: { type: string, description: Normalizada. }
+        task:
+          allOf:
+            - $ref: '#/components/schemas/OrderTask'
+          description: Solo con `valid:true`.
+        reason:
+          type: string
+          enum: [TASK_NOT_IN_ORDER]
+          description: Solo con `valid:false`.
+        simulated: { type: boolean, enum: [true] }
 
     NapPort:
       type: object

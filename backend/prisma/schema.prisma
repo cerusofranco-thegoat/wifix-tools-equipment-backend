@@ -643,3 +643,47 @@ model DeviceValidation {
   @@index([createdAt])
   @@map("device_validations")
 }
+
+// ===========================================================================
+// NAP ELEGIDA EN INSTALACIÓN
+// ===========================================================================
+//
+// APPEND-ONLY: cada elección del técnico es una fila nueva; la vigente es la
+// más reciente. Guarda una FOTO de la NAP tal como la vio la app (código,
+// nombre, puerto, coordenadas, distancia y de qué fuente salió), vinculada a la
+// task/orden de la visita. `technician_id` es el `sub` del JWT.
+
+enum NapAssignmentSource {
+  FSM
+  TEC
+  MOCK
+
+  @@map("nap_assignment_source")
+}
+
+model NapAssignment {
+  id             String              @id @default(uuid()) @db.Uuid
+  accountNumber  String              @map("account_number")
+  /// Id numérico de FSM (`/naps/nearest`); null si la NAP vino de TEC/mock.
+  napId          String?             @map("nap_id")
+  napCode        String              @map("nap_code")
+  napName        String?             @map("nap_name")
+  /// Puerto elegido; null si el técnico no eligió puerto.
+  port           Int?
+  /// Coordenada de la NAP elegida.
+  latitude       Float
+  longitude      Float
+  /// Distancia NAP ↔ técnico/cliente según la app al elegir.
+  distanceMeters Float?              @map("distance_meters")
+  source         NapAssignmentSource
+  /// Vínculo con la visita (`TASK/…`) y la orden (`ORDER/…`). Opcionales.
+  taskId         String?             @map("task_id")
+  workOrder      String?             @map("work_order")
+  technicianId   String              @map("technician_id")
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountNumber, createdAt])
+  @@index([accountNumber, taskId])
+  @@index([createdAt, id])
+  @@map("nap_assignments")
+}

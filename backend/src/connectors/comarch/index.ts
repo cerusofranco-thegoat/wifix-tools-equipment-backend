@@ -67,14 +67,19 @@ const STREETS = [
   'Av. Amazonas', 'Av. 10 de Agosto', 'Av. de los Shyris', 'Calle Veintimilla',
   'Av. 6 de Diciembre', 'Av. Mariscal Sucre', 'Calle Bolívar', 'Av. República',
 ];
-const PLANS: Array<{ name: string; down: number; up: number }> = [
-  { name: 'Wifix Hogar 50', down: 50, up: 25 },
-  { name: 'Wifix Hogar 100', down: 100, up: 50 },
-  { name: 'Wifix Hogar 200', down: 200, up: 100 },
-  { name: 'Wifix Hogar 400', down: 400, up: 200 },
-  { name: 'Wifix Hogar 600', down: 600, up: 300 },
-  { name: 'Wifix Business 1G', down: 1000, up: 500 },
+// Planes SIMÉTRICOS (subida === bajada): así los vende la operadora en GPON.
+// Decisión 2026-10-06; ningún mock de plan puede volver a usar up = down/2.
+const PLANS: ReadonlyArray<{ name: string; down: number; up: number }> = [
+  { name: 'Wifix Hogar 50', down: 50, up: 50 },
+  { name: 'Wifix Hogar 100', down: 100, up: 100 },
+  { name: 'Wifix Hogar 200', down: 200, up: 200 },
+  { name: 'Wifix Hogar 400', down: 400, up: 400 },
+  { name: 'Wifix Hogar 600', down: 600, up: 600 },
+  { name: 'Wifix Business 1G', down: 1000, up: 1000 },
 ];
+
+/** Solo para tests: los planes del mock. */
+export const MOCK_PLANS = PLANS;
 
 function buildProfile(accountNumber: string): ClientProfile {
   const rng = seededRng(`comarch:profile:${accountNumber}`);

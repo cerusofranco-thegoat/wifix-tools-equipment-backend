@@ -9,10 +9,21 @@
 // entre corchetes, notas de cierre "CTO: … NIVELES EN EL PUNTO …"). Nada sale
 // de FSM ni de la operadora: es 100 % inventado. Función pura.
 //
+// Tecnología, módem/ONT y NAP NO se sortean aquí: salen de
+// `account-simulation.ts` (`resolveAccountTechnology`, equipo y red de acceso
+// de la cuenta), la misma fuente que ISP Monitor por cuenta, para que la orden
+// y el ISP Monitor nunca se contradigan.
+//
 // TODO(tytan-real): sustituir por la orden real de TYTAN (cabecera, tareas,
 // cierres, materiales y equipos aprovisionados) cuando haya endpoint.
 
 import { seededRng, type SeededRng } from '../../connectors/_shared.js';
+import {
+  resolveAccountTechnology,
+  simulatedAccessLayout,
+  simulatedCity,
+  simulatedClientDevice,
+} from '../../connectors/ispmonitor/account-simulation.js';
 import type { LookupAccount } from '../account-lookup/account-lookup.service.js';
 import { workOrderParts } from './order-ids.js';
 
@@ -263,18 +274,12 @@ function pickWeighted<T extends { weight: number }>(rng: SeededRng, list: readon
   return list[list.length - 1] as T;
 }
 
-function cityFrom(account: LookupAccount, rng: SeededRng): City {
+/** Ciudad de la whitelist o, si no es GYE/UIO, la de respaldo compartida con ISP Monitor. */
+function cityFrom(account: LookupAccount): City {
   const city = account.city?.toUpperCase() ?? '';
   if (city.includes('QUITO')) return 'Quito';
   if (city.includes('GUAYAQUIL')) return 'Guayaquil';
-  return rng.bool(0.65) ? 'Guayaquil' : 'Quito';
-}
-
-function technologyFrom(account: LookupAccount, rng: SeededRng): Technology {
-  const text = `${account.businessType ?? ''} ${account.accessType ?? ''}`.toUpperCase();
-  if (text.includes('GPON') || text.includes('FTTH') || text.includes('FIBRA')) return 'GPON';
-  if (text.includes('HFC') || text.includes('COAX')) return 'HFC';
-  return rng.bool(0.6) ? 'GPON' : 'HFC';
+  return simulatedCity(account.accountNumber);
 }
 
 function iso(ms: number): string {
@@ -293,7 +298,7 @@ export function buildOrderContext(workOrder: string, account: LookupAccount, now
   const today = ecuadorDayStart(now);
 
   // Cliente y dirección.
-  const city = cityFrom(account, rng);
+  const city = cityFrom(account);
   const sector = rng.pick(SECTORS[city]);
   const street = rng.pick(sector.streets);
   const crossStreet = rng.pick(sector.streets.filter((s) => s !== street));
@@ -303,17 +308,23 @@ export function buildOrderContext(workOrder: string, account: LookupAccount, now
   const box = CITY_BOX[city];
   const latitude = rng.floatBetween(box.lat[0], box.lat[1], 10);
   const longitude = rng.floatBetween(box.lon[0], box.lon[1], 10);
-  const zonePrefix = `${letters(rng, 2)}${rng.intBetween(1, 9)}`;
-  const napCode = `${zonePrefix}${letters(rng, 2)}${rng.intBetween(1, 9)}`;
-  const zoneCode = `${zonePrefix}${letters(rng, 2)}`;
+  // NAP (o tap en HFC) y zona = red de acceso del ISP Monitor de la cuenta.
+  const layout = simulatedAccessLayout(account.accountNumber);
+  const napCode = layout.clientNap;
+  const zoneCode = layout.accessNetwork;
   const generatedName = `${rng.pick(CLIENT_LAST)} ${rng.pick(CLIENT_LAST)} ${rng.pick(CLIENT_FIRST)} ${rng.pick(CLIENT_FIRST)}`;
   // Celular (09 + 8 dígitos) y, a veces, fijo con el código de la ciudad (04 GYE, 02 UIO).
   const areaCode = city === 'Guayaquil' ? '4' : '2';
   const phones = [`09${digits(rng, 8)}`, ...(rng.bool(0.35) ? [`0${areaCode}${digits(rng, 7)}`] : [])];
 
   // Orden.
-  const orderType = pickWeighted(rng, ORDER_TYPES).type;
-  const technology: Technology = orderType === 'Migración' ? 'GPON' : technologyFrom(account, rng);
+  // La tecnología es la de la cuenta (no la de la planilla: la whitelist de
+  // Xtrim no trae GPON/HFC). Una Migración HFC → GPON solo existe en cuentas que
+  // hoy son GPON (ya migradas, con ONT en ISP Monitor); en HFC se toma como
+  // Visita Técnica.
+  const technology: Technology = resolveAccountTechnology(account.accountNumber);
+  const rolledType = pickWeighted(rng, ORDER_TYPES).type;
+  const orderType: OrderType = rolledType === 'Migración' && technology === 'HFC' ? 'Visita Técnica' : rolledType;
   const taskType = orderType === 'Migración' ? 'Migración HFC a GPON' : `${orderType} ${technology}`;
   const techPrefix = `CONN-${String(rng.intBetween(20, 199)).padStart(3, '0')} ${CITY_TECH_PREFIX[city]} ${CREW[orderType]}`;
   const crew = rng.sample(TECH_NAMES, 3).map((name) => `${techPrefix} | ${name}`);
@@ -439,28 +450,19 @@ export function buildOrderContext(workOrder: string, account: LookupAccount, now
   // Equipos aprovisionados (2–4): módem/ONT e Internet siempre.
   let serviceId = rng.intBetween(150_000_000, 159_000_000);
   const nextServiceId = (): string => String((serviceId += rng.intBetween(1, 900)));
+  // Módem/ONT = el equipo que ISP Monitor muestra para la cuenta (mismo serial/MAC).
+  const modem = simulatedClientDevice(account.accountNumber);
   const equipment: OrderEquipment[] = [
-    technology === 'GPON'
-      ? {
-          serviceId: nextServiceId(),
-          status: 'Aprovisionado',
-          type: 'SERVICE CALL+GPON',
-          shortName: 'Modem',
-          productName: 'Modem',
-          model: 'ONT ZTE ZXHN F6600 WIFI 6',
-          serial: `ZTEG${hex(rng, 8)}`,
-          mac: hex(rng, 12),
-        }
-      : {
-          serviceId: nextServiceId(),
-          status: 'Aprovisionado',
-          type: 'SERVICE CALL+HFC',
-          shortName: 'Modem',
-          productName: 'Modem',
-          model: 'CABLEMODEM HITRON CODA-4582U',
-          serial: `HTRN${digits(rng, 9)}`,
-          mac: hex(rng, 12),
-        },
+    {
+      serviceId: nextServiceId(),
+      status: 'Aprovisionado',
+      type: `SERVICE CALL+${technology}`,
+      shortName: 'Modem',
+      productName: 'Modem',
+      model: modem.orderModel,
+      serial: modem.serial,
+      mac: modem.mac,
+    },
     {
       serviceId: nextServiceId(),
       status: 'Aprovisionado',

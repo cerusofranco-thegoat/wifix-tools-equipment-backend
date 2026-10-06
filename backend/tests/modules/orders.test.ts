@@ -10,6 +10,11 @@ import {
   type LookupAccount,
 } from '../../src/modules/account-lookup/account-lookup.service.js';
 import { buildOrderContext, type OrderContext } from '../../src/modules/orders/orders.generator.js';
+import {
+  resolveAccountTechnology,
+  simulatedAccessLayout,
+  simulatedClientDevice,
+} from '../../src/connectors/ispmonitor/account-simulation.js';
 
 const PREFIX = '/herramientas/v1';
 const IMPORTED_AT = new Date('2026-09-26T22:07:00.000Z');
@@ -279,13 +284,46 @@ describe('buildOrderContext (generador puro)', () => {
     expect(withPending).toBeGreaterThan(200);
   });
 
-  it('la ciudad y la tecnología siguen a la whitelist cuando la traen', () => {
-    const quito = buildOrderContext(ORDER, account(1, { city: 'QUITO', businessType: 'Internet GPON' }), NOW);
+  it('la ciudad sigue a la whitelist cuando la trae', () => {
+    const quito = buildOrderContext(ORDER, account(1, { city: 'QUITO' }), NOW);
     expect(quito.client.address.startsWith('Quito, ')).toBe(true);
-    if (quito.order.orderType !== 'Migración') expect(quito.order.technology).toBe('GPON');
-    const hfc = buildOrderContext(ORDER, account(2, { city: 'GUAYAQUIL', businessType: 'Internet HFC' }), NOW);
-    expect(hfc.client.address.startsWith('Guayaquil, ')).toBe(true);
-    if (hfc.order.orderType !== 'Migración') expect(hfc.order.technology).toBe('HFC');
+    const gye = buildOrderContext(ORDER, account(2, { city: 'GUAYAQUIL II' }), NOW);
+    expect(gye.client.address.startsWith('Guayaquil, ')).toBe(true);
+  });
+
+  it('tecnología, módem/ONT y NAP son los de la cuenta (los mismos que ISP Monitor)', () => {
+    const seen = new Set<string>();
+    for (let n = 0; n < 200; n++) {
+      // La planilla dice "HFC" a propósito: manda la tecnología de la cuenta.
+      const acc = account(n, { businessType: 'Internet HFC', accountNumber: String(100_900_000 + n * 313) });
+      const order = `ORDER/${500000 + n * 11}/2026`;
+      const ctx = buildOrderContext(order, acc, NOW);
+      const technology = resolveAccountTechnology(acc.accountNumber);
+      seen.add(technology);
+      expect(ctx.order.technology).toBe(technology);
+      // Migración HFC→GPON solo en cuentas que hoy son GPON.
+      if (technology === 'HFC') expect(ctx.order.orderType).not.toBe('Migración');
+      for (const t of ctx.tasks) {
+        if (ctx.order.orderType !== 'Migración') expect(t.taskType.endsWith(` ${technology}`)).toBe(true);
+      }
+      const device = simulatedClientDevice(acc.accountNumber);
+      const modem = ctx.equipment.find((e) => e.shortName === 'Modem');
+      expect(modem).toMatchObject({
+        type: `SERVICE CALL+${technology}`,
+        model: device.orderModel,
+        serial: device.serial,
+        mac: device.mac,
+      });
+      if (technology === 'HFC') {
+        expect(modem?.model).toBe('CABLEMODEM HITRON CODA-4582U');
+        expect(modem?.mac).toMatch(/^[0-9A-F]{12}$/);
+      }
+      expect(ctx.equipment.find((e) => e.shortName === 'Internet')?.type).toBe(`INTERNET+${technology}`);
+      const layout = simulatedAccessLayout(acc.accountNumber);
+      expect(ctx.client.napCode).toBe(layout.clientNap);
+      expect(ctx.client.zoneCode).toBe(layout.accessNetwork);
+    }
+    expect(seen).toEqual(new Set(['GPON', 'HFC']));
   });
 });
 

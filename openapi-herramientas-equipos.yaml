@@ -2258,6 +2258,14 @@ paths:
         e Internet siempre). `workOrder` va SIEMPRE como query param (lleva
         barras) y acepta solo los dígitos (año actual). No llama a FSM ni a la
         operadora. Integración real con TYTAN pendiente.
+
+
+        Desde 2026-10-06 `order.technology`, el módem/ONT de `equipment`,
+        `client.napCode` y `client.zoneCode` salen de la MISMA simulación por
+        cuenta que `GET /accounts/{accountNumber}/isp-monitor`
+        (`resolveAccountTechnology`): GPON → ONT ZTE con serial `ZTEG…`;
+        HFC → cablemódem Hitron con su MAC. Una `Migración` (HFC a GPON) solo
+        aparece en cuentas GPON.
       operationId: getOrderContext
       parameters:
         - name: workOrder
@@ -2570,9 +2578,16 @@ paths:
       tags: [Diagnóstico de Red]
       summary: Métricas de red del cliente
       description: >
-        Niveles de señal RX/TX (GPON y HFC), señal a ruido (HFC), FEC
-        corregidos y sin corregir (HFC), caídas en 24 horas y tráfico de
+        Potencia óptica RX/TX (solo GPON), señal a ruido (solo HFC), FEC
+        corregidos y sin corregir (solo HFC), caídas en 24 horas y tráfico de
         internet (campos 9-13). Origen real: ISP Monitor.
+
+
+        **Separación por tecnología (2026-10-06):** en GPON nunca vienen
+        `signalToNoiseDb` ni `fec*` (DOCSIS); en HFC `signalLevels` es `null`
+        (no hay óptica GPON). En mock la tecnología es la de la cuenta
+        (`resolveAccountTechnology`, la misma de ISP Monitor por cuenta y de la
+        orden simulada).
       operationId: getNetworkMetrics
       parameters:
         - $ref: '#/components/parameters/AccountNumberPath'
@@ -2587,6 +2602,108 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /accounts/{accountNumber}/isp-monitor:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: ISP Monitor por número de cuenta (ONU Info / cablemódem) — SIMULADO
+      description: >
+        Equivalente a buscar "# Cuenta" en el ISP Monitor de la operadora y
+        abrir la ficha del equipo. **SIMULADO y determinístico**
+        (`simulated: true`): no consulta TEC (bloqueado desde el servidor y la
+        operadora pidió no consultar de más). Pendiente el mapeo real
+        cuenta → serial.
+
+
+        - `technology` sale de la regla compartida `resolveAccountTechnology`
+          (la misma de `/orders/context` y `network-metrics`).
+
+        - GPON → `device` es la "ONU Info" (puerto OLT, ONU id, service ports,
+          CPEs, óptica con semáforo) y `docsis` es SIEMPRE `null`.
+
+        - HFC → `device` es el cablemódem (`serial` = MAC, `port` = interfaz
+          del CMTS, `headend` = CMTS, `nap` = tap), con `optics: null`,
+          `onuId: null`, `servicePorts: []` y `offlineCause: null`; `docsis`
+          trae potencias/SNR por canal y codewords.
+
+        - `plan` = el plan de `client-profile` expresado como profile de la
+          OLT/CMTS: `RES-<kbps>/<kbps>-I` (`downloadMbps` ===
+          `contractedDownloadMbps`).
+
+        - `searchRow.accountStatus`, la ciudad y el nombre salen de la
+          whitelist si la cuenta está (ACTIVO → A, SUSPENDIDO → S,
+          ORDENADO/PENDIENTE → A); si no, simulados. Con `accountStatus`
+          distinto de A, `adminState` es `down`.
+
+        No se exponen identificadores internos del monitoreo (ifIndex/index).
+      operationId: getIspMonitorByAccount
+      parameters:
+        - $ref: '#/components/parameters/IspAccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IspMonitorAccount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: >
+            `WHITELIST_ENFORCE` activo y la cuenta no está en la whitelist de la
+            operadora (no hay equipo que mostrar). Con la whitelist en modo
+            aviso nunca hay 404.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /accounts/{accountNumber}/isp-monitor/access-network:
+    get:
+      tags: [Diagnóstico de Red]
+      summary: Equipos de la red de acceso por NAP y diagnóstico interno/externo — SIMULADO
+      description: >
+        "Listado de equipos" del ISP Monitor: los equipos del mismo puerto OLT
+        (GPON) o tarjeta CMTS (HFC) que el cliente, agrupados por NAP (tap en
+        HFC), con su estado working/lost. La NAP del cliente va primero y su
+        equipo viene con `isClient: true` y el mismo `state` que
+        `device.state` de `/isp-monitor`. **SIMULADO y determinístico**; no
+        consulta TEC.
+
+
+        `diagnosis.scope` se calcula sobre los datos, en este orden:
+        `EXTERNAL_NETWORK` si ≥ 30 % de la red de acceso está lost en ≥ 2 NAPs;
+        `EXTERNAL_NAP` si ≥ 50 % de la NAP del cliente está lost; `INTERNAL`
+        si el equipo del cliente está lost (y el resto de su NAP working);
+        `NONE` en otro caso. Simulación: 4–7 NAPs de 2–8 equipos; ~10 % de
+        cuentas con escenario de falla (interna / NAP / red).
+
+
+        LOPDP: con datos reales este listado expondría nombres y cuentas de
+        terceros; hoy es 100 % simulado y la minimización queda pendiente
+        antes de conectarlo.
+      operationId: getIspAccessNetworkByAccount
+      parameters:
+        - $ref: '#/components/parameters/IspAccountNumberPath'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IspAccessNetwork'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Igual que `/isp-monitor` (whitelist en modo bloqueo y cuenta no listada).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /accounts/{accountNumber}/node-events:
     get:
@@ -3142,6 +3259,18 @@ components:
   # PARÁMETROS REUTILIZABLES
   # --------------------------------------------------------------------
   parameters:
+    IspAccountNumberPath:
+      name: accountNumber
+      in: path
+      required: true
+      description: >
+        Número de cuenta: solo dígitos, 4–12 significativos (los ceros a la
+        izquierda se ignoran: `0100926544` = `100926544`). Otro formato → 400
+        VALIDATION_ERROR.
+      schema:
+        type: string
+        pattern: '^\d{1,12}$'
+        example: '100926544'
     ResourceId:
       name: id
       in: path
@@ -4957,7 +5086,10 @@ components:
           properties:
             workOrder: { type: string, example: ORDER/463158/2026 }
             orderType: { type: string, enum: [Visita Técnica, Instalación, Migración] }
-            technology: { type: string, enum: [HFC, GPON] }
+            technology:
+              type: string
+              enum: [HFC, GPON]
+              description: Tecnología de la cuenta; la misma de `/accounts/{accountNumber}/isp-monitor`.
             status: { type: string, enum: [Realizado, Cancelado, Pendiente, En curso] }
             createdAt: { type: string, format: date-time }
             closedAt: { type: string, format: date-time, nullable: true }
@@ -4980,8 +5112,14 @@ components:
             address: { type: string, example: 'Guayaquil, Villamil, CENTRO 1 VILLAMIL, 2002, ABDON CALDERON, MZ. E' }
             latitude: { type: number, example: -2.1980433464 }
             longitude: { type: number, example: -79.8816070557 }
-            napCode: { type: string, example: QQ4JC1 }
-            zoneCode: { type: string, example: QQ4BA }
+            napCode:
+              type: string
+              example: HG4NB2
+              description: NAP (GPON) o tap (HFC) del cliente; = `device.nap` de ISP Monitor.
+            zoneCode:
+              type: string
+              example: HG4BF
+              description: Red de acceso; = `device.accessNetwork` de ISP Monitor.
         tasks:
           type: array
           minItems: 2
@@ -5745,7 +5883,10 @@ components:
           type: string
           enum: [GPON, HFC]
         signalLevels:
-          $ref: '#/components/schemas/SignalLevels'
+          description: Potencia óptica. Solo GPON; `null` en HFC.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/SignalLevels'
         signalToNoiseDb:
           type: number
           format: double
@@ -5772,6 +5913,230 @@ components:
         measuredAt:
           type: string
           format: date-time
+
+    # ---- ISP Monitor por cuenta (SIMULADO) ---------------------------
+
+    IspPlan:
+      type: object
+      description: Plan de client-profile expresado como profile de la OLT/CMTS (en kbps).
+      required: [profile, downloadKbps, uploadKbps, downloadMbps, uploadMbps, name]
+      properties:
+        profile: { type: string, example: RES-300000/300000-I }
+        downloadKbps: { type: integer, example: 300000 }
+        uploadKbps: { type: integer, example: 300000 }
+        downloadMbps: { type: number, example: 300 }
+        uploadMbps: { type: number, example: 300 }
+        name: { type: string, example: Wifix Hogar 200 }
+
+    IspSearchRow:
+      type: object
+      description: Fila del resultado de buscar "# Cuenta" en ISP Monitor.
+      required: [serial, city, accessNetwork, profile, accountNumber, accountStatus, clientName]
+      properties:
+        serial: { type: string, example: ZTEGD0BB6B57, description: 'GPON: serial; HFC: MAC (12 hex).' }
+        city: { type: string, example: Guayaquil }
+        accessNetwork: { type: string, example: HG4BF }
+        profile: { type: string, example: RES-300000/300000-I }
+        accountNumber: { type: string, example: '100926544' }
+        accountStatus: { type: string, enum: [A, S, T] }
+        clientName: { type: string, example: EDISON LENIN RIZZO PLUAS }
+
+    IspServicePort:
+      type: object
+      required: [id, mode, vlanIn, vlanOut, service, trafficProfile, macLearned, state]
+      properties:
+        id: { type: integer, example: 1 }
+        mode: { type: string, enum: [tag] }
+        vlanIn: { type: integer, example: 950 }
+        vlanOut: { type: integer, example: 950 }
+        service: { type: string, example: INT Residencial, description: 'INT Residencial | VOIP | IPTV' }
+        trafficProfile: { type: string, example: DOWN-RES-300000-I }
+        macLearned: { type: integer, example: 1 }
+        state: { type: string, enum: [up, down] }
+
+    IspCpe:
+      type: object
+      required: [ip, mac, vendor]
+      properties:
+        ip: { type: string, example: 190.155.82.164 }
+        mac: { type: string, example: 'A0:09:2E:57:51:EC' }
+        vendor: { type: string, example: zte }
+
+    IspOptics:
+      type: object
+      description: >
+        Capa óptica GPON con semáforo (Clase B+): Rx ONT -8…-27 dBm, Rx OLT
+        -8…-28 dBm, Tx 0.5…5 dBm. Con el equipo `lost` la OLT no tiene
+        lectura: los valores numéricos van `null` y los tres `*Ok` en `false`.
+      required: [distanceMeters, rxOltDbm, txDbm, rxDbm, voltage, temperatureC, rxOltOk, txOk, rxOk]
+      properties:
+        distanceMeters: { type: integer, nullable: true, example: 4006 }
+        rxOltDbm: { type: number, nullable: true, example: -20.0 }
+        txDbm: { type: number, nullable: true, example: 2.3 }
+        rxDbm: { type: number, nullable: true, example: -17.0 }
+        voltage: { type: number, nullable: true, example: 3.26 }
+        temperatureC: { type: number, nullable: true, example: 41.25 }
+        rxOltOk: { type: boolean }
+        txOk: { type: boolean }
+        rxOk: { type: boolean }
+
+    IspDevice:
+      type: object
+      description: >
+        GPON: "ONU Info". HFC: cablemódem (`serial` = MAC, `port` = interfaz
+        CMTS, `headend` = CMTS, `nap` = tap; `onuId`, `offlineCause` y
+        `optics` en null, `servicePorts` vacío).
+      required: [serial, model, version, software, state, adminState, port, accessNetwork, headend, onuId, lastOnline, lastOffline, offlineCause, speedMode, nap, client, servicePorts, wanIp, cpes, optics]
+      properties:
+        serial: { type: string, example: ZTEGD0BB6B57 }
+        model: { type: string, example: F6600V9.0 }
+        version: { type: string, example: V9.0 }
+        software: { type: string, example: V9.0.10P2N8 }
+        state: { type: string, enum: [working, lost] }
+        adminState: { type: string, enum: [up, down] }
+        port: { type: string, example: gpon_olt-1/3/10 }
+        accessNetwork: { type: string, example: HG4BF }
+        headend: { type: string, example: GYE HEADEND ZTE 3 }
+        onuId: { type: string, nullable: true, example: 'gpon-onu_1/3/10:31' }
+        lastOnline: { type: string, format: date-time }
+        lastOffline: { type: string, format: date-time, nullable: true }
+        offlineCause: { type: string, nullable: true, enum: [ONU LOS, DYING GASP, null] }
+        speedMode: { type: string, example: GPON, description: 'GPON | DOCSIS 3.1' }
+        nap: { type: string, example: HG4NB2 }
+        client:
+          type: object
+          required: [accountNumber, name, address]
+          properties:
+            accountNumber: { type: string }
+            name: { type: string }
+            address: { type: string }
+        servicePorts:
+          type: array
+          items: { $ref: '#/components/schemas/IspServicePort' }
+        wanIp: { type: string, enum: [DHCP] }
+        cpes:
+          type: array
+          description: Vacío si el equipo está lost o el puerto está administrativamente abajo.
+          items: { $ref: '#/components/schemas/IspCpe' }
+        optics:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/IspOptics'
+
+    DocsisChannelReading:
+      type: object
+      required: [channel, frequencyMHz, powerDbmv, snrDb]
+      properties:
+        channel: { type: integer, example: 1 }
+        frequencyMHz: { type: number, example: 573 }
+        powerDbmv: { type: number, example: 2.4 }
+        snrDb: { type: number, example: 38.6 }
+
+    IspDocsis:
+      type: object
+      description: >
+        Solo HFC. Umbrales: downstream -7…+7 dBmV y SNR ≥ 33 dB; upstream
+        35…51 dBmV y SNR ≥ 27 dB; codewords sin corregir < 100. Con el equipo
+        lost los canales vienen vacíos y `ok: false`.
+      required: [downstream, upstream, codewords, ok]
+      properties:
+        downstream:
+          type: array
+          items: { $ref: '#/components/schemas/DocsisChannelReading' }
+        upstream:
+          type: array
+          items: { $ref: '#/components/schemas/DocsisChannelReading' }
+        codewords:
+          type: object
+          required: [corrected, uncorrected]
+          properties:
+            corrected: { type: integer }
+            uncorrected: { type: integer }
+        ok: { type: boolean }
+
+    IspMonitorAccount:
+      type: object
+      description: ISP Monitor por cuenta. SIMULADO y determinístico.
+      required: [simulated, source, technology, searchRow, plan, device, docsis]
+      properties:
+        simulated: { type: boolean, enum: [true] }
+        source: { type: string, enum: [ISP_MONITOR] }
+        technology: { type: string, enum: [GPON, HFC] }
+        searchRow: { $ref: '#/components/schemas/IspSearchRow' }
+        plan: { $ref: '#/components/schemas/IspPlan' }
+        device:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/IspDevice'
+        docsis:
+          description: Solo si `technology` es HFC; en GPON SIEMPRE null.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/IspDocsis'
+
+    AccessNetworkDevice:
+      type: object
+      required: [serial, accountNumber, services, clientName, accountStatus, state, isClient]
+      properties:
+        serial: { type: string, example: STGU3C6E8A4E }
+        accountNumber: { type: string, example: '49312156' }
+        services:
+          type: object
+          required: [internet, phone, tv]
+          properties:
+            internet: { type: boolean }
+            phone: { type: boolean }
+            tv: { type: boolean }
+        clientName: { type: string, example: GALO ALFREDO ESPINOZA CEDEÑO }
+        accountStatus: { type: string, enum: [A, S, T] }
+        state: { type: string, enum: [working, lost] }
+        isClient: { type: boolean }
+
+    AccessNetworkNap:
+      type: object
+      required: [nap, summary, devices]
+      properties:
+        nap: { type: string, example: HG4NA10 }
+        summary:
+          type: object
+          required: [total, working, lost, state]
+          properties:
+            total: { type: integer }
+            working: { type: integer }
+            lost: { type: integer }
+            state: { type: string, enum: [OK, PARTIAL, DOWN] }
+        devices:
+          type: array
+          items: { $ref: '#/components/schemas/AccessNetworkDevice' }
+
+    IspAccessNetwork:
+      type: object
+      description: Equipos de la red de acceso del cliente por NAP. SIMULADO y determinístico.
+      required: [simulated, accessNetwork, technology, clientNap, naps, totals, diagnosis]
+      properties:
+        simulated: { type: boolean, enum: [true] }
+        accessNetwork: { type: string, example: HG4BF }
+        technology: { type: string, enum: [GPON, HFC] }
+        clientNap: { type: string, example: HG4NB2 }
+        naps:
+          type: array
+          description: La NAP del cliente primero.
+          items: { $ref: '#/components/schemas/AccessNetworkNap' }
+        totals:
+          type: object
+          required: [devices, working, lost]
+          properties:
+            devices: { type: integer, example: 38 }
+            working: { type: integer, example: 36 }
+            lost: { type: integer, example: 2 }
+        diagnosis:
+          type: object
+          required: [scope, message]
+          properties:
+            scope: { type: string, enum: [NONE, INTERNAL, EXTERNAL_NAP, EXTERNAL_NETWORK] }
+            message:
+              type: string
+              example: 'Solo el equipo del cliente está lost: la falla es interna (domicilio/drop/equipo).'
 
     NodeEvent:
       type: object

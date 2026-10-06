@@ -14,6 +14,7 @@
 import { connectorMode } from '../../config/env.js';
 import { ApiError } from '../../middleware/error-handler.js';
 import { seededRng } from '../_shared.js';
+import { resolveAccountTechnology } from './account-simulation.js';
 import {
   fetchNetworkCodewords24h,
   fetchNetworkSnr24h,
@@ -79,7 +80,11 @@ export interface SignalLevels {
 export interface NetworkMetrics {
   accountNumber: string;
   technology: Technology;
-  signalLevels: SignalLevels;
+  /**
+   * Potencia óptica Rx/Tx: SOLO GPON. En HFC es `null` (no hay óptica GPON;
+   * lo que aplica son SNR y FEC DOCSIS).
+   */
+  signalLevels: SignalLevels | null;
   signalToNoiseDb?: number;
   fecCorrectedPercent?: number;
   fecUncorrectedPercent?: number;
@@ -419,14 +424,17 @@ function mockTerminal(id: string, hint?: Technology): TerminalSnapshot {
 export const ispMonitorMock: IspMonitorConnector = {
   async getNetworkMetrics(accountNumber) {
     const rng = seededRng(`ispmonitor:metrics:${accountNumber}`);
-    const technology: Technology = rng.bool(0.7) ? 'GPON' : 'HFC';
+    // Misma tecnología que ISP Monitor por cuenta y que la orden simulada.
+    const technology: Technology = resolveAccountTechnology(accountNumber);
+    const optical = {
+      rxDbm: rng.floatBetween(-28, -8, 2),
+      txDbm: rng.floatBetween(0, 5, 2),
+    };
     const base: NetworkMetrics = {
       accountNumber,
       technology,
-      signalLevels: {
-        rxDbm: rng.floatBetween(-28, -8, 2),
-        txDbm: rng.floatBetween(0, 5, 2),
-      },
+      // GPON: solo óptica. HFC: sin óptica, con DOCSIS (abajo).
+      signalLevels: technology === 'GPON' ? optical : null,
       outagesLast24h: rng.intBetween(0, 3),
       trafficMbpsIn: rng.floatBetween(0.5, 350, 2),
       trafficMbpsOut: rng.floatBetween(0.2, 180, 2),
@@ -915,15 +923,19 @@ export const ispMonitorReal: IspMonitorConnector = {
     const correctedKey = cwSeries?.keys.find((k) => /corr/i.test(k) && !/uncorr|sin/i.test(k));
     const uncorrectedKey = cwSeries?.keys.find((k) => /uncorr|sincorr/i.test(k));
 
+    const technology: Technology = terminal.technology ?? 'GPON';
     const metrics: NetworkMetrics = {
       accountNumber: diagnostics.id,
-      technology: terminal.technology ?? 'GPON',
-      signalLevels: { rxDbm: rx ?? 0, txDbm: tx ?? 0 },
+      technology,
+      // En HFC no hay óptica GPON que mostrar.
+      signalLevels: technology === 'GPON' ? { rxDbm: rx ?? 0, txDbm: tx ?? 0 } : null,
       outagesLast24h: outages,
       trafficMbpsIn: 0,
       trafficMbpsOut: 0,
       measuredAt: diagnostics.fetchedAt,
     };
+    // DOCSIS (SNR/FEC) solo en HFC: en GPON nunca, aunque la API los trajera.
+    if (technology !== 'HFC') return metrics;
     if (snr !== undefined) metrics.signalToNoiseDb = snr;
     if (lastCw && correctedKey && lastCw.values[correctedKey] !== undefined) {
       metrics.fecCorrectedPercent = lastCw.values[correctedKey];

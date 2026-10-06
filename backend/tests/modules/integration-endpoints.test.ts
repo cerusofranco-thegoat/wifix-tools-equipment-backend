@@ -130,7 +130,7 @@ describe('Diagnóstico de Red', () => {
     }
   });
 
-  it('GET network-metrics incluye signalLevels y campos GPON/HFC condicionales', async () => {
+  it('GET network-metrics: óptica solo en GPON, DOCSIS solo en HFC', async () => {
     const res = await app.inject({
       method: 'GET',
       url: `${PREFIX}/accounts/WX-INT-METRICS/network-metrics`,
@@ -139,9 +139,13 @@ describe('Diagnóstico de Red', () => {
     expect(res.statusCode).toBe(200);
     const m = res.json();
     expect(['GPON', 'HFC']).toContain(m.technology);
-    expect(typeof m.signalLevels.rxDbm).toBe('number');
     if (m.technology === 'HFC') {
+      // Sin óptica GPON en HFC; sí DOCSIS.
+      expect(m.signalLevels).toBeNull();
       expect(typeof m.signalToNoiseDb).toBe('number');
+    } else {
+      expect(typeof m.signalLevels.rxDbm).toBe('number');
+      expect(m.signalToNoiseDb).toBeUndefined();
     }
   });
 

@@ -1056,8 +1056,9 @@ paths:
         puerto ocupado (campo 8). **1 sola llamada upstream**
         (`GET /naps/accounts`): los estados A/S/T/O/P NO se consultan acá.
         Cada puerto ocupado viene con `clientStatus: null` y
-        `statusPending: true`; el técnico los resuelve después, de forma
-        explícita, con `POST /accounts/status-batch` (ADR-05).
+        `statusPending: true`; se resuelven después con
+        `POST /accounts/status-batch` (ADR-05, actualizado 2026-10-06: la app lo
+        llama automáticamente para las 2 NAPs más cercanas).
 
 
         **Ruteo del path param**: si `napRef` es numérico (`/^\d+$/`) se toma
@@ -3088,9 +3089,13 @@ paths:
         5 minutos.
 
 
-        **Se dispara SOLO por acción explícita del técnico** ("Consultar estado
-        de N clientes"), nunca de forma automática ni en segundo plano: cada
-        consulta golpea producción (ADR-05).
+        **Automático desde el 2026-10-06** (decisión de Franco, CEO): la app
+        lo llama sin tap, pero SOLO para los clientes de las 2 NAPs más cercanas
+        (las que ya cargan sus puertos solas), en lotes ≤ 12. Cada cuenta se
+        cachea 5 minutos: reabrir o refrescar dentro de ese plazo no vuelve a
+        consultar FSM; solo salen a producción las cuentas sin cache o vencidas.
+        Los errores no se cachean. Cada consulta real golpea producción
+        (ADR-05).
 
 
         Un fallo aislado no tumba el lote: esa cuenta vuelve con `status: null`

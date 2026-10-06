@@ -688,13 +688,16 @@ export const fsmReal: FsmConnector = {
   },
 
   async getNapPorts(napId, opts) {
-    // UNA sola llamada. Los estados A/S/T/O/P son el paso 2 y los pide el
-    // técnico explícitamente vía POST /accounts/status-batch.
+    // UNA sola llamada. Los estados A/S/T/O/P son el paso 2 y van aparte por
+    // POST /accounts/status-batch.
     //
     // La operadora CONFIRMÓ el 2026-09-09 que NO existe un endpoint de estado
     // en lote: hay que preguntar cuenta por cuenta. Por eso el lote es interno,
-    // está topado en `FSM_STATUS_BATCH_LIMIT` (12), se cachea 5 minutos y solo
-    // se dispara por un tap explícito del técnico — nunca en automático.
+    // está topado en `FSM_STATUS_BATCH_LIMIT` (12) y se cachea 5 minutos por
+    // cuenta. Desde el 2026-10-06 (decisión de Franco, CEO) la app lo dispara
+    // AUTOMÁTICAMENTE, pero solo para las 2 NAPs más cercanas y en lotes ≤ 12;
+    // el cache hace que reabrir/refrescar no vuelva a golpear producción.
+    // `withStatus` sigue siendo solo para soporte/probe (la app no lo envía).
     const raw = await fetchNapAccounts(opts.brand, napId);
     if (raw === null) {
       throw ApiError.notFound(`FSM no encontró la NAP ${napId}.`);

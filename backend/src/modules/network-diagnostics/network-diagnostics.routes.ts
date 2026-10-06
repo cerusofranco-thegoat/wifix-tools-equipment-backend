@@ -155,7 +155,8 @@ export async function registerNetworkDiagnosticsRoutes(app: FastifyInstance): Pr
 
   // --- Campo 8 (paso 1): puertos ocupados por NAP ----------------------------
   // UNA sola llamada upstream: los estados A/S/T/O/P se piden aparte con
-  // POST /accounts/status-batch, y solo por acción explícita del técnico.
+  // POST /accounts/status-batch (automático desde 2026-10-06, solo para las 2
+  // NAPs más cercanas, lotes ≤ 12, cache 5 min).
   app.get('/naps/:napRef/ports', async (request) => {
     const { napRef } = parseParams(napParamsSchema, request.params);
     const { brand, withStatus } = parseQuery(napPortsQuerySchema, request.query);

@@ -1280,6 +1280,53 @@ describe('CONNECTOR_MODE_FSM=real — caudal hacia la operadora', () => {
     expect(fetchSpy.calls).toHaveLength(3);
   });
 
+  // status-batch es AUTOMÁTICO desde 2026-10-06 (2 NAPs más cercanas, lotes
+  // ≤12): lo que lo hace aceptable es que el cache de 5 min por cuenta evita
+  // repetir consultas a producción al reabrir o refrescar la pantalla.
+  it('status-batch automático: el cache de 5 min no repite consultas a FSM; vencido, sí', async () => {
+    const fetchSpy = useRealFsm((call) => {
+      const body = call.body as { data: Record<string, unknown> };
+      const account = String(body.data.account_id ?? '');
+      if (account === '40012345') return { status: 500, raw: 'boom' };
+      return { status: 200, body: { data: { accountId: Number(account), status: 'A', description: 'Activo' } } };
+    });
+    const batch = (accounts: string[]) =>
+      app.inject({
+        method: 'POST',
+        url: `${PREFIX}/accounts/status-batch`,
+        headers: { ...authHeaders, 'content-type': 'application/json' },
+        payload: { accounts },
+      });
+    const statusCalls = () => fetchSpy.calls.filter((c) => c.url.includes('/account/status')).length;
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // NAP 1 y NAP 2 (las 2 más cercanas) se cargan solas.
+      expect((await batch(['35070291', '71398253', '40012345'])).statusCode).toBe(200);
+      expect(statusCalls()).toBe(3);
+
+      // Reabrir la pantalla 4 min después: las cuentas resueltas salen del
+      // cache; solo se reintenta la que falló (los errores no se cachean).
+      vi.setSystemTime(Date.now() + 4 * 60_000);
+      const again = await batch(['35070291', '71398253', '40012345']);
+      expect(again.statusCode).toBe(200);
+      expect(again.json().items[0]).toMatchObject({ accountNumber: '35070291', status: 'ACTIVA' });
+      expect(statusCalls()).toBe(4);
+
+      // Lote que solapa con otra NAP: solo la cuenta nueva sale a FSM.
+      // `035070291` y `35070291` comparten entrada (account_id numérico).
+      await batch(['035070291', '71398253', '99000001']);
+      expect(statusCalls()).toBe(5);
+
+      // Pasados los 5 min el cache vence y se vuelve a consultar.
+      vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+      await batch(['35070291']);
+      expect(statusCalls()).toBe(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('status-batch propaga el fallo de token como error global (503)', async () => {
     useRealFsm(() => ({ status: 401, raw: 'Unauthorized' }));
     const res = await app.inject({

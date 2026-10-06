@@ -4,9 +4,14 @@
 //        marcas tienen token, cuándo vence y cuánto le queda. Es lo que permite a
 //        la UI pintar el banner correcto sin gastar una consulta a producción.
 //
-//   POST /accounts/status-batch     → paso 2 del campo 8. Se dispara SOLO por
-//        acción explícita del técnico ("Consultar estado de N clientes"), nunca
-//        automáticamente. Máximo `FSM_STATUS_BATCH_LIMIT` cuentas por lote.
+//   POST /accounts/status-batch     → paso 2 del campo 8. Desde el 2026-10-06
+//        (decisión de Franco, CEO) la app lo llama AUTOMÁTICAMENTE, sin tap, pero
+//        SOLO para los clientes de las 2 NAPs más cercanas (las que ya cargan sus
+//        puertos solas), en lotes de ≤ `FSM_STATUS_BATCH_LIMIT` (12) cuentas. El
+//        cache de 5 min por cuenta (`FSM_STATUS_CACHE_TTL_MS`) evita repetir la
+//        consulta a FSM al reabrir la pantalla o refrescar: solo las cuentas sin
+//        cache (o con el cache vencido) salen a producción. Los errores no se
+//        cachean (se reintentan en la siguiente llamada).
 //
 // ⚠ `/accounts/status-batch` convive con `/accounts/:accountNumber/...`.
 // find-my-way prioriza los segmentos estáticos sobre los paramétricos, así que

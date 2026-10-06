@@ -58,9 +58,12 @@ const envSchema = z.object({
   // Semáforo propio, separado del de TEC: son dos hosts distintos.
   FSM_API_MAX_CONCURRENCY: z.coerce.number().int().positive().max(32).default(4),
   FSM_API_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(60000),
-  // El estado de una cuenta no cambia minuto a minuto: cache más largo.
+  // El estado de una cuenta no cambia minuto a minuto: cache más largo. Es lo
+  // que hace aceptable el status-batch AUTOMÁTICO (2026-10-06): reabrir la
+  // pantalla dentro de 5 min no repite consultas a FSM.
   FSM_STATUS_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(300000),
-  // Tope de cuentas por lote en POST /accounts/status-batch.
+  // Tope de cuentas por lote en POST /accounts/status-batch. La app lo llama
+  // automáticamente (sin tap) solo para las 2 NAPs más cercanas, en lotes ≤ este tope.
   FSM_STATUS_BATCH_LIMIT: z.coerce.number().int().positive().max(50).default(12),
   // Órdenes finalizadas más recientes que se abren para leer sus notas (campo 15).
   FSM_ORDERS_MAX_FANOUT: z.coerce.number().int().positive().max(10).default(5),

@@ -364,8 +364,12 @@ Mismas tres piezas que TEC, con **semáforo propio** (`FSM_API_MAX_CONCURRENCY`,
   una fuga entre realms, no un detalle de estilo. Hay un test que lo verifica.
 - **El fan-out del campo 8 es explícito y en lote.** `GET /naps/{napRef}/ports`
   hace **1 sola llamada** y devuelve los puertos con `clientStatus: null` y
-  `statusPending: true`; los estados los pide el técnico a mano con
+  `statusPending: true`; los estados se piden aparte con
   `POST /accounts/status-batch` (≤12 cuentas, concurrencia 4, cache 5 min).
+  Desde el 2026-10-06 (decisión de Franco, CEO) la app lo llama
+  **automáticamente**, sin tap, pero solo para los clientes de las 2 NAPs más
+  cercanas y en lotes ≤12; el cache de 5 min por cuenta evita repetir consultas
+  a producción al reabrir o refrescar.
   Resolver una NAP de 16 puertos "completa" costaría 17 llamadas por cada tap
   en "Ver puertos".
   La operadora **confirmó el 2026-09-09 que no existe un endpoint de estado en
@@ -447,7 +451,8 @@ Lo que **ya está confirmado** y aplicado en el código:
   interpreta como UTC (nunca como hora local del servidor) y se emite ISO-8601
   con `Z`; pasar a hora de Ecuador es cosa de la UI.
 - **No existe endpoint de estado en lote:** el `status-batch` interno (≤12
-  cuentas, cache 5 min, solo por tap explícito) queda validado.
+  cuentas, cache 5 min) queda validado. Desde el 2026-10-06 se llama en
+  automático solo para las 2 NAPs más cercanas.
 - **`/naps/nearest` sin topes**, pero pidieron consultar solo la NAP más cercana
   al cliente: default `maxRows` = 3.
 
